@@ -1,0 +1,727 @@
+package com.rhodes.privatechat.ui.model
+
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.rhodes.privatechat.shared.network.ModelCapabilities
+import com.rhodes.privatechat.shared.modelgateway.resolveVisionConfiguration
+import com.rhodes.privatechat.shared.voice.VoiceProviderConfiguration
+import com.rhodes.privatechat.shared.voice.defaultAsrConfiguration
+import com.rhodes.privatechat.shared.voice.defaultTtsConfiguration
+import com.rhodes.privatechat.shared.network.providers
+import com.rhodes.privatechat.shared.network.AIService
+import com.rhodes.privatechat.shared.model.AiMessage
+import com.rhodes.privatechat.shared.modelgateway.VisionAnalyzeRequest
+import com.rhodes.privatechat.shared.modelgateway.createVisionGateway
+import com.rhodes.privatechat.shared.voice.TtsRequest
+import com.rhodes.privatechat.shared.voice.createTtsGateway
+import com.rhodes.privatechat.shared.voice.defaultTtsVoiceId
+import com.rhodes.privatechat.shared.voice.AsrRequest
+import com.rhodes.privatechat.shared.voice.asrKeyFallbackHint
+import com.rhodes.privatechat.shared.voice.createAsrGateway
+import com.rhodes.privatechat.shared.vector.testEmbeddingGateway
+import com.rhodes.privatechat.shared.vector.MemoryVectorService
+import com.rhodes.privatechat.shared.settings.SettingsRepository
+import com.rhodes.privatechat.ui.theme.*
+import com.rhodes.privatechat.viewmodel.MainViewModel
+import org.koin.compose.koinInject
+import org.koin.compose.viewmodel.koinViewModel
+import kotlinx.coroutines.launch
+
+@Composable
+fun ModelSettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
+    val settings: SettingsRepository = koinInject()
+    val aiService: AIService = koinInject()
+    val memoryVectorService: MemoryVectorService = koinInject()
+    val viewModel: MainViewModel = koinViewModel()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val testAudio = remember { com.rhodes.privatechat.audio.LocalAudioController(ctx) }
+    DisposableEffect(testAudio) { onDispose { testAudio.release() } }
+
+    val providerIds = providers.keys.toList()
+    val providerNames = providerIds.map { providers.getValue(it).name }
+    val savedProvider = settings.provider.takeIf { it in providers } ?: "deepseek"
+
+    var selectedProvider by remember { mutableIntStateOf(providerIds.indexOf(savedProvider).coerceAtLeast(0)) }
+    val currentProviderId = providerIds.getOrElse(selectedProvider) { "deepseek" }
+    val currentConfig = providers[currentProviderId] ?: providers.getValue("deepseek")
+
+    val savedModel = settings.modelName
+    var selectedModelIdx by remember {
+        val savedIndex = currentConfig.models.indexOf(savedModel)
+        mutableIntStateOf(if (savedIndex >= 0) savedIndex else currentConfig.models.size)
+    }
+    var customModelName by remember { mutableStateOf(savedModel) }
+    var customUrl by remember { mutableStateOf(settings.customUrl) }
+    var apiKey by remember { mutableStateOf(settings.apiKey) }
+    var visionMode by remember { mutableStateOf(settings.visionMode) }
+    val asrProfiles = remember { settings.voiceProviderConfigurations("asr").toMutableMap() }
+    val ttsProfiles = remember { settings.voiceProviderConfigurations("tts").toMutableMap() }
+    var testVoiceId by remember { mutableStateOf("") }
+    var visionBaseUrl by remember { mutableStateOf(settings.visionBaseUrl) }
+    var visionProvider by remember { mutableStateOf(settings.visionProvider) }
+    var visionModelName by remember { mutableStateOf(settings.visionModelName) }
+    var visionApiKey by remember { mutableStateOf(settings.visionApiKey) }
+    var vectorProviderMode by remember { mutableStateOf(settings.vectorProviderMode) }
+    var vectorProvider by remember { mutableStateOf(settings.vectorProvider) }
+    var vectorProtocol by remember { mutableStateOf(settings.vectorProtocol) }
+    var vectorBaseUrl by remember { mutableStateOf(settings.vectorBaseUrl) }
+    var vectorModelName by remember { mutableStateOf(settings.vectorModelName) }
+    var vectorApiKey by remember { mutableStateOf(settings.vectorApiKey) }
+    var showRebuildVectorIndex by remember { mutableStateOf(false) }
+    var invalidatingVectorIndex by remember { mutableStateOf(false) }
+    var rebuildingVectorIndex by remember { mutableStateOf(false) }
+    var vectorIndexFlowPending by remember { mutableStateOf(false) }
+    var rebuildVectorResult by remember { mutableStateOf("") }
+    var rebuildVectorProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var rebuildEligibleCount by remember { mutableStateOf<Int?>(null) }
+    var pendingVectorSignature by remember { mutableStateOf("") }
+    var showVectorChangeConfirm by remember { mutableStateOf(false) }
+    var asrBaseUrl by remember { mutableStateOf(settings.asrBaseUrl) }
+    var asrProvider by remember { mutableStateOf(settings.asrProvider) }
+    var asrModelName by remember { mutableStateOf(settings.asrModelName) }
+    var asrApiKey by remember { mutableStateOf(settings.asrApiKey) }
+    var ttsBaseUrl by remember { mutableStateOf(settings.ttsBaseUrl) }
+    var ttsProvider by remember { mutableStateOf(settings.ttsProvider) }
+    var ttsModelName by remember { mutableStateOf(settings.ttsModelName) }
+    var ttsApiKey by remember { mutableStateOf(settings.ttsApiKey) }
+    var errorText by remember { mutableStateOf("") }
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+    var testing by remember { mutableStateOf<String?>(null) }
+    var chatTestResult by remember { mutableStateOf("") }
+    var visionTestResult by remember { mutableStateOf("") }
+    var asrTestResult by remember { mutableStateOf("") }
+    var ttsTestResult by remember { mutableStateOf("") }
+    var vectorTestResult by remember { mutableStateOf("") }
+    var didSave by remember { mutableStateOf(false) }
+
+    val isCustom = currentProviderId == "custom"
+    val modelOptions = if (isCustom) listOf("自填") else currentConfig.models + "自填"
+    val currentModelName = if (isCustom || selectedModelIdx >= currentConfig.models.size) customModelName.trim() else currentConfig.models[selectedModelIdx].trim()
+    val hasChanges = currentProviderId != settings.provider || currentModelName != settings.modelName || customUrl.trim() != settings.customUrl || apiKey.trim() != settings.apiKey ||
+        visionMode != settings.visionMode ||
+        asrProfiles != settings.voiceProviderConfigurations("asr") || ttsProfiles != settings.voiceProviderConfigurations("tts") ||
+        visionProvider != settings.visionProvider || visionBaseUrl.trim() != settings.visionBaseUrl || visionModelName.trim() != settings.visionModelName || visionApiKey.trim() != settings.visionApiKey ||
+        vectorProviderMode != settings.vectorProviderMode || vectorProvider != settings.vectorProvider || vectorProtocol != settings.vectorProtocol || vectorBaseUrl.trim() != settings.vectorBaseUrl || vectorModelName.trim() != settings.vectorModelName || vectorApiKey.trim() != settings.vectorApiKey ||
+        asrProvider != settings.asrProvider || asrBaseUrl.trim() != settings.asrBaseUrl || asrModelName.trim() != settings.asrModelName || asrApiKey.trim() != settings.asrApiKey ||
+        ttsProvider != settings.ttsProvider || ttsBaseUrl.trim() != settings.ttsBaseUrl || ttsModelName.trim() != settings.ttsModelName || ttsApiKey.trim() != settings.ttsApiKey
+
+    fun validateSettings(): String? {
+        fun hasHttpScheme(value: String): Boolean {
+            val v = value.trim()
+            return v.startsWith("http://", ignoreCase = true) || v.startsWith("https://", ignoreCase = true)
+        }
+        val modelName = if (isCustom || selectedModelIdx >= currentConfig.models.size) {
+            customModelName.trim()
+        } else {
+            currentConfig.models[selectedModelIdx].trim()
+        }
+        if (apiKey.trim().isBlank()) return "请填写 API 密钥"
+        if (modelName.isBlank() || modelName == "自填") return "请填写模型名"
+        if (isCustom) {
+            val url = customUrl.trim()
+            if (url.isBlank()) return "请填写 API 地址"
+            if (!hasHttpScheme(url)) return "API 地址需以 http:// 或 https:// 开头"
+        }
+        return null
+    }
+
+    fun saveSettings(forceVectorChange: Boolean = false): Boolean {
+        didSave = false
+        // Saving is independent from connecting. Users must be able to configure providers
+        // incrementally, while the individual test buttons validate the required fields.
+        val prevVectorMode = settings.vectorProviderMode
+        val prevVectorProvider = settings.vectorProvider
+        val prevVectorProtocol = settings.vectorProtocol
+        val prevVectorUrl = settings.vectorBaseUrl
+        val prevVectorModel = settings.vectorModelName
+        val modelName = currentModelName
+        val newVectorSignature = com.rhodes.privatechat.shared.vector.EmbeddingConfigurationSignature.create(
+            vectorProviderMode, vectorProvider, vectorBaseUrl, vectorModelName, vectorProtocol
+        )
+        val previousVectorSignature = com.rhodes.privatechat.shared.vector.EmbeddingConfigurationSignature.create(
+            prevVectorMode, prevVectorProvider, prevVectorUrl, prevVectorModel, prevVectorProtocol
+        )
+        val firstTime = settings.vectorIndexSignature.isBlank()
+        val vectorSignatureChanged = !firstTime && previousVectorSignature != newVectorSignature
+        if (vectorSignatureChanged && !forceVectorChange) {
+            pendingVectorSignature = newVectorSignature
+            showVectorChangeConfirm = true
+            return false
+        }
+        settings.saveModelConfiguration(
+                provider = currentProviderId,
+                modelName = modelName,
+                customUrl = customUrl.trim(),
+                apiKey = apiKey.trim(),
+                visionBaseUrl = visionBaseUrl.trim(),
+                visionProvider = visionProvider,
+                visionModelName = visionModelName.trim(),
+                visionApiKey = visionApiKey.trim(),
+                vectorProviderMode = vectorProviderMode,
+                vectorProvider = vectorProvider,
+                vectorProtocol = vectorProtocol,
+                vectorBaseUrl = vectorBaseUrl.trim(),
+                vectorModelName = vectorModelName.trim(),
+                vectorApiKey = vectorApiKey.trim(),
+                asrBaseUrl = asrBaseUrl.trim(),
+                asrProvider = asrProvider,
+                asrModelName = asrModelName.trim(),
+                asrApiKey = asrApiKey.trim(),
+                ttsBaseUrl = ttsBaseUrl.trim(),
+                ttsProvider = ttsProvider,
+                ttsModelName = ttsModelName.trim(),
+                ttsApiKey = ttsApiKey.trim(),
+                visionMode = visionMode,
+                asrConfigurations = asrProfiles.toMap(),
+                ttsConfigurations = ttsProfiles.toMap(),
+        )
+        if (firstTime) settings.vectorIndexSignature = newVectorSignature
+        if (vectorSignatureChanged) {
+            pendingVectorSignature = newVectorSignature
+            vectorIndexFlowPending = true
+            invalidatingVectorIndex = false
+            scope.launch {
+                runCatching { viewModel.markKnowledgeBasesNeedingReindex() }
+                rebuildEligibleCount = runCatching { viewModel.countEligibleMemoryIndexes() }.getOrNull()
+                showRebuildVectorIndex = true
+            }
+        }
+        errorText = ""
+        didSave = true
+        return vectorSignatureChanged
+    }
+
+    fun requestBack() {
+        if (hasChanges) showUnsavedDialog = true else onBack()
+    }
+
+    fun testChat() {
+        if (testing != null) return
+        testing = "chat"
+        chatTestResult = "正在测试..."
+        scope.launch {
+            try {
+                val validationError = validateSettings()
+                if (validationError != null) throw IllegalArgumentException(validationError)
+                val result = aiService.chat(
+                    apiKey.trim(), listOf(AiMessage("user", "只回复：连接成功")),
+                    currentProviderId, currentModelName, customUrl.trim(), temperature = 0.1
+                )
+                chatTestResult = if (result.content.isBlank()) "测试失败：服务没有返回内容" else "连接成功：${result.content.trim().take(60)}"
+            } catch (e: Exception) {
+                val detail = com.rhodes.privatechat.shared.network.ModelErrorMessages.redact(e.message?.trim().orEmpty(), apiKey.trim())
+                chatTestResult = "测试失败：${detail.ifBlank { "请检查地址、模型和密钥" }.take(800)}"
+            } finally { testing = null }
+        }
+    }
+
+    fun testVision() {
+        if (testing != null) return
+        testing = "vision"
+        visionTestResult = "正在测试..."
+        scope.launch {
+            try {
+                val config = resolveVisionConfiguration(visionMode, currentProviderId, currentModelName, apiKey.trim(),
+                    visionProvider, visionBaseUrl.trim(), visionApiKey.trim(), visionModelName.trim())
+                require(config.configured) { "当前对话模型尚未验证识图能力，请选择独立识图配置并填写接口、模型和密钥" }
+                val testImage = runCatching {
+                    val bmp = android.graphics.BitmapFactory.decodeResource(ctx.resources, com.rhodes.privatechat.R.drawable.sleep_idle_001)
+                    val out = java.io.ByteArrayOutputStream()
+                    bmp?.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    if (bmp == null) throw IllegalStateException("null")
+                    "data:image/jpeg;base64," + android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+                }.getOrNull() ?: throw IllegalStateException("无法加载测试图片")
+                val result = createVisionGateway(config.provider, config.endpoint, config.apiKey, config.model).analyzeImage(
+                    VisionAnalyzeRequest(testImage, "请用中文描述这张图片中的内容，只输出描述文字。")
+                )
+                val display = result.text.take(300)
+                val summary: String? = runCatching {
+                    val element = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.parseToJsonElement(display)
+                    val obj = element as? kotlinx.serialization.json.JsonObject ?: return@runCatching null
+                    obj["visibleSummary"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                }.getOrNull()
+                visionTestResult = if (display.isBlank()) "测试失败：服务没有返回识图结果" else
+                    "连接成功\n${if (summary != null) "可见分析：$summary\n" else ""}原始返回：$display"
+            } catch (e: Exception) {
+                visionTestResult = "测试失败：${e.message?.take(100) ?: "请检查识图配置"}"
+            } finally { testing = null }
+        }
+    }
+
+    fun testTts() {
+        if (testing != null) return
+        testing = "tts"
+        ttsTestResult = "正在测试..."
+        scope.launch {
+            try {
+                val key = ttsApiKey.trim().ifBlank { apiKey.trim() }
+                require(ttsBaseUrl.trim().isNotBlank()) { "请填写文字转语音地址" }
+                require(ttsModelName.trim().isNotBlank()) { "请填写文字转语音模型名" }
+                require(key.isNotBlank()) { "请填写文字转语音密钥，或先填写聊天密钥" }
+                val voiceId = testVoiceId.trim().ifBlank { defaultTtsVoiceId(ttsProvider) }
+                require(voiceId.isNotBlank()) { "请填写测试音色 ID，此测试不会修改角色音色" }
+                val audioBytes = createTtsGateway(ttsBaseUrl.trim(), key, ttsModelName.trim(), ttsProvider)
+                    .synthesize(TtsRequest("测试成功", voiceId)).audioBytes
+                if (audioBytes == null || audioBytes.isEmpty()) {
+                    ttsTestResult = "测试失败：服务没有返回音频数据"
+                } else {
+                    val file = testAudio.saveTtsAudio(audioBytes) ?: error("无法保存测试音频")
+                    testAudio.play(file.path) { success ->
+                        testAudio.deleteAudio(file.path)
+                        ttsTestResult = if (success) "连接成功，测试语音已播放" else "测试音频播放失败，请检查格式与播放设备"
+                    }
+                    ttsTestResult = "连接成功（测试语音正在播放）"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                ttsTestResult = "测试失败：${com.rhodes.privatechat.shared.network.ModelErrorMessages.redact(e.message ?: "请检查文字转语音配置", ttsApiKey, apiKey).take(400)}"
+            } finally { testing = null }
+        }
+    }
+
+    fun testVector() {
+        if (testing != null) return
+        testing = "vector"
+        vectorTestResult = "正在测试..."
+        scope.launch {
+            try {
+                if (vectorProviderMode != "third_party") {
+                    vectorTestResult = "本地索引可直接使用：384 维，不联网，无额外 Embedding API 费用"
+                    return@launch
+                }
+                val key = vectorApiKey.trim().ifBlank { apiKey.trim() }
+                require(vectorBaseUrl.trim().startsWith("http")) { "记忆增强地址需要以 http:// 或 https:// 开头" }
+                require(vectorModelName.trim().isNotBlank()) { "请填写记忆增强模型名" }
+                require(key.isNotBlank()) { "请填写记忆增强密钥，或先填写聊天密钥" }
+                val values = testEmbeddingGateway(vectorBaseUrl.trim(), key, vectorModelName.trim(), vectorProtocol)
+                require(values.isNotEmpty()) { "服务没有返回记忆数据" }
+                require(values.all { it.isFinite() }) { "服务返回了无效的记忆数据" }
+                require(values.size >= 64) { "返回维度过低，可能不是 Embedding 模型" }
+                vectorTestResult = "连接成功：返回 ${values.size} 维向量。此测试已发起一次真实 Embedding API 请求。"
+            } catch (e: Exception) { vectorTestResult = "测试失败：${e.message?.take(240) ?: "请检查地址、模型和密钥"}" }
+            finally { testing = null }
+        }
+    }
+
+    fun testAsr() {
+        if (testing != null) return
+        testing = "asr"
+        asrTestResult = "正在测试..."
+        scope.launch {
+            try {
+                val key = asrApiKey.trim().ifBlank { apiKey.trim() }
+                require(if (asrProvider == "xiaomi") asrBaseUrl.trim().startsWith("http") else asrBaseUrl.trim().startsWith("ws")) { if (asrProvider == "xiaomi") "小米语音识别地址需要以 http:// 或 https:// 开头" else "语音识别地址需要以 ws:// 或 wss:// 开头" }
+                require(asrModelName.trim().isNotBlank()) { "请填写语音识别模型配置" }
+                require(key.isNotBlank()) { "请填写语音识别密钥，或先填写聊天密钥" }
+                val pcm = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ctx.assets.open("diagnostics/asr_test_16k.pcm").use { it.readBytes() } }
+                val result = createAsrGateway(asrBaseUrl.trim(), key, asrModelName.trim(), asrProvider).transcribe(AsrRequest(pcm))
+                require(result.text.isNotBlank()) { "接口已返回，但未识别到文字；请检查模型和音频协议" }
+                val normalized = result.text.replace(Regex("[\\s，。！？、,.!?]"), "")
+                val expected = "今天下午三点请提醒我喝水"
+                asrTestResult = if (normalized == expected) "识别成功：${result.text}（已验证测试语音）"
+                    else "接口已返回，但测试语音不匹配：${result.text.take(100)}；预期：今天下午三点，请提醒我喝水。"
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                asrTestResult = "测试失败：${com.rhodes.privatechat.shared.network.ModelErrorMessages.redact(e.message ?: "请检查语音识别配置", asrApiKey, apiKey).take(400)}"
+            } finally { testing = null }
+        }
+    }
+
+    BackHandler(onBack = { requestBack() })
+
+    Box(modifier = modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().background(BG).systemBarsPadding().imePadding()) {
+        Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { requestBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = TextPrimary) }
+            Spacer(Modifier.weight(1f))
+            Text("模型设置", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Spacer(Modifier.weight(1f))
+            TextButton(enabled = !invalidatingVectorIndex && !rebuildingVectorIndex, onClick = { val stayForVectorFlow = saveSettings(); if (didSave && !stayForVectorFlow) onBack() }) {
+                Icon(Icons.Default.Check, null, tint = Primary, modifier = Modifier.size(20.dp))
+                Text("保存", color = Primary, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        HorizontalDivider(color = Divider)
+
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+            // Vendor
+            DropDown("厂商", providerNames, selectedProvider) { i -> selectedProvider = i; selectedModelIdx = 0; customModelName = ""; errorText = "" }
+            Spacer(Modifier.height(12.dp))
+
+            // Model
+            if (!isCustom) DropDown("模型", modelOptions, selectedModelIdx.coerceIn(modelOptions.indices)) { selectedModelIdx = it; errorText = "" }
+            Spacer(Modifier.height(12.dp))
+
+            // Custom model name
+            if (isCustom || selectedModelIdx >= currentConfig.models.size) {
+                LabeledField("自定义模型名") { OutlinedTextField(value = customModelName, onValueChange = { customModelName = it; errorText = "" }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(8.dp), colors = fieldColors()) }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            // Custom URL
+            if (isCustom) {
+                LabeledField("完整 Chat Completions API 地址") {
+                    Row { OutlinedTextField(value = customUrl, onValueChange = { customUrl = it; errorText = "" }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(8.dp), colors = fieldColors()); Spacer(Modifier.width(4.dp)); PasteBtn(ctx) { customUrl = it; errorText = "" } }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            val automaticImages = ModelCapabilities.supportsImages(currentProviderId, currentModelName)
+            Text(if (automaticImages) {
+                if (visionMode == "auto") "此模型是多模态模型，已自动用于图片识别。图片聊天仍会分别调用识图和角色回复。"
+                else "此模型支持图片识别；当前使用独立识图配置，可在下方切换为自动复用。"
+            } else "当前型号尚未通过自动识图验证，可在下方使用独立识图配置。", fontSize = 11.sp, color = TextSecondary)
+            Text("文字回复默认完整接收后展示；支持关闭思考的已适配型号默认关闭思考。", fontSize = 11.sp, color = TextSecondary)
+            if (currentProviderId == "zhipu" && currentModelName.startsWith("glm-5.3")) {
+                Text("GLM 5.3 和 5.3 Flash 已确认不支持关闭思考；5.3 系列不发送关闭参数。", fontSize = 11.sp, color = TextSecondary)
+            }
+            Spacer(Modifier.height(10.dp))
+            // 深度思考：仅在 DeepSeek 服务商下显示。默认关闭；打开后更慢更贵，思考过程不会展示给用户。
+            if (currentProviderId == "deepseek") {
+                var deepseekThinking by remember { mutableStateOf(settings.deepseekThinkingEnabled) }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 10.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("深度思考（更慢更准）", fontSize = 13.sp, color = TextPrimary)
+                        Text("打开后角色回复、群聊、动态、动态评论和日记会先思考再作答（更慢更准、消耗更多）。记忆提取、派遣、自检等后台功能固定不使用思考，不受影响；思考过程不会展示给你，也不会写进聊天记录和调试日志。修改立即生效。", fontSize = 11.sp, color = TextSecondary)
+                    }
+                    Switch(checked = deepseekThinking, onCheckedChange = { on ->
+                        deepseekThinking = on
+                        settings.deepseekThinkingEnabled = on
+                    })
+                }
+            }
+
+            // API Key
+            LabeledField("API 密钥") {
+                SecretInput(apiKey, { apiKey = it; errorText = "" }, ctx)
+            }
+            if (errorText.isNotBlank()) {
+                Text(errorText, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+            }
+            TestButton("测试聊天模型", testing == "chat", chatTestResult, onClick = ::testChat)
+            Spacer(Modifier.height(12.dp))
+
+            SettingsSection("识图模型") {
+                DropDown("使用方式", listOf("自动使用对话模型", "独立识图配置"), if (visionMode == "auto") 0 else 1) {
+                    visionMode = if (it == 0) "auto" else "independent"
+                    visionTestResult = ""
+                }
+                if (visionMode == "auto") {
+                    Text(if (automaticImages) "已自动复用对话模型的厂商、模型和密钥；旧的独立识图配置仍保留。"
+                        else "当前型号尚未验证图片识别能力，请选择已验证的型号或使用独立识图配置。", fontSize = 12.sp, color = TextSecondary)
+                    TestButton("测试自动识图", testing == "vision", visionTestResult, onClick = ::testVision)
+                } else {
+                DropDown("服务商", listOf("阿里千问", "DeepSeek", "豆包", "小米 MiMo", "Anthropic Claude", "硅基流动", "OpenAI 兼容/自填"), when (visionProvider) { "ali" -> 0; "deepseek" -> 1; "doubao" -> 2; "xiaomi" -> 3; "anthropic" -> 4; "siliconflow" -> 5; else -> 6 }) { index ->
+                    visionProvider = listOf("ali", "deepseek", "doubao", "xiaomi", "anthropic", "siliconflow", "openai")[index]
+                    when (visionProvider) {
+                        "ali" -> { visionBaseUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"; visionModelName = "qwen3-vl-plus" }
+                        "deepseek" -> { visionBaseUrl = "https://api.deepseek.com/chat/completions"; visionModelName = "deepseek-flash" }
+                        "doubao" -> { visionBaseUrl = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"; visionModelName = "" }
+                        "xiaomi" -> { visionBaseUrl = "https://api.xiaomimimo.com/v1/chat/completions"; visionModelName = "mimo-v2.5" }
+                        "anthropic" -> { visionBaseUrl = "https://api.anthropic.com/v1/messages"; visionModelName = "claude-sonnet-4-20250514" }
+                        "siliconflow" -> { visionBaseUrl = "https://api.siliconflow.cn/v1/chat/completions"; visionModelName = "Qwen/Qwen3-VL-8B-Instruct" }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(when (visionProvider) {
+                    "ali" -> "使用阿里千问视觉接口。"
+                    "deepseek" -> "使用 DeepSeek OpenAI 兼容视觉接口，图片会以 Base64 image_url 发送；Flash 已通过图片测试；旧实验模型配置会保留。"
+                    "xiaomi" -> "使用小米 MiMo 图片理解接口，API Key 使用 api-key 请求头。"
+                    "anthropic" -> "使用 Anthropic Messages 图片理解接口，要求传入 Base64 图片。"
+                    "siliconflow" -> "使用硅基流动 OpenAI 兼容多模态接口，支持 Qwen3-VL 等视觉模型。"
+                    else -> "请选择支持图片理解的模型。"
+                }, fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(8.dp))
+                LabeledField("API 地址") { TextInput(visionBaseUrl, { visionBaseUrl = it }, ctx) }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("模型名") { TextInput(visionModelName, { visionModelName = it }, ctx, placeholder = "qwen3-vl-plus") }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("API Key（空则复用聊天 API Key）") { SecretInput(visionApiKey, { visionApiKey = it }, ctx) }
+                TestButton("测试识图模型", testing == "vision", visionTestResult, onClick = ::testVision)
+                }
+            }
+
+            SettingsSection("向量模型") {
+                Text("用于帮助角色找回较早的相关聊天。不开启也能正常聊天，索引始终保存在本机。", fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(8.dp))
+                DropDown("模式", listOf("手机自带的免费版", "付费 Embedding（更好的记忆力）"), if (vectorProviderMode == "third_party") 1 else 0) { vectorProviderMode = if (it == 1) "third_party" else "local" }
+                Spacer(Modifier.height(10.dp))
+                if (vectorProviderMode == "local") Text("在手机本地建立检索索引，不上传聊天内容，也不产生额外 Embedding API 费用。对近义表达和复杂语义的理解较弱。", fontSize = 12.sp, color = TextSecondary)
+                else {
+                Text("会把需要建立或查询的记忆文本发送给你配置的服务，通常语义召回更准确，但可能产生供应商费用。测试、写入和检索都会发起真实请求。", fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                    val vectorPreset = when {
+                        vectorProtocol == "aliyun_native" -> 0
+                        vectorProvider == "ali" -> 1
+                        else -> 2
+                    }
+                    DropDown("接口预设", listOf("阿里百炼原生 Endpoint", "阿里百炼兼容 Endpoint", "自定义 OpenAI 兼容 Endpoint"), vectorPreset) { index ->
+                    when (index) {
+                        0 -> {
+                            vectorProvider = "ali"
+                            vectorProtocol = "aliyun_native"
+                            vectorBaseUrl = "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+                            vectorModelName = "text-embedding-v4"
+                        }
+                        1 -> {
+                            vectorProvider = "ali"
+                            vectorProtocol = "openai_compat"
+                            vectorBaseUrl = "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings"
+                            vectorModelName = "text-embedding-v4"
+                        }
+                        else -> {
+                            vectorProvider = "openai"
+                            vectorProtocol = "openai_compat"
+                        }
+                    }
+                    }
+                    Text("原生接口使用阿里 DashScope 请求格式；兼容接口保持旧用户配置不变。阿里地址中的 {WorkspaceId} 需要替换为实际工作区。", fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                val vectorModelOptions = listOf("text-embedding-v4", "qwen3.7-text-embedding", "qwen3.7-text-embedding-flash", "自定义")
+                val selectedVectorModel = vectorModelOptions.indexOf(vectorModelName).takeIf { it >= 0 } ?: 3
+                DropDown("模型预设", vectorModelOptions, selectedVectorModel) { index ->
+                    if (index < 3) vectorModelName = vectorModelOptions[index]
+                }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("API 地址") { TextInput(vectorBaseUrl, { vectorBaseUrl = it }, ctx) }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("模型名") { TextInput(vectorModelName, { vectorModelName = it }, ctx, placeholder = "text-embedding-v4 / qwen3.7-text-embedding") }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("API Key（空则复用聊天 API Key）") { SecretInput(vectorApiKey, { vectorApiKey = it }, ctx) }
+                TestButton("测试付费 Embedding", testing == "vector", vectorTestResult, onClick = ::testVector)
+                }
+                if (rebuildVectorResult.isNotBlank()) Text(rebuildVectorResult, fontSize = 12.sp, color = TextSecondary)
+            }
+
+            SettingsSection("语音识别 ASR") {
+                DropDown("服务商", listOf("阿里千问实时识别", "小米 MiMo", "自填（阿里兼容）"), when (asrProvider) { "ali" -> 0; "xiaomi" -> 1; else -> 2 }) { index ->
+                    asrProfiles[asrProvider] = VoiceProviderConfiguration(asrBaseUrl, asrModelName, asrApiKey)
+                    asrProvider = listOf("ali", "xiaomi", "custom")[index]
+                    val config = asrProfiles[asrProvider] ?: defaultAsrConfiguration(asrProvider)
+                    asrBaseUrl = config.endpoint
+                    asrModelName = config.model
+                    asrApiKey = config.key
+                    asrTestResult = ""
+                }
+                Text(if (asrProvider == "xiaomi") "小米 MiMo 使用 HTTP 非流式识别，应用会将录音 PCM 自动封装为 WAV 后上传。" else "自填服务必须兼容阿里实时 WebSocket 协议与音频格式。", fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                LabeledField(if (asrProvider == "xiaomi") "API 地址" else "WebSocket 地址") { TextInput(asrBaseUrl, { asrBaseUrl = it }, ctx) }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("模型配置") { TextInput(asrModelName, { asrModelName = it }, ctx, placeholder = "realtime|transcription") }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("API Key（空则复用聊天 API Key）") { SecretInput(asrApiKey, { asrApiKey = it }, ctx) }
+                asrKeyFallbackHint(asrBaseUrl.trim(), asrApiKey.trim(), apiKey.trim(), currentProviderId, asrProvider)?.let { hint ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(hint, fontSize = 12.sp, color = if (hint.contains("401")) ErrorRed else TextSecondary)
+                }
+                TestButton("测试语音识别", testing == "asr", asrTestResult, onClick = ::testAsr)
+            }
+
+            SettingsSection("文字转语音 TTS") {
+                DropDown("服务商", listOf("MiniMax", "小米 MiMo", "Vocu", "火山引擎（豆包语音）", "自填（MiniMax 兼容）"), when (ttsProvider) { "minimax" -> 0; "xiaomi" -> 1; "vocu" -> 2; "volcano" -> 3; else -> 4 }) { index ->
+                    ttsProfiles[ttsProvider] = VoiceProviderConfiguration(ttsBaseUrl, ttsModelName, ttsApiKey)
+                    ttsProvider = listOf("minimax", "xiaomi", "vocu", "volcano", "custom")[index]
+                    val config = ttsProfiles[ttsProvider] ?: defaultTtsConfiguration(ttsProvider)
+                    ttsBaseUrl = config.endpoint
+                    ttsModelName = config.model
+                    ttsApiKey = config.key
+                    testVoiceId = ""
+                    ttsTestResult = ""
+                }
+                Text(when (ttsProvider) {
+                    "xiaomi" -> "小米 MiMo 使用 HTTP 非流式 TTS，支持 mimo_default、冰糖、茉莉、苏打等预置音色。"
+                    "vocu" -> "Vocu 使用同步 HTTP TTS。请在角色编辑页填写 Vocu 的 Voice ID（UUID）并测试，生成和测试都会消耗点数。"
+                    "volcano" -> "火山引擎（豆包语音）使用 V3 单向流式合成，音色需你自己在豆包语音控制台复刻。API Key 请在控制台「API Key 管理」创建后填到这里；音色 ID 在下方「模型版本」对应控制台的「音色库 - 我的音色」里，格式 S_ 开头。"
+                    else -> "自填服务必须兼容 MiniMax WebSocket TTS 协议。"
+                }, fontSize = 12.sp, color = TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                LabeledField(if (ttsProvider == "minimax" || ttsProvider == "custom") "WebSocket 地址" else "API 地址") { TextInput(ttsBaseUrl, { ttsBaseUrl = it }, ctx) }
+                Spacer(Modifier.height(10.dp))
+                if (ttsProvider == "volcano") {
+                    // 复刻 1.0 与 2.0 的音色不能混用：版本必须与训练时一致，否则会返回 resource mismatch。
+                    DropDown("模型版本", listOf("声音复刻 2.0（情感更强，中英）", "声音复刻 1.0（低延迟，多语种）"), if (ttsModelName.startsWith("seed-icl-1.0")) 1 else 0) { index ->
+                        ttsModelName = if (index == 0) "seed-icl-2.0" else "seed-icl-1.0"
+                    }
+                    Text("音色必须与版本匹配：用 2.0 复刻的填 2.0，用 1.0 复刻的填 1.0，否则会报「音色与模型版本不匹配」。", fontSize = 11.sp, color = TextSecondary)
+                    Spacer(Modifier.height(6.dp))
+                } else if (ttsProvider == "vocu") {
+                    Text("Vocu 接口不需要填写模型名。", fontSize = 12.sp, color = TextSecondary)
+                } else {
+                    LabeledField("模型名") { TextInput(ttsModelName, { ttsModelName = it }, ctx, placeholder = "speech-2.8-hd") }
+                }
+                Spacer(Modifier.height(10.dp))
+                LabeledField("API Key（空则复用聊天 API Key）") { SecretInput(ttsApiKey, { ttsApiKey = it }, ctx) }
+                if (ttsProvider == "vocu" || ttsProvider == "volcano") {
+                    LabeledField("测试音色 ID（仅用于本次测试，不修改角色）") { TextInput(testVoiceId, { testVoiceId = it }, ctx) }
+                }
+                TestButton("测试文字转语音", testing == "tts", ttsTestResult, onClick = ::testTts)
+            }
+        }
+    }
+    }
+    if (showUnsavedDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnsavedDialog = false },
+            title = { Text("有未保存的修改", color = TextPrimary) },
+            text = { Text("你已经修改了模型设置。要保存后离开，还是放弃这些修改？", color = TextSecondary) },
+            confirmButton = { TextButton(onClick = {
+                val stayForVectorFlow = saveSettings()
+                if (didSave) {
+                    showUnsavedDialog = false
+                    if (!stayForVectorFlow) onBack()
+                }
+            }) { Text("保存修改", color = Primary) } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showUnsavedDialog = false; onBack() }) { Text("放弃修改", color = ErrorRed) }
+                    TextButton(onClick = { showUnsavedDialog = false }) { Text("继续编辑", color = TextSecondary) }
+                }
+            }
+        )
+    }
+    if (showVectorChangeConfirm) AlertDialog(
+        onDismissRequest = { showVectorChangeConfirm = false },
+        title = { Text("确认切换向量配置") },
+        text = {
+            Text("向量模型或接口已改变。已有记忆需要使用新配置重新生成向量，期间可能产生 API 费用。确认后会保留旧索引，并显示重建选项。")
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                showVectorChangeConfirm = false
+                val stayForVectorFlow = saveSettings(forceVectorChange = true)
+                if (didSave && !stayForVectorFlow) onBack()
+            }) { Text("确认切换", color = Primary) }
+        },
+        dismissButton = {
+            TextButton(onClick = { showVectorChangeConfirm = false }) { Text("取消", color = TextSecondary) }
+        }
+    )
+    if (invalidatingVectorIndex) AlertDialog(
+        onDismissRequest = {},
+        title = { Text("正在更新记忆索引") },
+        text = { Text("正在准备新的记忆索引，请稍候。") },
+        confirmButton = {}
+    )
+    if (showRebuildVectorIndex) AlertDialog(
+        onDismissRequest = { if (!rebuildingVectorIndex) showRebuildVectorIndex = false },
+        title = { Text("重建记忆索引") },
+        text = {
+            val progress = rebuildVectorProgress
+            val eligibleText = rebuildEligibleCount?.let { "当前有 $it 条有效记忆可重建。\n" }.orEmpty()
+            Text(
+                if (rebuildingVectorIndex && progress != null) {
+                    "正在重建：${progress.first} / ${progress.second}"
+                } else {
+                    eligibleText + "记忆检索方式已变更，旧索引不会预先清空。每条记忆生成新向量成功后才会替换对应索引，失败条目保留旧向量；不同模型的向量不能混用。现在重建全部有效记忆索引吗？付费 Embedding 可能产生服务商费用。"
+                }
+            )
+        },
+        confirmButton = { TextButton(onClick = {
+            rebuildingVectorIndex = true
+            rebuildVectorProgress = 0 to (rebuildEligibleCount ?: 0)
+            scope.launch {
+                val result = runCatching { viewModel.rebuildAllMemoryIndexes { done, total -> rebuildVectorProgress = done to total } }.getOrNull()
+                rebuildVectorResult = result?.let {
+                    "索引重建完成：有效 ${it.eligible}，成功 ${it.succeeded}，失败 ${it.failed}，跳过 ${it.skipped}" +
+                        if (it.errors.isNotEmpty()) "。错误：${it.errors.joinToString("；")}" else ""
+                } ?: "索引重建失败，请稍后在角色记忆页重试"
+                if (result != null && result.failed == 0) {
+                    settings.vectorIndexSignature = pendingVectorSignature
+                }
+                rebuildingVectorIndex = false
+                rebuildVectorProgress = null
+                vectorIndexFlowPending = false
+                showRebuildVectorIndex = false
+            }
+        }, enabled = !rebuildingVectorIndex) { Text(if (rebuildingVectorIndex) "重建中..." else "立即重建") } },
+        dismissButton = { TextButton(enabled = !rebuildingVectorIndex, onClick = { vectorIndexFlowPending = false; showRebuildVectorIndex = false }) { Text("稍后处理") } }
+    )
+}
+
+@Composable private fun DropDown(label: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        Text(label, fontSize = 13.sp, color = TextSecondary)
+        Spacer(Modifier.height(4.dp))
+        Box {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Card).clickable { expanded = true }.padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(options[selected], fontSize = 14.sp, color = TextPrimary); Text("▼", fontSize = 10.sp, color = TextTertiary) }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = Surface) {
+                options.forEachIndexed { i, opt -> DropdownMenuItem(text = { Text(opt, fontWeight = if (i == selected) FontWeight.Bold else FontWeight.Normal, color = if (i == selected) Primary else TextPrimary) }, onClick = { onSelect(i); expanded = false }) }
+            }
+        }
+    }
+}
+
+@Composable private fun LabeledField(label: String, content: @Composable () -> Unit) {
+    Column { Text(label, fontSize = 13.sp, color = TextSecondary); Spacer(Modifier.height(4.dp)); content() }
+}
+
+@Composable private fun PasteBtn(ctx: Context, onPaste: (String) -> Unit) {
+    OutlinedButton(onClick = { (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip?.getItemAt(0)?.text?.toString()?.let { onPaste(it) } }, modifier = Modifier.height(48.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Primary)) { Icon(Icons.Default.ContentPaste, null, modifier = Modifier.size(16.dp)) }
+}
+
+@Composable private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(color = Card, shape = RoundedCornerShape(12.dp), tonalElevation = 0.dp, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Spacer(Modifier.height(12.dp))
+            content()
+        }
+    }
+}
+
+@Composable private fun TestButton(label: String, testing: Boolean, result: String, onClick: () -> Unit) {
+    Spacer(Modifier.height(12.dp))
+    OutlinedButton(onClick = onClick, enabled = !testing, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Primary)) {
+        Text(if (testing) "测试中..." else label, fontWeight = FontWeight.SemiBold)
+    }
+    if (result.isNotBlank()) {
+        Text(result, fontSize = 12.sp, color = if (result.startsWith("连接成功")) Primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable private fun TextInput(value: String, onChange: (String) -> Unit, ctx: Context, placeholder: String = "") {
+    Row {
+        OutlinedTextField(value = value, onValueChange = onChange, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(8.dp), colors = fieldColors(), placeholder = { if (placeholder.isNotBlank()) Text(placeholder, fontSize = 13.sp, color = TextTertiary) })
+        Spacer(Modifier.width(4.dp))
+        PasteBtn(ctx) { onChange(it) }
+    }
+}
+
+@Composable private fun SecretInput(value: String, onChange: (String) -> Unit, ctx: Context) {
+    var show by remember { mutableStateOf(false) }
+    Row {
+        OutlinedTextField(value = value, onValueChange = onChange, modifier = Modifier.weight(1f), singleLine = true, visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+        Spacer(Modifier.width(4.dp))
+        TextButton(onClick = { show = !show }, modifier = Modifier.height(48.dp)) { Text(if (show) "隐藏" else "显示", fontSize = 11.sp, color = Primary) }
+        Spacer(Modifier.width(4.dp))
+        PasteBtn(ctx) { onChange(it) }
+    }
+}
+
+@Composable private fun fieldColors() = OutlinedTextFieldDefaults.colors(focusedBorderColor = Primary, unfocusedBorderColor = Divider)

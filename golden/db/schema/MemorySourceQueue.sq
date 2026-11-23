@@ -1,0 +1,150 @@
+CREATE TABLE IF NOT EXISTS memory_source_queue (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    sourceKind TEXT NOT NULL,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    sourceRefId TEXT NOT NULL,
+    contentText TEXT NOT NULL,
+    timestamp INTEGER NOT NULL DEFAULT 0,
+    processedL1 INTEGER NOT NULL DEFAULT 0,
+    processedVector INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retryCount INTEGER NOT NULL DEFAULT 0,
+    nextRetryAt INTEGER NOT NULL DEFAULT 0,
+    leaseUntil INTEGER NOT NULL DEFAULT 0,
+    claimToken TEXT NOT NULL DEFAULT '',
+    lastError TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS memory_source_queue_identity
+ON memory_source_queue(sourceKind, ownerType, ownerId, sourceRefId, contentText, timestamp);
+
+getPendingMemorySources:
+SELECT * FROM memory_source_queue
+WHERE processedL1 = 0
+  AND status IN ('pending', 'retry_waiting', 'running')
+  AND nextRetryAt <= ?
+  AND (status != 'running' OR leaseUntil <= ?)
+ORDER BY timestamp ASC, id ASC
+LIMIT ?;
+
+insertMemorySource:
+INSERT OR IGNORE INTO memory_source_queue(sourceKind, ownerType, ownerId, sourceRefId, contentText, timestamp, processedL1, processedVector, status, retryCount, nextRetryAt, leaseUntil, claimToken, lastError, createdAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+getMemorySourceId:
+SELECT id FROM memory_source_queue
+WHERE sourceKind = ? AND ownerType = ? AND ownerId = ? AND sourceRefId = ?
+  AND contentText = ? AND timestamp = ?
+LIMIT 1;
+
+getMemorySourceStatus:
+SELECT status, processedL1 FROM memory_source_queue WHERE id = ?;
+
+getUnfinishedMemorySourceId:
+SELECT id FROM memory_source_queue
+WHERE sourceKind = ? AND ownerType = ? AND ownerId = ? AND sourceRefId = ?
+  AND contentText = ? AND timestamp = ?
+  AND processedL1 = 0 AND status IN ('pending', 'retry_waiting', 'running')
+ORDER BY id ASC
+LIMIT 1;
+
+getLastInsertedMemorySourceId:
+SELECT last_insert_rowid();
+
+markMemorySourceProcessedL1:
+UPDATE memory_source_queue SET processedL1 = 1 WHERE id = ?;
+
+markMemorySourceProcessedVector:
+UPDATE memory_source_queue SET processedVector = 1 WHERE id = ?;
+
+claimMemorySource:
+UPDATE memory_source_queue
+SET status = 'running', leaseUntil = ?, claimToken = ?
+WHERE id = ?
+  AND processedL1 = 0
+  AND status IN ('pending', 'retry_waiting', 'running')
+  AND nextRetryAt <= ?
+  AND (status != 'running' OR leaseUntil <= ?);
+
+claimMemorySourceById:
+UPDATE memory_source_queue
+SET status = 'running', leaseUntil = ?, claimToken = ?
+WHERE id = ?
+  AND processedL1 = 0
+  AND status IN ('pending', 'retry_waiting')
+  AND nextRetryAt <= ?;
+
+getMemorySourceClaimToken:
+SELECT claimToken FROM memory_source_queue WHERE id = ?;
+
+renewMemorySourceLease:
+UPDATE memory_source_queue SET leaseUntil = ?
+WHERE id = ? AND claimToken = ? AND status = 'running';
+
+completeMemorySource:
+UPDATE memory_source_queue
+SET processedL1 = 1,
+processedVector = CASE WHEN EXISTS (
+    SELECT 1 FROM memory_items WHERE sourceKind = memory_source_queue.sourceKind
+    AND sourceRefId = memory_source_queue.sourceRefId AND status = 'active' AND vectorId = ''
+) THEN 0 ELSE 1 END,
+status = 'succeeded', leaseUntil = 0, claimToken = '', lastError = ''
+WHERE id = ? AND claimToken = ?;
+
+retryMemorySource:
+UPDATE memory_source_queue
+SET status = 'retry_waiting', retryCount = retryCount + 1, nextRetryAt = ?, leaseUntil = 0, claimToken = '', lastError = ?
+WHERE id = ? AND claimToken = ?;
+
+releaseMemorySource:
+UPDATE memory_source_queue
+SET status = 'pending', nextRetryAt = ?, leaseUntil = 0, claimToken = '', lastError = ?
+WHERE id = ? AND claimToken = ?;
+
+failMemorySource:
+UPDATE memory_source_queue
+SET status = 'failed', leaseUntil = 0, claimToken = '', lastError = ?
+WHERE id = ? AND claimToken = ?;
+
+skipMemorySource:
+UPDATE memory_source_queue
+SET status = 'skipped', leaseUntil = 0, claimToken = '', lastError = ?
+WHERE id = ? AND claimToken = ?;
+
+deleteMemorySourcesByOwner:
+DELETE FROM memory_source_queue WHERE ownerType = ? AND ownerId = ?;
+
+deleteMemorySourcesByOwnerAndKind:
+DELETE FROM memory_source_queue WHERE ownerType = ? AND ownerId = ? AND sourceKind = ?;
+
+deletePrivateRelationshipSources:
+DELETE FROM memory_source_queue WHERE ownerType = ? AND ownerId = ? AND sourceKind = 'PRIVATE_CHAT';
+
+deleteMemorySourcesBySession:
+DELETE FROM memory_source_queue
+WHERE sourceRefId = :sessionId
+OR (sourceKind = 'PRIVATE_CHAT' AND substr(sourceRefId, 1, length(:sessionId) + 6) = :sessionId || ':epoch');
+
+deleteMemorySourcesBySource:
+DELETE FROM memory_source_queue WHERE sourceKind = ? AND sourceRefId = ?;
+
+deleteMemorySourcesBySourcePrefix:
+DELETE FROM memory_source_queue WHERE sourceKind = ? AND sourceRefId LIKE ?;
+
+deleteMemorySource:
+DELETE FROM memory_source_queue WHERE id = ?;
+
+deleteAllMemorySources:
+DELETE FROM memory_source_queue;
+
+deleteProcessedMemorySourcesBefore:
+DELETE FROM memory_source_queue WHERE processedL1 = 1 AND createdAt < ?;
+
+refreshSourceVectorCompletion:
+UPDATE memory_source_queue SET processedVector =
+CASE WHEN EXISTS (SELECT 1 FROM memory_items
+    WHERE sourceKind = memory_source_queue.sourceKind AND sourceRefId = memory_source_queue.sourceRefId
+    AND status = 'active' AND vectorId = '') THEN 0 ELSE 1 END
+WHERE processedL1 = 1 AND sourceKind = ? AND sourceRefId = ?;

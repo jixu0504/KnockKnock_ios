@@ -1,0 +1,128 @@
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER NOT NULL PRIMARY KEY,
+    sessionId TEXT NOT NULL,
+    senderId TEXT NOT NULL DEFAULT '',
+    senderName TEXT NOT NULL,
+    content TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text',
+    mode TEXT NOT NULL DEFAULT 'online',
+    emotion TEXT NOT NULL DEFAULT '',
+    activity TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    narration TEXT NOT NULL DEFAULT '',
+    segmentGroup TEXT NOT NULL DEFAULT '',
+    intimacyChange INTEGER NOT NULL DEFAULT 0,
+    timestamp INTEGER NOT NULL DEFAULT 0,
+    isMe INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_session_timestamp_id
+ON chat_messages(sessionId, timestamp, id);
+
+CREATE INDEX IF NOT EXISTS chat_messages_timestamp_id
+ON chat_messages(timestamp, id);
+
+getMessages:
+SELECT * FROM chat_messages WHERE sessionId = ? ORDER BY timestamp ASC, id ASC;
+
+getMessagesSync:
+SELECT * FROM chat_messages WHERE sessionId = ? ORDER BY timestamp ASC, id ASC;
+
+getAllMessagesForBackup:
+SELECT * FROM chat_messages ORDER BY sessionId ASC, timestamp ASC, id ASC;
+
+getRecentMessages:
+SELECT * FROM chat_messages WHERE sessionId = ? ORDER BY timestamp DESC, id DESC LIMIT ?;
+
+getMessagesBefore:
+SELECT * FROM chat_messages WHERE sessionId = ? AND (timestamp < ? OR (timestamp = ? AND id < ?)) ORDER BY timestamp DESC, id DESC LIMIT ?;
+
+getMaxId:
+SELECT MAX(id) FROM chat_messages;
+
+getLastUserMessageTime:
+SELECT MAX(timestamp) FROM chat_messages WHERE sessionId = ? AND isMe = 1;
+
+getMessageCount:
+SELECT COUNT(*) FROM chat_messages;
+
+getMessageCountPerSender:
+SELECT senderName, COUNT(*) AS cnt FROM chat_messages WHERE isMe = 0 AND senderName != '' AND senderName != '系统' AND sessionId NOT LIKE 'group_%' GROUP BY senderName ORDER BY cnt DESC;
+
+getMessageCountPerSenderSince:
+SELECT senderName, COUNT(*) AS cnt FROM chat_messages WHERE isMe = 0 AND senderName != '' AND senderName != '系统' AND sessionId NOT LIKE 'group_%' AND timestamp >= ? GROUP BY senderName ORDER BY cnt DESC;
+
+getMessagesInRange:
+SELECT * FROM chat_messages WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC, id ASC;
+
+searchMessagesInSession:
+SELECT * FROM chat_messages
+WHERE sessionId = ? AND content LIKE ?
+ORDER BY timestamp DESC, id DESC
+LIMIT ?;
+
+getMessagesBySessionInRange:
+SELECT * FROM chat_messages
+WHERE sessionId = ? AND timestamp BETWEEN ? AND ?
+ORDER BY timestamp ASC, id ASC;
+
+getMessageDatesBySession:
+SELECT DISTINCT strftime('%Y-%m-%d', timestamp / 1000, 'unixepoch', '+8 hours') AS day
+FROM chat_messages
+WHERE sessionId = ?
+ORDER BY day DESC;
+
+insertMessage:
+INSERT INTO chat_messages(id, sessionId, senderId, senderName, content, type, mode, emotion, activity, location, narration, segmentGroup, intimacyChange, timestamp, isMe)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteSessionMessages:
+DELETE FROM chat_messages WHERE sessionId = ?;
+
+deleteMessage:
+DELETE FROM chat_messages WHERE id = ?;
+
+-- Retention deletion must never touch rows whose timestamp is not a real date. The legacy repair in
+-- DatabaseCompatibility rewrites rows without a timestamp to values one second before their neighbour,
+-- which lands in 1970 whenever that neighbour was stored in seconds - and the sweep then deleted the
+-- very rows it had just repaired. saneFloor is 2000-01-01: the app did not exist before it.
+deleteOldMessages:
+DELETE FROM chat_messages WHERE timestamp < :cutoff AND timestamp >= :saneFloor;
+
+deleteAllMessages:
+DELETE FROM chat_messages;
+
+insertAllMessages:
+INSERT INTO chat_messages(id, sessionId, senderId, senderName, content, type, mode, emotion, activity, location, narration, segmentGroup, intimacyChange, timestamp, isMe)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+insertMessageIfAbsent:
+INSERT OR IGNORE INTO chat_messages(id, sessionId, senderId, senderName, content, type, mode, emotion, activity, location, narration, segmentGroup, intimacyChange, timestamp, isMe)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateContent:
+UPDATE chat_messages SET content = ? WHERE id = ?;
+
+updateType:
+UPDATE chat_messages SET type = ? WHERE id = ?;
+
+moveMessagesToSession:
+UPDATE chat_messages SET sessionId = ? WHERE sessionId = ?;
+
+getMessageById:
+SELECT * FROM chat_messages WHERE id = ?;
+
+countMessagesBySession:
+SELECT COUNT(*) FROM chat_messages WHERE sessionId = ?;
+
+getMessagesAfterCursor:
+SELECT * FROM chat_messages WHERE sessionId = ? AND id > ? AND timestamp >= ?
+ORDER BY id ASC LIMIT ?;
+
+replaceMessageContentIfUnchanged:
+UPDATE chat_messages SET content = ? WHERE id = ? AND content = ?;
+
+-- A bounded chronological window for search navigation; never load the entire conversation.
+getMessagesAfterPosition:
+SELECT * FROM chat_messages WHERE sessionId = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
+ORDER BY timestamp ASC, id ASC LIMIT ?;
