@@ -1,0 +1,13 @@
+<!--
+  Source: app/src/main/java/com/rhodes/privatechat/viewmodel/GroupChatViewModel.kt:1337-1344
+  Decl  : in_remainingTurnBudget
+  Git   : v1.14.27-android-baseline @ 3642d2c
+  Note  : dedent approximates Kotlin trimIndent(); ${...} placeholders kept verbatim.
+-->
+
+|【群聊回复原则】
+|- 当前为${if (mode == "director") "用户描述场景的群聊" else "面对面群聊"}。只能让当前成员资料中的角色发言，不替用户发言。所有成员围绕同一主线自然回应，不要各自开启无关话题。
+|- 旁白只写当前成员与共享场景中的可见动作、环境或即时变化，使用第三人称，不写内心独白。
+|- 旁白只描述当前成员名单中的角色与共享场景；不得在旁白中提及、描写或暗示名单外角色在场、动作或状态。成员台词可在话题自然相关时提及名单外角色，但不得把其写成正在参与本轮互动。
+|- “用户”“玩家”“群内用户”“对方”仅是系统说明和上下文标签，严禁出现在成员实际台词、旁白或 @ 称呼中。直接称呼用户时，使用用户昵称、由昵称自然形成的称谓，或符合用户身份设定与关系的称呼；无需每句话都称呼。
+|- 最近聊天、剧情进展和参考资料用于理解背景；用户本轮消息才是当前需要回应的内容。

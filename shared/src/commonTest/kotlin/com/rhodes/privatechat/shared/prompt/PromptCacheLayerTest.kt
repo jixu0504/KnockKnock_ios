@@ -1,0 +1,459 @@
+package com.rhodes.privatechat.shared.prompt
+
+import com.rhodes.privatechat.shared.settings.PromptTemplateMigration
+import com.rhodes.privatechat.shared.settings.SettingsRepository
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.test.Test
+
+class PromptCacheLayerTest {
+
+    @Test
+    fun automaticGroupTemplateRequiresConcreteProgressAndNaturalClosure() {
+        val template = PromptTemplates.get("group", "auto")
+
+        assertTrue(template.contains("推进决策"))
+        assertTrue(template.contains("已收束"))
+        assertTrue(template.contains("禁止重复"))
+        assertTrue(template.contains("自然停顿或收束"))
+        assertTrue(template.contains("GROUP_MODE_FORMAT"))
+    }
+
+    @Test
+    fun proactiveTemplateUsesTheActiveTagProtocolInsteadOfJson() {
+        val template = PromptTemplates.get("private", "proactive")
+
+        assertTrue(template.contains("【状态】"))
+        assertTrue(template.contains("【台词】"))
+        assertTrue(template.contains("不要 JSON"))
+        assertTrue(!template.contains("\"segments\""))
+    }
+
+    @Test
+    fun privateProtocolKeepsTurnStateInternal() {
+        val protocol = PromptModuleDefaults.outputProtocol("private", "online")
+        assertTrue(protocol.contains("【私聊回合状态】"))
+        assertTrue(protocol.contains("【当前主线】"))
+        assertTrue(protocol.contains("【用户本轮作用】"))
+        assertTrue(protocol.contains("【本轮新增推进】"))
+        assertTrue(protocol.contains("【未收束事项】"))
+        assertTrue(protocol.contains("不得在【旁白】、【台词】"))
+        assertTrue(protocol.contains("第一行必须是【状态】"))
+        assertTrue(protocol.contains("历史中的角色台词只用于理解对话内容"))
+        assertTrue(protocol.contains("亲密邀约"))
+        assertTrue(protocol.contains("成人互动请求"))
+        assertTrue(protocol.contains("必须在本轮【旁白】或【台词】中有直接对应"))
+        assertTrue(protocol.contains("【输出格式示例"))
+        assertTrue(protocol.contains("【当前主线】<当前正在处理的主线>"))
+    }
+
+    @Test
+    fun privateBehaviorDoesNotTreatIntentGuessAsUserFact() {
+        val behavior = PromptModuleDefaults.behavior("private", "online")
+        assertTrue(behavior.contains("不得把推测伪装成事实"))
+        assertTrue(behavior.contains("【私聊回合状态】"))
+        assertTrue(behavior.contains("【本轮增量】"))
+        assertTrue(behavior.contains("连续性不等于重复"))
+        assertTrue(behavior.contains("【未收束事项】"))
+        assertTrue(behavior.contains("【亲密互动】"))
+        assertTrue(behavior.contains("不得只换词重复"))
+    }
+
+    @Test
+    fun privateHypnosisRulesRequireVisibleAlteredBehavior() {
+        val behavior = PromptModuleDefaults.behavior("private", "offline")
+        assertTrue(behavior.contains("【本轮强制角色状态】"))
+        assertTrue(behavior.contains("不能抵消正在生效的状态"))
+    }
+
+    @Test
+    fun offlineNarrationProtocolKeepsUserActionsAndNarrationBoundaries() {
+        val protocol = PromptModuleDefaults.narrationProtocol("offline")
+
+        assertTrue(protocol.contains("不得使用“用户”"))
+        assertTrue(protocol.contains("用户昵称"))
+        assertTrue(protocol.contains("第一人称"))
+        assertTrue(protocol.contains("内部推断"))
+        assertTrue(protocol.contains("旁白】与紧接的【台词】必须相关，但不得表达同一信息"))
+        assertTrue(protocol.contains("同义重复"))
+        assertTrue(protocol.contains("即时反应对"))
+        assertTrue(protocol.contains("第一段可见内容必须是【旁白】"))
+        assertEquals("", PromptModuleDefaults.narrationProtocol("online"))
+    }
+
+    @Test
+    fun offlineProtocolsRequireInterleavedNarrationAndDialogue() {
+        val privateProtocol = PromptModuleDefaults.outputProtocol("private", "offline")
+        val groupProtocol = PromptModuleDefaults.outputProtocol("group", "director")
+
+        assertTrue(privateProtocol.contains("交叉排列"))
+        assertTrue(groupProtocol.contains("交叉"))
+        assertTrue(privateProtocol.contains("无法完全交叉"))
+        assertTrue(groupProtocol.contains("无法完全交叉"))
+        assertTrue(privateProtocol.contains("可以原样朗读"))
+        assertTrue(privateProtocol.contains("场景仍在继续"))
+    }
+
+    @Test
+    fun rollingSummaryStatusStartsIdleWithoutPendingRounds() {
+        val status = SettingsRepository.RollingSummaryStatus()
+
+        assertEquals("idle", status.state)
+        assertEquals(0, status.pendingRounds)
+    }
+
+    @Test
+    fun offlineTemplateKeepsTheUserReferenceInRuntimeContext() {
+        val template = PromptTemplates.get("private", "offline")
+
+        assertTrue(template.contains("与本轮资料中的用户面对面互动"))
+        assertFalse(template.contains("与{{USER_NAME}}面对面互动"))
+    }
+    private fun layers(replacements: Map<String, String>): CachePromptLayers {
+        val template = """
+            【规则】你是{{OPERATOR_NAME}}。
+            时间：{{CURRENT_TIME}}
+            记忆：{{MEMORY_V2_CONTEXT}}
+            用户：{{USER_CONTENT}}
+            输出：JSON。
+        """.trimIndent()
+        return CachePromptLayering.build(
+            template,
+            replacements,
+            setOf("CURRENT_TIME", "MEMORY_V2_CONTEXT", "USER_CONTENT")
+        ) { values ->
+            values.entries.fold(template) { rendered, (key, value) -> rendered.replace("{{$key}}", value) }.trim()
+        }
+    }
+
+    @Test
+    fun cacheSystemIsStableWhenRuntimeValuesChange() {
+        val first = layers(mapOf(
+            "OPERATOR_NAME" to "阿米娅",
+            "CURRENT_TIME" to "08:00",
+            "MEMORY_V2_CONTEXT" to "昨天一起吃饭",
+            "USER_CONTENT" to "早上好"
+        ))
+        val second = layers(mapOf(
+            "OPERATOR_NAME" to "阿米娅",
+            "CURRENT_TIME" to "22:00",
+            "MEMORY_V2_CONTEXT" to "刚刚完成任务",
+            "USER_CONTENT" to "晚安"
+        ))
+
+        assertEquals(first.system, second.system)
+        assertFalse(first.system.contains("08:00"))
+        assertFalse(first.system.contains("昨天一起吃饭"))
+        assertFalse(first.system.contains("早上好"))
+        assertTrue(first.runtimeContext.contains("08:00"))
+        assertTrue(first.runtimeContext.contains("昨天一起吃饭"))
+        assertFalse(first.runtimeContext.contains("早上好"))
+    }
+
+    @Test
+    fun cacheSystemIsStableWhenRuntimeValuesAppearOrDisappear() {
+        val empty = layers(mapOf(
+            "OPERATOR_NAME" to "阿米娅",
+            "CURRENT_TIME" to "",
+            "MEMORY_V2_CONTEXT" to "",
+            "USER_CONTENT" to ""
+        ))
+        val populated = layers(mapOf(
+            "OPERATOR_NAME" to "阿米娅",
+            "CURRENT_TIME" to "08:00",
+            "MEMORY_V2_CONTEXT" to "昨天一起吃饭",
+            "USER_CONTENT" to "你好"
+        ))
+
+        assertEquals(empty.system, populated.system)
+        assertTrue(empty.system.contains("见本轮资料"))
+        assertEquals("【本轮资料】\n暂无与本轮相关的补充资料。", empty.runtimeContext)
+    }
+
+    @Test
+    fun staticValuesRemainInCacheSystem() {
+        val result = layers(mapOf(
+            "OPERATOR_NAME" to "阿米娅",
+            "CURRENT_TIME" to "08:00",
+            "MEMORY_V2_CONTEXT" to "无",
+            "USER_CONTENT" to "你好"
+        ))
+
+        assertTrue(result.system.contains("阿米娅"))
+        assertTrue(result.system.contains("见本轮资料"))
+    }
+
+    @Test
+    fun allShippedChatTemplatesKeepTheirSystemStableAcrossRuntimeChanges() {
+        val modes = listOf(
+            "private" to "online", "private" to "offline", "private" to "director",
+            "private" to "proactive",
+            "group" to "online", "group" to "offline", "group" to "director", "group" to "auto",
+            "moment" to "", "moment_comment" to "", "diary" to ""
+        )
+        modes.forEach { (type, mode) ->
+            val template = PromptTemplates.get(type, mode)
+            val runtime = PromptPlaceholderRegistry.runtimeKeys(type, mode)
+            val first = PromptPlaceholderRegistry.allowed(type, mode).associateWith { key -> if (key in runtime) "first-$key" else "fixed-$key" }
+            val second = PromptPlaceholderRegistry.allowed(type, mode).associateWith { key -> if (key in runtime) "second-$key" else "fixed-$key" }
+            val render: (Map<String, String>) -> String = { values ->
+                values.entries.fold(template) { rendered, (key, value) -> rendered.replace("{{$key}}", value) }.trim()
+            }
+            val firstLayer = CachePromptLayering.build(template, first, runtime, render)
+            val secondLayer = CachePromptLayering.build(template, second, runtime, render)
+            assertEquals(firstLayer.system, secondLayer.system, "$type/$mode")
+        }
+    }
+
+    @Test
+    fun runtimeContextUsesStableKeyOrderingAndNeverIncludesUserContent() {
+        val template = """
+            角色：{{OPERATOR_NAME}}
+            时间：{{CURRENT_TIME}}
+            记忆：{{MEMORY_V2_CONTEXT}}
+            用户：{{USER_CONTENT}}
+        """.trimIndent()
+        val replacements = linkedMapOf(
+            "USER_CONTENT" to "不能进入运行时资料的本轮输入",
+            "MEMORY_V2_CONTEXT" to "相关记忆",
+            "CURRENT_TIME" to "09:30",
+            "OPERATOR_NAME" to "阿米娅"
+        )
+        val layer = CachePromptLayering.build(
+            template = template,
+            replacements = replacements,
+            dynamicKeys = setOf("USER_CONTENT", "MEMORY_V2_CONTEXT", "CURRENT_TIME")
+        ) { values ->
+            values.entries.fold(template) { rendered, (key, value) -> rendered.replace("{{$key}}", value) }.trim()
+        }
+
+        assertEquals(
+            "【当前时间】\n09:30\n【可能相关的过往经历】\n相关记忆",
+            layer.runtimeContext
+        )
+        assertFalse(layer.runtimeContext.contains("不能进入运行时资料的本轮输入"))
+        assertFalse(layer.system.contains("不能进入运行时资料的本轮输入"))
+    }
+
+    @Test
+    fun runtimeContextUsesNaturalLabelsInsteadOfInternalPlaceholderNames() {
+        val template = """
+            进展：{{SHORT_TERM_SUMMARY}}
+            群聊：{{GROUP_CONTEXT}}
+            动态：{{RECENT_SOCIAL_CONTEXT}}
+        """.trimIndent()
+        val layer = CachePromptLayering.build(
+            template = template,
+            replacements = mapOf(
+                "SHORT_TERM_SUMMARY" to "刚刚约好晚些再聊",
+                "GROUP_CONTEXT" to "群里在讨论晚餐",
+                "RECENT_SOCIAL_CONTEXT" to "阿米娅发了一条动态"
+            ),
+            dynamicKeys = setOf("SHORT_TERM_SUMMARY", "GROUP_CONTEXT", "RECENT_SOCIAL_CONTEXT")
+        ) { values ->
+            values.entries.fold(template) { rendered, (key, value) -> rendered.replace("{{$key}}", value) }.trim()
+        }
+
+        assertTrue(layer.runtimeContext.contains("【最近聊天进展】"))
+        assertTrue(layer.runtimeContext.contains("【从群聊得知的近况】"))
+        assertTrue(layer.runtimeContext.contains("【近期公开动态与评论】"))
+        assertFalse(layer.runtimeContext.contains("SHORT_TERM_SUMMARY"))
+        assertFalse(layer.runtimeContext.contains("GROUP_CONTEXT"))
+        assertFalse(layer.runtimeContext.contains("RECENT_SOCIAL_CONTEXT"))
+    }
+
+    @Test
+    fun runtimeContextExcludesDynamicKeysNotReferencedByTemplate() {
+        val template = """
+            角色：{{OPERATOR_NAME}}
+            时间：{{CURRENT_TIME}}
+        """.trimIndent()
+        val layer = CachePromptLayering.build(
+            template = template,
+            replacements = mapOf(
+                "OPERATOR_NAME" to "阿米娅",
+                "CURRENT_TIME" to "09:30",
+                "MEMORY_V2_CONTEXT" to "不应发送的无关记忆",
+                "RECENT_SOCIAL_CONTEXT" to "不应发送的无关动态"
+            ),
+            dynamicKeys = setOf("CURRENT_TIME", "MEMORY_V2_CONTEXT", "RECENT_SOCIAL_CONTEXT")
+        ) { values ->
+            values.entries.fold(template) { rendered, (key, value) -> rendered.replace("{{$key}}", value) }.trim()
+        }
+
+        assertEquals("【当前时间】\n09:30", layer.runtimeContext)
+        assertFalse(layer.runtimeContext.contains("无关记忆"))
+        assertFalse(layer.runtimeContext.contains("无关动态"))
+    }
+
+    @Test
+    fun shippedNonChatTemplatesKeepTheirDeclaredPlaceholdersAvailable() {
+        val expected = mapOf(
+            "moment" to setOf("OPERATOR_NAME", "CURRENT_TIME", "MOMENT_TRIGGER_TYPE", "MOMENT_MIN_CHARS"),
+            "moment_comment" to setOf("COMMENTER_NAME", "POST_CONTENT", "COMMENT_TASK", "COMMENT_MIN_CHARS"),
+            "diary" to setOf("OPERATOR_NAME", "YESTERDAY_DATE", "PRIVATE_DAILY_SUMMARY", "DIARY_MIN_CHARS"),
+            "dispatch" to setOf("TASK_TYPE", "MEMBER_PROFILES", "DISPATCH_MIN_CHARS")
+        )
+
+        expected.forEach { (type, placeholders) ->
+            val allowed = PromptPlaceholderRegistry.allowed(type)
+            assertTrue(allowed.containsAll(placeholders), "$type should expose all compatibility placeholders")
+        }
+    }
+
+    @Test
+    fun allShippedTemplatePlaceholdersAreAllowedForTheirSurface() {
+        val templates = listOf(
+            "private" to "online", "private" to "offline", "private" to "director", "private" to "proactive",
+            "group" to "online", "group" to "offline", "group" to "director", "group" to "auto",
+            "moment" to "", "moment_comment" to "", "diary" to "",
+            "dispatch" to "start", "dispatch" to "progress", "dispatch" to "ending"
+        )
+        val tokenPattern = Regex("\\{\\{([A-Z0-9_]+)\\}\\}")
+
+        templates.forEach { (type, mode) ->
+            val tokens = tokenPattern.findAll(PromptTemplates.get(type, mode)).map { it.groupValues[1] }.toSet()
+            assertTrue(PromptPlaceholderRegistry.allowed(type, mode).containsAll(tokens), "$type/$mode contains unsupported placeholders: ${tokens - PromptPlaceholderRegistry.allowed(type, mode)}")
+        }
+    }
+
+    @Test
+    fun shippedPrivateTemplatesDoNotContainRetiredAnalysisPlaceholder() {
+        listOf("online", "offline", "director", "proactive").forEach { mode ->
+            assertFalse(PromptTemplates.get("private", mode).contains("{{AI_ANALYSIS}}"), "private/$mode")
+        }
+    }
+
+    @Test
+    fun promptTemplateVersionAdvancesForTheCurrentPromptRevision() {
+        // 36：主动消息模板改为"必须具体、禁空泛开场、去掉本轮简述"。
+        // 37：私聊/群聊模板补充语域与"只写确认过的现场"，需要推送给没有自定义过提示词的玩家。
+        // 38：群聊输出协议与固定行为加入成员【心情】/【成员情绪】，需要推送给没有自定义过提示词的玩家。
+        // 39：私聊与群聊加入共享真人感交互层，改善意图判断、情绪延续与消息节奏。
+        assertEquals(39, PromptTemplates.VERSION)
+    }
+
+    @Test
+    fun chatPromptsCarryTheHumanLikeBehaviourLayer() {
+        val privateBehavior = PromptModuleDefaults.behavior("private", "offline")
+        val groupBehavior = PromptModuleDefaults.behavior("group", "offline")
+        listOf("private" to privateBehavior, "group" to groupBehavior).forEach { (surface, text) ->
+            assertTrue(text.contains("【说话方式（和内容同等重要）】"), "$surface 必须有说话方式")
+            assertTrue(text.contains("陪伴基调"), "$surface 必须有陪伴基调/群聊陪伴基调")
+            assertTrue(text.contains("把话头推回"), "$surface 必须禁止把话头推回去")
+            assertTrue(text.contains("只能写你确认过的现场"), "$surface 必须限制凭空补现场")
+            assertTrue(text.contains("【冲突时的优先级】"), "$surface 必须有冲突优先级")
+        }
+        assertTrue(privateBehavior.contains("【每轮开口前先过一遍（内部，不要写出来）】"), "私聊必须有每轮四问")
+        assertTrue(privateBehavior.contains("【怎么读用户这句话（按信号走，不要过度分析）】"), "私聊必须有信号表")
+        assertTrue(privateBehavior.contains("【话题的生命周期】"), "私聊必须有话题生命周期")
+        assertTrue(groupBehavior.contains("【怎么读用户这句话（按信号走）】"), "群聊必须有信号表")
+    }
+
+    @Test
+    fun proactiveTemplateForbidsVagueOpeningsAndRequiresConcreteMaterial() {
+        val template = PromptTemplates.get("private", "proactive")
+        assertTrue(template.contains("严禁空泛开场"), "必须禁止空泛开场")
+        assertTrue(template.contains("具体锚点"), "必须要求具体锚点")
+        assertTrue(template.contains("不得复述你上一条"), "必须禁止复读上一条")
+        assertTrue(template.contains("{{LONG_TERM_IMPRESSION}}"), "必须带长期印象")
+        assertFalse(template.contains("本轮简述"), "不再要求写内部简述，省下输出预算")
+    }
+
+    @Test
+    fun shippedGroupTemplatesUseTheRuntimeTagProtocolInsteadOfJson() {
+        listOf("online", "offline", "director", "auto").forEach { mode ->
+            val template = PromptTemplates.get("group", mode)
+            assertFalse(template.contains("JSON", ignoreCase = true), "group/$mode must not prescribe JSON")
+            assertFalse(template.contains("speaker="), "group/$mode must not prescribe a JSON schema")
+            assertFalse(template.contains("{{GROUP_TURN_GUIDANCE}}"), "group/$mode must not include retired planner guidance")
+        }
+    }
+
+    @Test
+    fun groupProtocolKeepsTurnStateAndIntimateTopicsInternal() {
+        val protocol = PromptModuleDefaults.outputProtocol("group", "offline")
+        val behavior = PromptModuleDefaults.behavior("group", "offline")
+
+        assertTrue(protocol.contains("【群聊回合状态】"))
+        assertTrue(protocol.contains("亲密邀约"))
+        assertTrue(protocol.contains("成人互动请求"))
+        assertTrue(protocol.contains("成员台词或旁白中有直接依据"))
+        assertTrue(behavior.contains("【群聊亲密互动】"))
+        assertTrue(behavior.contains("不得让所有成员只重复"))
+        assertTrue(behavior.contains("未确认现场无人"))
+    }
+
+    @Test
+    fun groupOfflineRulesKeepFaceToFaceMediumAndRequireNarrationByPrompt() {
+        val offlineTemplate = PromptTemplates.get("group", "offline")
+        val directorTemplate = PromptTemplates.get("group", "director")
+        val behavior = PromptModuleDefaults.behavior("group", "offline")
+        val protocol = PromptModuleDefaults.outputProtocol("group", "offline")
+
+        assertTrue(offlineTemplate.contains("线上群消息"))
+        assertTrue(directorTemplate.contains("线上群消息"))
+        assertTrue(behavior.contains("消息提示音"))
+        assertTrue(protocol.contains("每轮至少输出一段旁白"))
+        assertTrue(protocol.contains("第一段可见内容必须是【旁白】"))
+    }
+
+    @Test
+    fun groupRegistryIncludesKnowledgeContext() {
+        assertTrue("__KNOWLEDGE_BASE_CONTEXT" in PromptPlaceholderRegistry.allowed("group"))
+        assertTrue("__KNOWLEDGE_BASE_CONTEXT" in PromptPlaceholderRegistry.recommended("group"))
+    }
+
+    @Test
+    fun groupProtocolRequiresAllMembersAndAtLeastOneNarration() {
+        val protocol = PromptModuleDefaults.outputProtocol("group", "offline")
+
+        assertTrue(protocol.contains("每位当前成员本轮都必须发言"))
+        assertTrue(protocol.contains("每轮至少输出一段旁白"))
+        assertTrue(protocol.contains("不得只换词重复前一位成员"))
+    }
+
+    @Test
+    fun privateIdentityStaysInTheCacheablePromptPrefix() {
+        val runtime = PromptPlaceholderRegistry.runtimeKeys("private", "online")
+
+        assertFalse("OPERATOR_NAME" in runtime, "operator name must stay cacheable")
+        assertFalse("OPERATOR_TITLE" in runtime, "operator title must stay cacheable")
+        assertFalse("OPERATOR_PERSONA" in runtime, "operator persona must stay cacheable")
+        assertFalse("OPERATOR_GENDER" in runtime, "operator gender must stay cacheable")
+    }
+
+    @Test
+    fun nonChatRuntimeKeysKeepVolatileContentOutOfTheSystemPrefix() {
+        val expectedRuntimeKeys = mapOf(
+            "moment" to setOf("CURRENT_TIME", "RECENT_MEMORIES", "RECENT_POSTS", "USER_NAME"),
+            "moment_comment" to setOf("CURRENT_TIME", "POST_CONTENT", "COMMENT_CONTEXT", "COMMENT_TASK"),
+            "diary" to setOf("CURRENT_DATE", "YESTERDAY_DATE", "PRIVATE_SUMMARY", "RECENT_MEMORIES")
+        )
+
+        expectedRuntimeKeys.forEach { (type, keys) ->
+            val runtime = PromptPlaceholderRegistry.runtimeKeys(type)
+            assertTrue(runtime.containsAll(keys), "$type runtime keys")
+            assertFalse("OPERATOR_PERSONA" in runtime, "$type operator persona must stay cacheable")
+        }
+    }
+
+    @Test
+    fun unknownPlaceholderIsDetectedBeforeTemplateDispatch() {
+        val template = "角色：{{OPERATOR_NAME}}，保留：{{FUTURE_COMPATIBILITY_TOKEN}}"
+        val rendered = template.replace("{{OPERATOR_NAME}}", "阿米娅")
+
+        assertEquals("角色：阿米娅，保留：{{FUTURE_COMPATIBILITY_TOKEN}}", rendered)
+        assertTrue(Regex("\\{\\{([A-Z0-9_]+)\\}\\}").containsMatchIn(rendered))
+    }
+
+    @Test
+    fun v18LegacyTemplateIsPreservedInsteadOfOverwritten() {
+        assertTrue(PromptTemplateMigration.preserveLegacyTemplate("用户历史模板", false, 18, 19))
+        assertFalse(PromptTemplateMigration.preserveLegacyTemplate("", false, 18, 19))
+        assertFalse(PromptTemplateMigration.preserveLegacyTemplate("用户模板", true, 18, 19))
+        assertFalse(PromptTemplateMigration.preserveLegacyTemplate("当前模板", false, 19, 19))
+    }
+
+}
