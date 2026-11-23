@@ -1,1 +1,0 @@
-ALTER TABLE operators ADD COLUMN memoryInjection TEXT NOT NULL DEFAULT '';
