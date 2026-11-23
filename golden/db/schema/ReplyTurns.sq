@@ -1,0 +1,126 @@
+CREATE TABLE IF NOT EXISTS reply_turns (
+    id TEXT NOT NULL PRIMARY KEY,
+    sessionId TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    triggerKind TEXT NOT NULL,
+    sourceMessageId INTEGER,
+    autoPlanToken TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT 'online',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attemptCount INTEGER NOT NULL DEFAULT 0,
+    nextAttemptAt INTEGER NOT NULL DEFAULT 0,
+    leaseToken TEXT NOT NULL DEFAULT '',
+    leaseUntil INTEGER NOT NULL DEFAULT 0,
+    responseMessageId INTEGER,
+    lastError TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL,
+    completedAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS reply_turns_manual_source_unique
+ON reply_turns(sessionId, sourceMessageId) WHERE sourceMessageId IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS reply_turns_group_auto_plan_unique
+ON reply_turns(sessionId, autoPlanToken) WHERE triggerKind = 'group_auto' AND autoPlanToken <> '';
+
+CREATE INDEX IF NOT EXISTS reply_turns_claimable
+ON reply_turns(status, nextAttemptAt, leaseUntil, sessionId);
+
+insertReplyTurnIfAbsent:
+INSERT OR IGNORE INTO reply_turns(id, sessionId, surface, triggerKind, sourceMessageId, autoPlanToken, mode, status, nextAttemptAt, createdAt, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?);
+
+getReplyTurn:
+SELECT * FROM reply_turns WHERE id = ?;
+
+getReplyTurnBySource:
+SELECT * FROM reply_turns WHERE sessionId = ? AND sourceMessageId = ?;
+
+claimReplyTurn:
+UPDATE reply_turns SET status = 'running', attemptCount = attemptCount + 1, leaseToken = ?, leaseUntil = ?, updatedAt = ?, lastError = ''
+WHERE id = ? AND status IN ('pending', 'failed', 'running') AND nextAttemptAt <= ?
+AND (status != 'running' OR leaseUntil <= ?);
+
+reserveReplyResponseId:
+UPDATE reply_turns SET responseMessageId = ?, updatedAt = ?
+WHERE id = ? AND status = 'running' AND leaseToken = ? AND responseMessageId IS NULL;
+
+completeReplyTurn:
+UPDATE reply_turns SET status = 'succeeded', leaseToken = '', leaseUntil = 0, completedAt = ?, updatedAt = ?, lastError = ''
+WHERE id = ? AND status = 'running' AND leaseToken = ?;
+
+isReplyTurnOwned:
+SELECT COUNT(*) > 0 FROM reply_turns WHERE id = ? AND status = 'running' AND leaseToken = ?;
+
+releaseReplyTurn:
+UPDATE reply_turns SET status = 'pending', leaseToken = '', leaseUntil = 0, nextAttemptAt = ?, updatedAt = ?, lastError = ?
+WHERE id = ? AND status = 'running' AND leaseToken = ?;
+
+failReplyTurn:
+UPDATE reply_turns SET status = 'failed', leaseToken = '', leaseUntil = 0, updatedAt = ?, lastError = ?
+WHERE id = ? AND status = 'running' AND leaseToken = ?;
+
+deleteReplyTurnsBySession:
+DELETE FROM reply_turns WHERE sessionId = ?;
+
+deleteAllReplyTurns:
+DELETE FROM reply_turns;
+
+deleteReplyTurnsBySourceMessageId:
+DELETE FROM reply_turns WHERE sourceMessageId = ?;
+
+countOrphanedSucceededReplyTurns:
+SELECT COUNT(*) FROM reply_turns
+WHERE sourceMessageId IS NOT NULL
+  AND status = 'succeeded'
+  AND NOT EXISTS (
+      SELECT 1 FROM chat_messages m
+      WHERE m.id = reply_turns.sourceMessageId AND m.sessionId = reply_turns.sessionId
+  );
+
+deleteOrphanedSucceededReplyTurns:
+DELETE FROM reply_turns
+WHERE sourceMessageId IS NOT NULL
+  AND status = 'succeeded'
+  AND NOT EXISTS (
+      SELECT 1 FROM chat_messages m
+      WHERE m.id = reply_turns.sourceMessageId AND m.sessionId = reply_turns.sessionId
+  );
+
+-- Terminal state for a turn whose message was folded into another turn (merged batch) or whose send
+-- was superseded. Every other query already ignores unknown states, so 'cancelled' can never be
+-- claimed, re-armed by the startup reconcile, or reported as an orphan.
+cancelReplyTurn:
+UPDATE reply_turns SET status = 'cancelled', leaseToken = '', leaseUntil = 0, updatedAt = ?, lastError = ?
+WHERE id = ? AND status IN ('pending', 'failed', 'running');
+
+-- Recalled source messages cancel only their own active turn and invalidate a running lease.
+cancelReplyTurnBySource:
+UPDATE reply_turns SET status = 'cancelled', leaseToken = '', leaseUntil = 0, updatedAt = ?, lastError = ?
+WHERE sessionId = ? AND sourceMessageId = ? AND status IN ('pending', 'failed', 'running');
+
+-- Turns a killed process left behind: the compensation worker is only enqueued while a send is in
+-- flight, so after a crash nothing ever retries them and the user's message stays unanswered.
+-- Manual turns only, and only recent ones, so this can never resurrect an old conversation.
+selectRetryableReplyTurns:
+SELECT id FROM reply_turns
+WHERE triggerKind = 'manual'
+  AND status IN ('pending', 'failed', 'running')
+  AND createdAt >= :since
+  AND nextAttemptAt <= :now
+  AND (status != 'running' OR leaseUntil <= :now)
+ORDER BY createdAt ASC
+LIMIT :limit;
+
+
+selectPendingMomentReplyTurns:
+SELECT id FROM reply_turns WHERE surface = 'moment_comment'
+AND status IN ('pending','running') ORDER BY createdAt ASC;
+
+getMomentReplyTurns:
+SELECT * FROM reply_turns WHERE surface = 'moment_comment' AND sessionId = ? ORDER BY createdAt ASC;
+
+resetFailedMomentReplyTurn:
+UPDATE reply_turns SET status = 'pending', attemptCount = 0, nextAttemptAt = ?, updatedAt = ?, lastError = ''
+WHERE id = ? AND surface = 'moment_comment' AND status = 'failed';
