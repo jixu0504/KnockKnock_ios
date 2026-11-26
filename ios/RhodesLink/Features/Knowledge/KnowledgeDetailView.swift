@@ -102,7 +102,7 @@ struct KnowledgeDetailView: View {
         .knockConfirmDialog(
             isPresented: $showDeleteConfirm,
             title: "删除知识库？",
-            message: "「\(book?.name ?? "")」的切块、干员关联与已建向量会一并删除，不可恢复。",
+            message: "「\(book?.name ?? "")」的切块、代理人关联与已建向量会一并删除，不可恢复。",
             confirmTitle: "删除",
             isDestructive: true
         ) {
@@ -128,18 +128,19 @@ struct KnowledgeDetailView: View {
     }
 
     private var knowledgeMenu: some View {
-        Menu {
-            Button {
-                renameText = book?.name ?? ""
-                showRename = true
-            } label: {
-                Label("重命名", systemImage: "pencil")
-            }
-            Button {
-                Task { await reloadAll() }
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
-            }
+        // 知识库操作菜单：敲敲自绘面板（替代系统 `Menu` 的 iOS 26 液态玻璃）
+        Button {
+            KnockMenuCenter.shared.present(
+                KnockMenuPresentation(actions: [
+                    KnockMenuAction("重命名", systemImage: "pencil") {
+                        renameText = book?.name ?? ""
+                        showRename = true
+                    },
+                    KnockMenuAction("刷新", systemImage: "arrow.clockwise") {
+                        Task { await reloadAll() }
+                    }
+                ])
+            )
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .heavy))
@@ -153,6 +154,7 @@ struct KnowledgeDetailView: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("知识库操作")
     }
 
@@ -173,7 +175,7 @@ struct KnowledgeDetailView: View {
                 HStack(spacing: KnockTokens.spacingM) {
                     label("\(book?.chunkCount ?? 0) 块", systemImage: "square.stack.3d.up")
                     label("\(book?.indexedChunkCount ?? 0) 已索引", systemImage: "checkmark.circle")
-                    label("\(book?.assignedOperatorCount ?? assignedOperatorIds.count) 位干员", systemImage: "person.2")
+                    label("\(book?.assignedOperatorCount ?? assignedOperatorIds.count) 位代理人", systemImage: "person.2")
                 }
                 if let preview = book?.rawContentPreview, !preview.isEmpty {
                     KnockText(
@@ -255,7 +257,7 @@ struct KnowledgeDetailView: View {
                         Task { await runIndex() }
                     } label: {
                         Label(book?.isIndexed == true ? "重建索引" : "开始索引", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
                     .disabled(isIndexing)
@@ -266,7 +268,7 @@ struct KnowledgeDetailView: View {
                             Task { await retryFailed() }
                         } label: {
                             Label("重试失败块（\(book?.failedChunkCount ?? 0)）", systemImage: "arrow.clockwise.circle")
-                                .font(.system(size: 13, weight: .heavy))
+                                .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 36))
                         .disabled(isIndexing)
@@ -278,7 +280,7 @@ struct KnowledgeDetailView: View {
                             Task { await invalidate() }
                         } label: {
                             Text("清除索引")
-                                .font(.system(size: 13, weight: .heavy))
+                                .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(KnockDangerButtonStyle(fullWidth: false, height: 36))
                         .disabled(isIndexing)
@@ -312,7 +314,7 @@ struct KnowledgeDetailView: View {
 
                 HStack(spacing: KnockTokens.spacingS) {
                     if operators.isEmpty {
-                        KnockText("干员列表为空", role: .caption, color: KnockTokens.textSecondary)
+                        KnockText("代理人列表为空", role: .caption, color: KnockTokens.textSecondary)
                     } else {
                         KnockDropdown(
                             items: operators.map { KnockSegmentItem(value: $0.id, title: $0.name) },
@@ -333,7 +335,7 @@ struct KnowledgeDetailView: View {
                         Task { await runRecall() }
                     } label: {
                         Label("召回测试", systemImage: "sparkle.magnifyingglass")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
                     .disabled(isRecalling || recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -344,7 +346,7 @@ struct KnowledgeDetailView: View {
                     }
                     Spacer(minLength: 0)
                     if !assignedOperatorIds.contains(recallOperatorId) {
-                        KnockText("该干员未关联本知识库", role: .caption, color: KnockTokens.textSecondary)
+                        KnockText("该代理人未关联本知识库", role: .caption, color: KnockTokens.textSecondary)
                     }
                 }
 
@@ -365,7 +367,7 @@ struct KnowledgeDetailView: View {
                                     KnockText(hit.book, role: .captionStrong, lineLimit: 1)
                                     Spacer(minLength: 0)
                                     Text("分数 \(hit.scoreText)")
-                                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(KnockTokens.textSecondary)
                                 }
                                 KnockText(hit.snippet, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2, lineLimit: 4)
@@ -382,15 +384,15 @@ struct KnowledgeDetailView: View {
     private var assignmentPanel: some View {
         KnockPanel {
             VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
-                KnockGroupTitle(title: "关联干员（召回范围）", systemImage: "person.2.badge.gearshape")
+                KnockGroupTitle(title: "关联代理人（召回范围）", systemImage: "person.2.badge.gearshape")
                 KnockText(
-                    "只有勾选的干员在私聊/群聊时会召回这本知识库；关联语义与 Android 角色知识库绑定一致。",
+                    "只有勾选的代理人在私聊/群聊时会召回这本知识库；关联语义与 Android 角色知识库绑定一致。",
                     role: .caption,
                     color: KnockTokens.textTertiary,
                     lineSpacing: 3
                 )
                 if operators.isEmpty {
-                    KnockText("干员列表为空（operators 表无数据）", role: .caption, color: KnockTokens.textSecondary)
+                    KnockText("代理人列表为空（operators 表无数据）", role: .caption, color: KnockTokens.textSecondary)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(operators.enumerated()), id: \.element.id) { index, item in
@@ -443,7 +445,7 @@ struct KnowledgeDetailView: View {
                             VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
                                 HStack(spacing: KnockTokens.spacingXS) {
                                     Text("#\(chunk.ordinal)")
-                                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(KnockTokens.textSecondary)
                                     KnockText(chunk.titleText, role: .captionStrong, lineLimit: 1)
                                     Spacer(minLength: 0)
@@ -477,7 +479,7 @@ struct KnowledgeDetailView: View {
                 }
                 .buttonStyle(KnockDangerButtonStyle())
                 KnockText(
-                    "删除会同时移除切块、干员关联与已建向量；不可恢复。",
+                    "删除会同时移除切块、代理人关联与已建向量；不可恢复。",
                     role: .caption,
                     color: KnockTokens.textTertiary,
                     lineSpacing: 2

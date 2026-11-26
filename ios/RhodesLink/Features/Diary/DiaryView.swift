@@ -45,7 +45,7 @@ struct DiaryView: View {
             AmbientBackground(parallax: 0, showsStandee: false)
 
             VStack(spacing: 0) {
-                KnockHeader(title: "干员日记", showsBack: true, onBack: { dismiss() }, trailing: {
+                KnockHeader(title: "代理人日记", showsBack: true, onBack: { dismiss() }, trailing: {
                     KnockCapsuleIconButton(
                         systemImage: "slider.horizontal.3",
                         variant: .neutral,
@@ -155,9 +155,9 @@ struct DiaryView: View {
                 HStack(spacing: KnockTokens.spacingM) {
                     KnockRowGlyph(systemImage: "book.closed.fill")
                     VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
-                        KnockText("干员们的内心独白", role: .rowTitle, lineLimit: 1)
+                        KnockText("代理人们的内心独白", role: .rowTitle, lineLimit: 1)
                         KnockText(
-                            "共 \(totalCount) 篇 · 未读干员 \(unreadCount) 位",
+                            "共 \(totalCount) 篇 · 未读代理人 \(unreadCount) 位",
                             role: .caption,
                             color: KnockTokens.textSecondary,
                             lineLimit: 1
@@ -202,10 +202,10 @@ struct DiaryView: View {
 
     private var emptyPanel: some View {
         KnockEmptyState(
-            title: filter == .unread ? "没有未读日记" : "还没有干员日记",
+            title: filter == .unread ? "没有未读日记" : "还没有代理人日记",
             message: filter == .unread
-                ? "所有干员日记都已读完。切换到「全部」可以回看历史独白。"
-                : "干员们还没有写下日记。日记由私聊/动态/关系事件后自动生成，或经备份恢复导入。"
+                ? "所有代理人日记都已读完。切换到「全部」可以回看历史独白。"
+                : "代理人们还没有写下日记。日记由私聊/动态/关系事件后自动生成，或经备份恢复导入。"
         )
     }
 

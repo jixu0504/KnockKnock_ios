@@ -1,11 +1,14 @@
 //
 //  KnockTypography.swift
-//  「敲敲」字体层级 + 描边加粗补偿 + Dynamic Type 接入（P0 基座）。
+//  「敲敲」字体层级 + 大标题微补偿 + Dynamic Type 接入（P0 基座）。
 //
 //  设计依据：docs/敲敲UI改版计划书-v1.1.md
 //  - 第 1.4 节「字体现实」：PingFang SC 最粗只有 Semibold(600)，**没有 Black/Heavy**；
-//    组合方案 = 系统字重 `.heavy` + 字号 +0.5~1pt + 描边加粗（≥16pt 文字四向偏移叠加），
-//    实测可达参考图约 85% 厚度；
+//    早期方案请求 `.heavy` 让系统回退最粗字面 + 描边加粗（≥16pt 四向偏移叠加）来近似参考图，
+//    但真机验证发现：请求超出字面能力的字重会触发最粗字面/合成加粗，叠加四向偏移后边缘发虚、
+//    多行重影（真机问题 4）。现改为**只请求真实存在字面**：标题 Semibold / 正文 Regular /
+//    小字 Medium，字号梯度保留敲敲的厚重观感；假加粗整体移除，仅大标题（≥20pt）保留
+//    ≤0.3pt 的同色微 shadow 做亚像素级厚度补偿（可全局关闭）。
 //  - 第 2.1 节：所有文字经 `KnockTypography` 出口，未来换 MiSans Heavy 只改一处。
 //
 //  实现说明：
@@ -13,13 +16,13 @@
 //    `@Environment(\.dynamicTypeSize)` 手工缩放，既保住实测字号（20/18/15/13…），
 //    又能响应系统字号 + 设置页「小/标准/大」三档（RootTabView 的 `.dynamicTypeSize`）；
 //  - 缩放结果按「字号 + 文本样式 + 档位」缓存，避免列表滚动时反复计算；
-//  - 描边补偿只在「整段 text 可复制」的 `KnockText` 内实现（任意 View 无法多向重绘），
+//  - 微补偿只在「整段 text 可复制」的 `KnockText` 内实现（任意 View 无法多向重绘），
 //    页面若保留裸 `Text`，用 `.knockFont(_:)` 只取字号/字重（无补偿）。
 //
 //  可访问性：
 //  - Dynamic Type 全档位（xSmall…accessibility5）参与缩放，不做固定高度裁切（行高均用 minHeight）；
-//  - `AccessibilityReduceTransparency` 与字体无关；「粗体文字」系统开关由 `.heavy` 字重天然满足；
-//  - 描边补偿可用 `knockStrokeCompensation` 环境值 / 设置键整体关闭（弱视/审美偏好）。
+//  - `AccessibilityReduceTransparency` 与字体无关；系统「粗体文字」开关由 SwiftUI 字体自身响应；
+//  - 微补偿可用 `knockStrokeCompensation` 环境值 / 设置键整体关闭（弱视/审美偏好）。
 //
 
 import SwiftUI
@@ -29,29 +32,29 @@ import UIKit
 
 /// 「敲敲」字体层级（计划书字号）；`KnockTypography` / `KnockText` / `.knockFont` 三处共用。
 enum KnockTypeRole: String, CaseIterable, Identifiable {
-    /// 画廊/首屏大标题 34pt heavy。
+    /// 画廊/首屏大标题 34pt semibold。
     case display
-    /// 品牌字 22pt heavy（顶栏 logo 右侧）。
+    /// 品牌字 22pt semibold（顶栏 logo 右侧）。
     case brand
-    /// 页面标题 20pt heavy（图 A 顶栏 / 弹窗标题）。
+    /// 页面标题 20pt semibold（图 A 顶栏 / 弹窗标题）。
     case pageTitle
-    /// 分组标题 14pt heavy（「绳网」/「+ 新建」）。
+    /// 分组标题 14pt semibold（「绳网」/「+ 新建」）。
     case sectionTitle
-    /// 列表行主标题 15pt heavy（图 B 胶囊行）。
+    /// 列表行主标题 15pt semibold（图 B 胶囊行）。
     case rowTitle
     /// 正文 17pt regular（设置项说明 / 正文）。
     case body
-    /// 聊天气泡 18pt heavy（图 A）。
+    /// 聊天气泡 18pt medium（图 A；正文强调，不用 heavy）。
     case bubble
     /// 辅助说明 13pt medium（时间戳 / 副标题）。
     case caption
-    /// 辅助强调 13pt heavy（Badge 文案 / 次级按钮）。
+    /// 辅助强调 13pt semibold（Badge 文案 / 次级按钮）。
     case captionStrong
-    /// 分段栏 / Tab 文案 13pt heavy。
+    /// 分段栏 / Tab 文案 13pt semibold。
     case tabLabel
-    /// 角标 11pt heavy。
+    /// 角标 11pt medium。
     case badge
-    /// E M P T Y 宽字距 15pt heavy（字距 8pt）。
+    /// E M P T Y 宽字距 15pt medium（字距 8pt）。
     case emptyPill
     /// 等宽诊断 12pt（自检日志 / hex 标签）。
     case mono
@@ -96,12 +99,20 @@ enum KnockTypeRole: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 设计字重：PingFang 最高 Semibold，因此统一请求 `.heavy` 让系统回退到最粗可用字重。
+    /// 设计字重（**只用 PingFang 真实存在的字面**）：
+    /// - 大字标题（display / brand / pageTitle）→ Semibold(600)，即 PingFang 最粗真实字面；
+    /// - 分组/行标题 → Semibold，靠字号与颜色分层，不再叠加假加粗；
+    /// - 正文 → Regular；气泡 → Medium；13pt 及以下小字 → Medium/Semibold（**13pt 及以下绝不用 .heavy**）。
+    ///
+    /// 为什么不请求 `.bold`/`.heavy`：PingFang SC 没有 Bold/Heavy 字面，请求超出字面能力的字重
+    /// 会走系统权重回退（挑最粗字面甚至合成加粗），真机边缘发虚、发糊（真机问题 4 根因）。
     var weight: Font.Weight {
         switch self {
+        case .display, .brand, .pageTitle: return .semibold
+        case .sectionTitle, .rowTitle: return .semibold
+        case .captionStrong, .tabLabel: return .semibold
         case .body: return .regular
-        case .caption, .mono: return .medium
-        default: return .heavy
+        case .bubble, .caption, .badge, .emptyPill, .mono: return .medium
         }
     }
 
@@ -109,12 +120,13 @@ enum KnockTypeRole: String, CaseIterable, Identifiable {
         self == .mono ? .monospaced : .default
     }
 
-    /// 字重可读名（画廊展示 / 自检日志）。
+    /// 字重可读名（画廊展示 / 自检日志）：与 `weight` 的语义真值一一对应。
     var weightName: String {
         switch self {
         case .body: return "regular"
-        case .caption, .mono: return "medium"
-        default: return "heavy"
+        case .bubble, .caption, .badge, .emptyPill, .mono: return "medium"
+        case .display, .brand, .pageTitle, .sectionTitle, .rowTitle, .captionStrong, .tabLabel:
+            return "semibold"
         }
     }
 
@@ -146,15 +158,21 @@ enum KnockTypeRole: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 描边加粗补偿只对 ≥16pt 文字生效（计划书 1.4）。
-    var supportsStrokeCompensation: Bool { baseSize >= 16 }
-
-    /// 四向偏移量（pt）：越大越粗，同时越容易糊；按字号分档。
-    var strokeOffset: CGFloat {
-        if baseSize >= 30 { return 0.45 }
-        if baseSize >= 20 { return 0.35 }
-        return 0.30
+    /// 大标题微补偿只对 ≥20pt 的标题类生效（display 34 / brand 22 / pageTitle 20）。
+    /// 正文、气泡、13pt 及以下小字**一律真字重渲染**，不叠加任何假加粗：
+    /// 真机问题 4 的根因就是「四向偏移 + 微 shadow」在正文/多行文字上被放大成灰边与重影。
+    var supportsStrokeCompensation: Bool {
+        switch self {
+        case .display, .brand, .pageTitle: return true
+        default: return false
+        }
     }
+
+    /// 同色微 shadow 半径（pt）：≤0.35 的亚像素级厚度补偿，避免把字形边缘糊出灰边。
+    var strokeShadowRadius: CGFloat { 0.30 }
+
+    /// 同色微 shadow 不透明度：只补一点厚度，不产生可见投影。
+    var strokeShadowOpacity: Double { 0.30 }
 }
 
 // MARK: - 字体出口
@@ -225,13 +243,15 @@ enum KnockTypography {
     private static var sizeCache: [String: CGFloat] = [:]
 }
 
-// MARK: - KnockText（带描边加粗补偿的整段文字）
+// MARK: - KnockText（统一文字组件 · 真字重渲染）
 
 /// 设计系统统一文字组件：
-/// - 字号/字重/字距全部来自 `KnockTypeRole`；
-/// - ≥16pt 角色自动做四向偏移叠加（`strokeOffset`）实现「PingFang 无 Black」的加粗补偿，
-///   可用环境值 `knockStrokeCompensation`（默认读 UserDefaults 全局开关）关闭；
-/// - 多行文本的 overlay 由同一 `Text` 值重复渲染，换行宽度与本体一致，不产生错位。
+/// - 字号/字重/字距全部来自 `KnockTypeRole`；**主体文字用真字重渲染**，不再做四向偏移叠加
+///   （真机问题 4：多份偏移副本会在字形边缘叠出灰边 / 多行重影，正文与气泡尤其明显）；
+/// - 只有 ≥20pt 的大标题（display / brand / pageTitle）在开关打开时保留 ≤0.3pt 的同色微 shadow，
+///   作为「PingFang 无 Black」的亚像素厚度补偿；可用环境值 `knockStrokeCompensation`
+///   （默认读 UserDefaults 全局开关）整体关闭；
+/// - 单份 `Text` 渲染：多行换行 / 行距 / 居中对齐与真字重完全一致，无错位风险。
 ///
 /// 用法：
 /// ```swift
@@ -274,28 +294,17 @@ struct KnockText: View {
     }
 
     var body: some View {
-        let isMultilineText = text.contains("\n")
         let compensationOn = strokeCompensation && role.supportsStrokeCompensation
         Group {
-            if compensationOn && !isMultilineText {
+            if compensationOn {
+                // 仅大标题：同色、≤0.3pt 的亚像素微 shadow，补一点字面厚度，不产生可见投影/灰边。
                 styledBase
-                    .overlay(alignment: .center) {
-                        styledBase.offset(x: role.strokeOffset, y: 0).accessibilityHidden(true)
-                    }
-                    .overlay(alignment: .center) {
-                        styledBase.offset(x: -role.strokeOffset, y: 0).accessibilityHidden(true)
-                    }
-                    .overlay(alignment: .center) {
-                        styledBase.offset(x: 0, y: role.strokeOffset).accessibilityHidden(true)
-                    }
-                    .overlay(alignment: .center) {
-                        styledBase.offset(x: 0, y: -role.strokeOffset).accessibilityHidden(true)
-                    }
-            } else if compensationOn {
-                // 多行文本（含显式 \n）：四向 overlay 会复制整段文本，行距/居中与本体不一致时
-                // 产生「行错位重影」；这里退回单份文本 + 同色微 shadow 近似加粗。
-                styledBase
-                    .shadow(color: color.opacity(0.45), radius: 0.35, x: 0, y: 0)
+                    .shadow(
+                        color: color.opacity(role.strokeShadowOpacity),
+                        radius: role.strokeShadowRadius,
+                        x: 0,
+                        y: 0
+                    )
             } else {
                 styledBase
             }

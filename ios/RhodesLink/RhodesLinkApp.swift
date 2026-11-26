@@ -27,14 +27,19 @@ struct RhodesLinkApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if KnockLaunchOptions.showsGallery {
-                // P0 设计系统画廊：`--knock-gallery`（可加 `--knock-appearance dark|light`）。
-                // 刻意**不实例化** AppEnvironment / AppRouter（避免冷启动初始化 KMP 桥），
-                // 画廊首帧更快、截图更稳定（专项页不再出现启动黑屏）。
-                KnockGalleryView()
-            } else {
-                RootShell()
+            Group {
+                if KnockLaunchOptions.showsGallery {
+                    // P0 设计系统画廊：`--knock-gallery`（可加 `--knock-appearance dark|light`）。
+                    // 刻意**不实例化** AppEnvironment / AppRouter（避免冷启动初始化 KMP 桥），
+                    // 画廊首帧更快、截图更稳定（专项页不再出现启动黑屏）。
+                    KnockGalleryView()
+                } else {
+                    RootShell()
+                }
             }
+            // 敲敲自绘长按菜单的唯一宿主（P5 收口）：浮在全部内容之上
+            // （Tab / 导航 / 列表滚动区 / 画廊），菜单面板不会被 ScrollView 裁剪。
+            .knockMenuHost()
         }
     }
 }

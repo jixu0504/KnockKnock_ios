@@ -85,13 +85,10 @@ struct GlassInputBar: View {
     private var attachmentButton: some View {
         Button(action: onAddAttachment) {
             Image(systemName: "plus")
-                .font(.system(size: 17, weight: .heavy))
+                .font(.system(size: 18, weight: .heavy))
                 .foregroundStyle(KnockTokens.textPrimary)
-                .frame(width: 36, height: 36)
-                .background(Circle().fill(KnockTokens.row))
-                .overlay {
-                    Circle().strokeBorder(fieldStrokeColor, lineWidth: KnockTokens.strokeWidth)
-                }
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(KnockTokens.plusCircle))
                 // 视觉 36pt、命中区补齐到 44pt
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -106,15 +103,20 @@ struct GlassInputBar: View {
         TextField("", text: $text, prompt: promptText, axis: .vertical)
             .lineLimit(1...5)
             .font(KnockTypography.font(.body, dynamicTypeSize: dynamicTypeSize))
-            .foregroundStyle(KnockTokens.textPrimary)
-            .tint(KnockTokens.electric)
+            .foregroundStyle(Color(hex: 0x0B0B0C))
+            .tint(KnockTokens.chatBlue)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background {
+                // 参考图：白色胶囊输入框（浅色主题补 1pt 描边分层）
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(KnockTokens.row)
+                    .fill(Color.white)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .strokeBorder(KnockTokens.strokeSubtleWhite, lineWidth: 1)
+                    }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -128,7 +130,7 @@ struct GlassInputBar: View {
     private var promptText: Text {
         Text(placeholder)
             .font(KnockTypography.font(.body, dynamicTypeSize: dynamicTypeSize))
-            .foregroundStyle(KnockTokens.textSecondary)
+            .foregroundStyle(Color(hex: 0x9A9A9A))
     }
 
     // MARK: 发送 / 停止（黄色圆形主 CTA）
@@ -152,17 +154,10 @@ struct GlassInputBar: View {
             .accessibilityLabel("停止生成")
         } else {
             Button(action: onSend) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .heavy))
-                    .foregroundStyle(canSend ? KnockTokens.onElectric : KnockTokens.textTertiary)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(canSend ? KnockTokens.electric : KnockTokens.rowPressed))
-                    .overlay {
-                        Circle().strokeBorder(
-                            canSend ? KnockTokens.electricRing : fieldStrokeColor,
-                            lineWidth: KnockTokens.strokeWidth
-                        )
-                    }
+                // 禁用态用「暗蓝」而非灰底：暗色主题下灰底几乎不可见，暗蓝仍能读出这是发送钮
+                KnockText("发送", role: .captionStrong, color: canSend ? .white : Color.white.opacity(0.55), lineLimit: 1)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(canSend ? KnockTokens.chatBlue : KnockTokens.chatBlue.opacity(0.26)))
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }

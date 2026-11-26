@@ -9,8 +9,8 @@
 //  - `--knock-chrome-proof`：顶栏/TabBar 专项验收页（标题居中 + 四槽等距 + 红 X 键），
 //    供 `screenshots/knock-p0-bars-fix*.png` 截图；
 //  - `--knock-exit-key`：红色 X 结束键专项页，供 `screenshots/knock-p0-exit-key*.png` 截图；
-//  - 顶部两个胶囊开关：纹理总开关（`knock_texture_enabled`）与字体描边补偿
-//    （`knock_stroke_compensation`），用于对比验收并验证「可全局关闭」；
+//  - 顶部两个胶囊开关：纹理总开关（`knock_texture_enabled`）与大标题微补偿
+//    （`knock_stroke_compensation`：只作用于 ≥20pt 标题的 ≤0.3pt 同色微 shadow，可全局关闭）；
 //  - 本页只组合 DesignSystem 组件，不含业务数据，故不依赖 `AppEnvironment` / `AppRouter`。
 //
 //  截图示例：
@@ -52,6 +52,12 @@ enum KnockLaunchOptions {
     static var showsExitKeySpec: Bool {
         ProcessInfo.processInfo.arguments.contains("--knock-exit-key")
     }
+
+    /// `--knock-typography-proof`：只渲染「字重梯度 / 假加粗对照」专项验收页
+    /// （一屏展示角色 → pt → weight，并给出标题 / 气泡正文样张，供 2× 放大裁切核对边缘清晰度）。
+    static var showsTypographyProof: Bool {
+        ProcessInfo.processInfo.arguments.contains("--knock-typography-proof")
+    }
 }
 
 // MARK: - 画廊
@@ -76,6 +82,8 @@ struct KnockGalleryView: View {
                 KnockChromeProofView()
             } else if KnockLaunchOptions.showsExitKeySpec {
                 KnockExitKeySpecView()
+            } else if KnockLaunchOptions.showsTypographyProof {
+                KnockTypographyProofView()
             } else {
                 galleryBody
             }
@@ -161,7 +169,7 @@ struct KnockGalleryView: View {
                         textureEnabled.toggle()
                         KnockPreferences.setTextureEnabled(textureEnabled)
                     }
-                    KnockChip(title: "描边补偿", systemImage: "bold", isSelected: strokeCompensation) {
+                    KnockChip(title: "标题微补偿", systemImage: "bold", isSelected: strokeCompensation) {
                         strokeCompensation.toggle()
                         KnockPreferences.setStrokeCompensationEnabled(strokeCompensation)
                     }
@@ -210,7 +218,7 @@ struct KnockGalleryView: View {
     // MARK: 02 字体层级
 
     private var typographySection: some View {
-        section("02 · 字体层级 TYPOGRAPHY（PingFang heavy + 描边补偿）") {
+        section("02 · 字体层级 TYPOGRAPHY（真字重 · 大标题轻补偿）") {
             KnockPanel {
                 VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
                     ForEach(KnockTypeRole.allCases) { role in
@@ -666,7 +674,7 @@ struct KnockChromeProofView: View {
                             }
                         }
 
-                        proofSection("E · 多行文本描边补偿（无重影）") {
+                        proofSection("E · 多行文本真字重渲染（无重影）") {
                             VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
                                 KnockText(
                                     "第一行：敲敲设计系统\n第二行：多行文本不再重影\n第三行：行距 / 居中对齐一致",
@@ -674,7 +682,7 @@ struct KnockChromeProofView: View {
                                     lineSpacing: 4
                                 )
                                 KnockDivider()
-                                KnockText("单行对照：四向描边补偿正常", role: .bubble)
+                                KnockText("单行对照：真字重渲染边缘清晰", role: .bubble)
                             }
                             .padding(KnockTokens.spacingL)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -820,6 +828,122 @@ struct KnockExitKeySpecView: View {
     }
 
     private func specSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+            KnockGroupTitle(title: title)
+            content()
+                .padding(KnockTokens.spacingL)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    RoundedRectangle(cornerRadius: KnockTokens.panelRadius, style: .continuous)
+                        .fill(KnockTokens.panel)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: KnockTokens.panelRadius, style: .continuous)
+                        .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                }
+        }
+    }
+}
+
+// MARK: - 字重梯度专项验收页（--knock-typography-proof）
+
+/// 字重梯度专项截图页（真机字重优化验收）：
+/// - 上半屏：全部 `KnockTypeRole` 一行样张 + 「角色 · pt · weight」标注（与画廊 02 一致）；
+/// - 中部：顶栏 / 页面标题大字样张（「联系人」「设置」「敲敲」）；
+/// - 底部：气泡正文「描边补偿开 / 关」并排样张，用于 2× 放大裁切核对字形边缘
+///   （重影 / 合成加粗毛边 / 灰边）。
+///
+/// 启动（配合 `--knock-appearance dark|light` 出深浅两套）：
+/// ```
+/// xcrun simctl launch booted com.sxbcjx.knockknock \
+///   --knock-gallery --knock-typography-proof --knock-appearance dark
+/// ```
+struct KnockTypographyProofView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            KnockHeader(
+                title: "字重梯度",
+                subtitle: "Typography · 真字重渲染",
+                showsBrand: true,
+                sideReserve: 104
+            )
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXL) {
+                    sampleSection("1 · 角色 → pt → weight（当前实现）") {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                            ForEach(KnockTypeRole.allCases) { role in
+                                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                                    KnockText(
+                                        role == .emptyPill ? "EMPTY" : "敲敲 Knock Aa",
+                                        role: role,
+                                        lineLimit: 1
+                                    )
+                                    KnockText(
+                                        "\(role.displayName) · \(Int(role.baseSize))pt · weight \(role.weightName)",
+                                        role: .mono,
+                                        color: KnockTokens.textSecondary,
+                                        lineLimit: 1
+                                    )
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+
+                    sampleSection("2 · 标题大字样张（2× 裁切核对边缘）") {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                            KnockText("联系人", role: .pageTitle, lineLimit: 1)
+                            KnockText("设置", role: .pageTitle, lineLimit: 1)
+                            KnockText("敲敲", role: .brand, lineLimit: 1)
+                        }
+                    }
+
+                    sampleSection("3 · 气泡正文样张（假加粗开 / 关对照）") {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                            bubbleSample(title: "标题微补偿开（默认设置；气泡不受影响）")
+                            bubbleSample(title: "标题微补偿关（纯真字重）")
+                                .environment(\.knockStrokeCompensation, false)
+                        }
+                    }
+                }
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.vertical, KnockTokens.spacingXL)
+            }
+        }
+        .background(KnockCamoBackground())
+        .environment(\.knockTextureEnabled, KnockPreferences.textureEnabled)
+        .environment(\.knockStrokeCompensation, KnockPreferences.strokeCompensationEnabled)
+    }
+
+    private func bubbleSample(title: String) -> some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+            KnockText(title, role: .mono, color: KnockTokens.textSecondary, lineLimit: 1)
+            KnockText("今天也想和你聊聊天，敲敲。", role: .bubble, lineLimit: 2)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(KnockTokens.bubbleIncoming)
+                }
+            KnockText(
+                "第一行：多行气泡正文不再重影\n第二行：真字重渲染边缘清晰",
+                role: .bubble,
+                lineSpacing: 4
+            )
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(KnockTokens.bubbleIncoming)
+            }
+        }
+    }
+
+    private func sampleSection<Content: View>(
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {

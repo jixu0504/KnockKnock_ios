@@ -52,9 +52,10 @@ enum RolesAutomation {
         switch rolesResult {
         case .success(let roles):
             let withSession = roles.filter(\.hasSession).count
-            let builtinAvatars = roles.filter { RoleAvatarProbe.description(avatarId: $0.avatarId).hasPrefix("builtin:") }.count
+            // builtin 值域仅解析兼容（旧 147 头像资源已删除，渲染走首字占位）
+            let builtinAvatars = roles.filter { RoleAvatarResolver.source(for: $0.avatarId).isBuiltin }.count
             SelfTestLog.add("roles selftest list count=\(roles.count) withSession=\(withSession) builtinAvatar=\(builtinAvatars) first=\(roles.first?.name ?? "-")")
-            SelfTestLog.add("roles selftest bundledAvatars=\(RoleAvatarProbe.bundledAvatarCount())/147")
+            SelfTestLog.add("roles selftest bundledAvatars=\(RoleAvatarProbe.bundledAvatarCount())/0 legacyAvatarsRemoved=true")
 
             guard let first = roles.first else {
                 SelfTestLog.add("roles selftest list empty")

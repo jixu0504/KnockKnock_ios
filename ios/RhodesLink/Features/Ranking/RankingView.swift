@@ -106,7 +106,7 @@ struct RankingView: View {
                     VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
                         KnockText("聊天排行榜", role: .rowTitle, lineLimit: 1)
                         KnockText(
-                            "\(snapshot?.rangeLabel ?? "历史") · \(snapshot?.dimensionLabel ?? "消息数") · 共 \(snapshot?.entries.count ?? 0) 位干员",
+                            "\(snapshot?.rangeLabel ?? "历史") · \(snapshot?.dimensionLabel ?? "消息数") · 共 \(snapshot?.entries.count ?? 0) 位代理人",
                             role: .caption,
                             color: KnockTokens.textSecondary,
                             lineLimit: 1
@@ -166,7 +166,7 @@ struct RankingView: View {
             HStack(spacing: KnockTokens.spacingS) {
                 KnockText("排名", role: .captionStrong, color: KnockTokens.textSecondary)
                     .frame(width: 38, alignment: .leading)
-                KnockText("干员", role: .captionStrong, color: KnockTokens.textSecondary)
+                KnockText("代理人", role: .captionStrong, color: KnockTokens.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 KnockText(dimension.valueColumnTitle, role: .captionStrong, color: KnockTokens.textSecondary)
                     .frame(width: 64, alignment: .trailing)
@@ -217,7 +217,7 @@ struct RankingView: View {
     private func rankBadge(rank: Int) -> some View {
         if rank <= 3 {
             Text("\(rank)")
-                .font(.system(size: 13, weight: .heavy))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(KnockTokens.onElectric)
                 .frame(width: 28, height: 28)
                 .background(Capsule(style: .continuous).fill(KnockTokens.electric))
@@ -228,7 +228,7 @@ struct RankingView: View {
                 .accessibilityLabel("第\(rank)名")
         } else {
             Text("#\(rank)")
-                .font(.system(size: 12, weight: .heavy))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(KnockTokens.textSecondary)
                 .frame(width: 28, height: 28)
                 .background(Capsule(style: .continuous).fill(KnockTokens.rowIconWell))
@@ -320,7 +320,7 @@ struct RankingView: View {
     private var emptyPanel: some View {
         KnockEmptyState(
             title: "暂无排名数据",
-            message: "先和干员聊几句，排行榜就会记录你们的消息数、互动天数与消费"
+            message: "先和代理人聊几句，排行榜就会记录你们的消息数、互动天数与消费"
         )
     }
 

@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GOLDEN_DIR="$SCRIPT_DIR"                                  # ios-port/golden/prompts
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../RhodesLink" && pwd)"   # RhodesLink/
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"   # 仓库根（本仓库布局：golden/ 在根下）
 TEST_RES="$REPO_ROOT/shared/src/commonTest/resources/golden/prompts"
 # KGP 不把 commonTest resources 合入 Android 单测 classpath（processDebugUnitTestJavaRes 只收
 # androidUnitTest），JVM 路径再复制一份；iOS 侧由 commonTest resources 进 test bundle。
@@ -67,6 +67,8 @@ for i in $(seq 1 60); do
   sleep 30
 done
 
-echo "[sync] 运行 :shared:testDebugUnitTest --tests \"*GoldenPrompt*\""
-./gradlew :shared:testDebugUnitTest --tests "*GoldenPrompt*" --no-daemon
+GRADLE_BIN="${GRADLE_BIN:-$HOME/.gradle/wrapper/dists/gradle-8.10.2-all/ezxzryhqdbf6stsda8vkgso9x/gradle-8.10.2/bin/gradle}"
+export JAVA_HOME="${JAVA_HOME:-$HOME/jdks/jdk-21.0.13.1+2/Contents/Home}"
+echo "[sync] 运行 :shared:iosSimulatorArm64Test --tests \"*GoldenPrompt*\"（本仓库无 Android SDK，金样门禁走 iOS 模拟器测试）"
+"$GRADLE_BIN" :shared:iosSimulatorArm64Test --tests "*GoldenPrompt*" --no-daemon
 echo "[sync] 金样 diff 门禁通过"

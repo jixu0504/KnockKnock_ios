@@ -187,11 +187,11 @@ class OperatorBridge internal constructor(
 
     private suspend fun save(id: String, draft: OperatorDraftDto, isNew: Boolean): OperatorEditDto {
         val cleanName = draft.name.trim()
-        if (cleanName.isBlank()) throw IllegalStateException("请输入干员名称")
+        if (cleanName.isBlank()) throw IllegalStateException("请输入代理人名称")
         val existing = if (isNew) null else chatRepo.operators.getOperator(id)
         val duplicate = chatRepo.operators.getAllOperatorsSync()
             .firstOrNull { it.id != id && it.name.trim().equals(cleanName, ignoreCase = true) }
-        if (duplicate != null) throw IllegalStateException("已存在名为“$cleanName”的干员，请使用其他名称")
+        if (duplicate != null) throw IllegalStateException("已存在名为“$cleanName”的代理人，请使用其他名称")
 
         // 槽位读写（Android OperatorEditScreen.kt:141-146,181-192）
         val privateActive = draft.privateActiveSlot.coerceIn(1, 3)
@@ -220,7 +220,7 @@ class OperatorBridge internal constructor(
             id = id,
             name = cleanName,
             title = draft.tags.trim(),
-            description = draft.intro.trim().ifBlank { "$cleanName，罗德岛干员" },
+            description = draft.intro.trim().ifBlank { "$cleanName，新艾利都代理人" },
             gender = draft.gender.trim().ifBlank { existing?.gender.orEmpty() },
             avatarUri = draft.avatarId.trim().ifBlank { existing?.avatarUri.orEmpty() },
             location = existing?.location ?: "宿舍",

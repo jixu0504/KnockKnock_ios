@@ -255,7 +255,7 @@ class MomentsBridge internal constructor(
     fun markCommentsRead(onDone: (String?) -> Unit) {
         workScope.launch {
             try {
-                chatRepo.markAllCommentsRead(settingsRepo.userName.ifBlank { "博士" })
+                chatRepo.markAllCommentsRead(settingsRepo.userName.ifBlank { "绳匠" })
                 val maxId = chatRepo.getMaxCommentId()
                 if (maxId != null && maxId > 0) settingsRepo.lastSeenCommentId = maxId
                 mainScope.launch { onDone(null) }
@@ -299,7 +299,7 @@ class MomentsBridge internal constructor(
     }
 
     /** 当前用户昵称/头像（列表头部/发布器展示用；同步读 settings）。 */
-    fun userName(): String = settingsRepo.userName.ifBlank { "博士" }
+    fun userName(): String = settingsRepo.userName.ifBlank { "绳匠" }
 
     fun userAvatarId(): String = settingsRepo.userAvatarUri
 
@@ -331,7 +331,7 @@ class MomentsBridge internal constructor(
                 mainScope.launch { runCatching { onDone(text) } }
             }
 
-            val userName = settingsRepo.userName.ifBlank { "博士" }
+            val userName = settingsRepo.userName.ifBlank { "绳匠" }
             var createdMomentId = 0L
             var createdImageId = ""
             try {
@@ -500,7 +500,7 @@ class MomentsBridge internal constructor(
         return chatRepo.insertMoment(
             Moment(
                 operatorId = USER_OPERATOR_ID,
-                operatorName = settingsRepo.userName.ifBlank { "博士" },
+                operatorName = settingsRepo.userName.ifBlank { "绳匠" },
                 content = encodeContent(cleanText, cleanImage),
                 isUserPost = true,
                 createdAt = Clock.System.now().toEpochMilliseconds(),
@@ -533,7 +533,7 @@ class MomentsBridge internal constructor(
             MomentComment(
                 momentId = momentId,
                 operatorId = USER_OPERATOR_ID,
-                operatorName = settingsRepo.userName.ifBlank { "博士" },
+                operatorName = settingsRepo.userName.ifBlank { "绳匠" },
                 content = text,
                 parentCommentId = parentCommentId,
                 replyToName = replyToName,
@@ -552,7 +552,7 @@ class MomentsBridge internal constructor(
                 MomentLike(
                     momentId = momentId,
                     operatorId = USER_OPERATOR_ID,
-                    operatorName = settingsRepo.userName.ifBlank { "博士" },
+                    operatorName = settingsRepo.userName.ifBlank { "绳匠" },
                     createdAt = Clock.System.now().toEpochMilliseconds(),
                 ),
             )
@@ -588,7 +588,7 @@ class MomentsBridge internal constructor(
 
     private suspend fun badgesSync(): MomentBadgeDto {
         val unreadMoments = chatRepo.countUnreadMomentsAfterId(settingsRepo.lastSeenMomentId)
-        val userName = settingsRepo.userName.ifBlank { "博士" }
+        val userName = settingsRepo.userName.ifBlank { "绳匠" }
         val cutoff = Clock.System.now().toEpochMilliseconds() - COMMENT_INBOX_WINDOW_MS
         val unreadComments = runCatching { chatRepo.getUnreadCommentCount(cutoff, userName) }.getOrDefault(0)
         return MomentBadgeDto(unreadMoments, unreadComments)
@@ -599,7 +599,7 @@ class MomentsBridge internal constructor(
         val operators = runCatching { chatRepo.getAllOperatorsSync() }.getOrDefault(emptyList())
         val byId = operators.associateBy { it.id }
         val byName = operators.associateBy { it.name }
-        val userName = settingsRepo.userName.ifBlank { "博士" }
+        val userName = settingsRepo.userName.ifBlank { "绳匠" }
         return moments.map { moment ->
             val (text, imageId) = splitContent(moment.content)
             val mine = isMine(moment)

@@ -1019,6 +1019,7 @@ struct BackupSettingsView: View {
             lastMarkdownImport = info
             showMarkdownRoleSheet = false
             markdownDocument = nil
+            publishMarkdownImportFinished(info)
             statusText = info.warning.isEmpty
                 ? "Markdown 导入完成：新增 \(info.insertedMessages) 条 → \(info.operatorName)"
                 : "Markdown 导入完成：新增 \(info.insertedMessages) 条（\(info.warning)）"
@@ -1028,23 +1029,54 @@ struct BackupSettingsView: View {
         }
     }
 
+    /// 导入成功后广播「聊天数据外部变更」：
+    /// 1. 已打开的聊天页（ChatViewModel 监听通知）立即刷新并载入导入块，不用退出重进；
+    /// 2. 会话列表（ChatListView 监听通知）刷新预览/时间；
+    /// 3. 落「待定位导入块」设置项：聊天页**下次进入**时消费（导入记录时间戳通常早于
+    ///    首屏 50 条窗口——只刷新首屏在长会话里看不到导入内容，用户会以为导入失败）。
+    private func publishMarkdownImportFinished(_ info: MarkdownChatImportInfo) {
+        let firstImportedId = info.insertedIds.first ?? 0
+        if info.insertedMessages > 0, firstImportedId > 0 {
+            let key = ChatViewModel.pendingImportFocusKey(sessionId: info.sessionId)
+            bridge.setSettingsString(key: key, value: "\(firstImportedId):\(info.insertedIds.count)")
+        }
+        var userInfo: [AnyHashable: Any] = [
+            ChatExternalChangeKey.source: "markdown-import",
+            ChatExternalChangeKey.sessionId: info.sessionId,
+            ChatExternalChangeKey.operatorId: info.operatorId,
+            ChatExternalChangeKey.importedCount: info.insertedMessages,
+        ]
+        if firstImportedId > 0 {
+            userInfo[ChatExternalChangeKey.firstImportedId] = firstImportedId
+        }
+        NotificationCenter.default.post(
+            name: .chatDataDidChangeExternally,
+            object: nil,
+            userInfo: userInfo
+        )
+        SelfTestLog.add(
+            "settings markdown import broadcast session=\(info.sessionId) inserted=\(info.insertedMessages) " +
+            "firstImportedId=\(firstImportedId) lastImportedId=\(info.insertedIds.last ?? 0)"
+        )
+    }
+
     /// `--markdown-demo`：自检/截图用——解析内置示例并弹出目标角色 Sheet（无参数时零副作用）。
     private func runMarkdownDemoIfNeeded() async {
         guard ProcessInfo.processInfo.arguments.contains("--markdown-demo"), markdownDocument == nil else { return }
         let demo = """
-        # 与阿米娅的聊天记录
+        # 与安比的聊天记录
 
         导出时间：2025-06-15 22:10
 
         ## 2025-06-14
 
-        阿米娅：博士，今天的任务辛苦了。
+        安比：绳匠，今天的任务辛苦了。
 
-        博士：还好，你呢？
+        绳匠：还好，你呢？
 
         ## 2025-06-15
 
-        阿米娅：我很好，谢谢博士关心。
+        安比：我很好，谢谢绳匠关心。
         """
         switch await bridge.parseMarkdownText(text: demo) {
         case .success(let document):

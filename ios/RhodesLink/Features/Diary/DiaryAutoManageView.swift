@@ -63,7 +63,7 @@ struct DiaryAutoManageView: View {
                             bannerPanel(banner)
                         }
                         if isLoading && status == nil {
-                            KnockLoadingPanel("正在读取干员日记生成状态…")
+                            KnockLoadingPanel("正在读取代理人日记生成状态…")
                         } else if let status, status.entries.isEmpty {
                             emptyPanel
                         } else if let status {
@@ -89,7 +89,7 @@ struct DiaryAutoManageView: View {
     }
 
     private var searchBar: some View {
-        KnockSearchBar(placeholder: "搜索干员", text: $searchText)
+        KnockSearchBar(placeholder: "搜索代理人", text: $searchText)
     }
 
     // MARK: 头部 / 快捷操作
@@ -100,7 +100,7 @@ struct DiaryAutoManageView: View {
                 HStack(spacing: KnockTokens.spacingM) {
                     KnockRowGlyph(systemImage: "sparkles.rectangle.stack.fill")
                     VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
-                        KnockText("干员日记自动生成", role: .rowTitle, lineLimit: 1)
+                        KnockText("代理人日记自动生成", role: .rowTitle, lineLimit: 1)
                         KnockText(subtitleText, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
                     }
                     Spacer(minLength: KnockTokens.spacingS)
@@ -111,7 +111,7 @@ struct DiaryAutoManageView: View {
                 HStack(spacing: KnockTokens.spacingM) {
                     VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
                         KnockText("总开关", role: .rowTitle, lineLimit: 1)
-                        KnockText("关闭后所有干员都不会自动写日记", role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
+                        KnockText("关闭后所有代理人都不会自动写日记", role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
                     }
                     Spacer(minLength: KnockTokens.spacingS)
                     Toggle("", isOn: Binding(
@@ -154,7 +154,7 @@ struct DiaryAutoManageView: View {
                         Task { await setAll(true) }
                     } label: {
                         Label("全部开启", systemImage: "checkmark.circle")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockSecondaryButtonStyle())
 
@@ -162,7 +162,7 @@ struct DiaryAutoManageView: View {
                         Task { await setAll(false) }
                     } label: {
                         Label("全部关闭", systemImage: "xmark.circle")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockSecondaryButtonStyle())
                 }
@@ -217,8 +217,8 @@ struct DiaryAutoManageView: View {
 
     private var emptyPanel: some View {
         KnockEmptyState(
-            title: "还没有干员",
-            message: "干员列表为空，先到「角色」页添加干员后再开启日记自动生成。"
+            title: "还没有代理人",
+            message: "代理人列表为空，先到「联系人」页添加代理人后再开启日记自动生成。"
         )
     }
 
@@ -266,7 +266,7 @@ struct DiaryAutoManageView: View {
                                     ProgressView().controlSize(.mini)
                                 }
                                 Text(isGenerating ? "生成中…" : "立即生成")
-                                    .font(.system(size: 11, weight: .heavy))
+                                    .font(.system(size: 11, weight: .semibold))
                             }
                         }
                         .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 28))
@@ -309,7 +309,7 @@ struct DiaryAutoManageView: View {
         let result = await environment.bridge.setDiaryAutoMaster(enabled: enabled)
         switch result {
         case .success(let count):
-            banner = enabled ? "总开关已开启（\(count) 位干员开启自动生成）" : "总开关已关闭，所有干员都不会自动写日记"
+            banner = enabled ? "总开关已开启（\(count) 位代理人开启自动生成）" : "总开关已关闭，所有代理人都不会自动写日记"
             DiaryAutoAutomation.add("ui.master.enabled=\(enabled) count=\(count)")
         case .failure(let error):
             banner = "总开关保存失败：\(error.message)"
@@ -337,7 +337,7 @@ struct DiaryAutoManageView: View {
         let result = await environment.bridge.setAllDiaryAuto(enabled: enabled)
         switch result {
         case .success(let count):
-            banner = enabled ? "已全部开启（\(count) 位干员）" : "已全部关闭"
+            banner = enabled ? "已全部开启（\(count) 位代理人）" : "已全部关闭"
         case .failure(let error):
             banner = "批量开关失败：\(error.message)"
         }

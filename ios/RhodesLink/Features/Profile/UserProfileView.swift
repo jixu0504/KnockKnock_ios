@@ -133,7 +133,7 @@ struct UserProfileView: View {
                     .frame(maxWidth: .infinity)
                 } else {
                     KnockText(
-                        "这个身份会出现在聊天中，也会用于干员对你的称呼。",
+                        "这个身份会出现在聊天中，也会用于代理人对你的称呼。",
                         role: .caption,
                         color: KnockTokens.textTertiary,
                         lineSpacing: 3,
@@ -148,7 +148,7 @@ struct UserProfileView: View {
 
     private var displayNickname: String {
         let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "博士" : trimmed
+        return trimmed.isEmpty ? "绳匠" : trimmed
     }
 
     // MARK: - 编辑卡
@@ -254,7 +254,7 @@ struct UserProfileView: View {
             VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
                 KnockGroupTitle(title: "关于身份", systemImage: "info.circle")
                 KnockText(
-                    "昵称、性别与签名会作为你的用户档案进入聊天提示词，影响干员如何称呼你与理解你的自述。它们只保存在本机，并随完整备份一起导出。",
+                    "昵称、性别与签名会作为你的用户档案进入聊天提示词，影响代理人如何称呼你与理解你的自述。它们只保存在本机，并随完整备份一起导出。",
                     role: .caption,
                     color: KnockTokens.textSecondary,
                     lineSpacing: 3

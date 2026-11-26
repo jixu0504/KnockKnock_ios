@@ -44,16 +44,26 @@ enum KnockTokens {
 
     // MARK: 聊天语义色（蓝 = 聊天消息语言，面积 ≤3%）
 
-    /// 聊天发送气泡蓝 `#3364E7`（图 A 实测 #3364E7/#3463E7/#2F65E7）。
-    static let chatBlue = Color(hex: 0x3364E7)
+    /// 聊天发送气泡蓝 `#1C55E2`（聊天页参考图实测 #1C55E2/#1C55E4）。
+    static let chatBlue = Color(hex: 0x1C55E2)
     /// 聊天蓝按压态 / 浅色模式压深值 `#2F5FE0`（计划书 1.3：浅底上提高对比度）。
     static let chatBluePressed = Color(hex: 0x2F5FE0)
-    /// 接收气泡白（深浅主题均 `#FFFFFF`；深色下靠描边与行区分层，不用半透明白）。
-    static let bubbleIncoming = Color(hex: 0xFFFFFF)
+    /// 接收气泡：深色 `#E6E7EB` 浅灰白（聊天页参考图实测），浅色 `#FFFFFF`。
+    static let bubbleIncoming = Color.rhodesHex(0xFFFFFF, 0xE6E7EB)
     /// 接收气泡文字 `#0B0B0C`。
     static let bubbleIncomingText = Color(hex: 0x0B0B0C)
     /// 发送气泡文字白。
     static let bubbleOutgoingText = Color(hex: 0xFFFFFF)
+    /// 聊天顶栏浮动条底（参考图实测 `#080808` / 浅色白）。
+    static let chatHeaderBar = Color.rhodesHex(0xFFFFFF, 0x080808)
+    /// 聊天消息面板底（参考图实测 `#050505` / 浅色白）。
+    static let chatPanel = Color.rhodesHex(0xFFFFFF, 0x050505)
+    /// 输入栏「+」圆钮底（参考图实测 `#292929` / 浅色 `#E4E4E0`）。
+    static let plusCircle = Color.rhodesHex(0xE4E4E0, 0x292929)
+    /// 白色输入框在浅色主题下的分层描边。
+    static let strokeSubtleWhite = Color.rhodesHex(0xDDDDD8, 0xFFFFFF, lightAlpha: 1, darkAlpha: 0)
+    /// 品牌标识金（敲敲黄色手机 logo 实测 `#F8D328`）。
+    static let brandGold = Color(hex: 0xF8D328)
     /// 时间分隔 / 系统胶囊底（实色灰阶，禁用半透明白）。
     static let bubbleSystem = Color.rhodesHex(0xECECE9, 0x1A1A1A)
     /// 时间分隔文字 `#8A8A8E`（图 A）。

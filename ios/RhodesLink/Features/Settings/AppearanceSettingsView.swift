@@ -134,7 +134,7 @@ struct AppearanceSettingsView: View {
 
                     VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
                         KnockText("大字号预览", role: .caption, color: KnockTokens.textTertiary)
-                        Text("博士，今晚的巡逻记录已经整理好了。ABC abc 123")
+                        Text("绳匠，今晚的巡逻记录已经整理好了。ABC abc 123")
                             .font(.body)
                             .foregroundStyle(KnockTokens.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)

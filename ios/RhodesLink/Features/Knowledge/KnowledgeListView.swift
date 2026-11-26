@@ -131,7 +131,7 @@ struct KnowledgeListView: View {
                 set: { if !$0 { deleteTarget = nil } }
             ),
             title: "删除知识库？",
-            message: "「\(deleteTarget?.name ?? "")」的切块、干员关联与已建向量会一并删除，不可恢复。",
+            message: "「\(deleteTarget?.name ?? "")」的切块、代理人关联与已建向量会一并删除，不可恢复。",
             confirmTitle: "删除",
             isDestructive: true
         ) {
@@ -181,7 +181,7 @@ struct KnowledgeListView: View {
     private func bookSubtitle(_ book: KnowledgeBookItem) -> String {
         var parts = [book.chunkCountText]
         if book.assignedOperatorCount > 0 {
-            parts.append("\(book.assignedOperatorCount) 位干员")
+            parts.append("\(book.assignedOperatorCount) 位代理人")
         }
         if !book.updatedAtText.isEmpty {
             parts.append(book.updatedAtText)

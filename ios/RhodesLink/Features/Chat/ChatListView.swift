@@ -108,6 +108,13 @@ struct ChatListView: View {
             // 从聊天页返回列表时刷新（新消息可能已解除隐藏 / 更新未读与顺序）
             Task { await reload() }
         }
+        // 外部数据变更（设置页导入聊天记录 / 备份恢复）：列表预览/时间/顺序同步刷新，
+        // 不依赖 Tab 切换或下拉刷新（导入后导入的会话可能新建、最后消息可能变化）。
+        .onReceive(NotificationCenter.default.publisher(for: .chatDataDidChangeExternally)) { note in
+            let changed = note.userInfo?[ChatExternalChangeKey.sessionId] as? String ?? ""
+            SelfTestLog.add("chat list reload external change session=\(changed.isEmpty ? "-" : changed)")
+            Task { await reload() }
+        }
     }
 
     // MARK: - 顶部（品牌顶栏 + 大标题 + 搜索）
@@ -241,26 +248,29 @@ struct ChatListView: View {
             }
         }
         // 原版：长按会话行弹出「置顶/取消置顶、标记已读、从主页移除」
-        .contextMenu {
-            Button {
-                Task { await togglePin(session) }
-            } label: {
-                Label(session.isPinned ? "取消置顶" : "置顶",
-                      systemImage: session.isPinned ? "pin.slash" : "pin")
-            }
-            Button {
-                Task { await markRead(session) }
-            } label: {
-                Label("标记已读", systemImage: "envelope.open")
-            }
-            Button(role: .destructive) {
-                confirmAction = .hide(session)
-            } label: {
-                Label("从主页移除", systemImage: "trash")
-            }
-        }
+        // 敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）；动作集合 / 顺序 / 条件不变
+        .knockContextMenu(actions: sessionMenuActions(session))
         .accessibilityLabel("\(session.title)，\(session.lastMessage)\(session.isPinned ? "，已置顶" : "")")
         .accessibilityHint("打开与 \(session.title) 的聊天；长按可置顶、标记已读或从主页移除")
+    }
+
+    /// 会话行长按菜单动作：置顶 / 取消置顶 → 标记已读 → 从主页移除（destructive）。
+    /// 与系统 `.contextMenu` 版的文案 / 图标 / 顺序 / destructive 标记逐一对应。
+    private func sessionMenuActions(_ session: SessionItem) -> [KnockMenuAction] {
+        [
+            KnockMenuAction(
+                session.isPinned ? "取消置顶" : "置顶",
+                systemImage: session.isPinned ? "pin.slash" : "pin"
+            ) {
+                Task { await togglePin(session) }
+            },
+            KnockMenuAction("标记已读", systemImage: "envelope.open") {
+                Task { await markRead(session) }
+            },
+            KnockMenuAction("从主页移除", systemImage: "trash", role: .destructive) {
+                confirmAction = .hide(session)
+            }
+        ]
     }
 
     /// 行副标题：最近消息；非线上模式前缀模式名（保留原模式信息，不额外增加行内控件）。

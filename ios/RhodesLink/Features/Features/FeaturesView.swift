@@ -45,15 +45,15 @@ struct FeaturesView: View {
                         KnockGroupTitle(title: "互动", systemImage: "bubble.left.and.text.bubble.right")
                         featureCard(
                             title: "动态广场",
-                            subtitle: "查看所有干员发布的动态",
+                            subtitle: "查看所有代理人发布的动态",
                             systemImage: "bubble.left.and.text.bubble.right.fill",
                             badge: momentBadge
                         ) {
                             router.openFeature(.moments)
                         }
                         featureCard(
-                            title: "干员日记",
-                            subtitle: "查看干员们的内心独白",
+                            title: "代理人日记",
+                            subtitle: "查看代理人们的内心独白",
                             systemImage: "book.closed.fill",
                             badge: diaryBadge
                         ) {
@@ -61,7 +61,7 @@ struct FeaturesView: View {
                         }
                         featureCard(
                             title: "大家的印象",
-                            subtitle: "干员对你的长期印象总结",
+                            subtitle: "代理人对你的长期印象总结",
                             systemImage: "person.crop.circle.badge.questionmark.fill"
                         ) {
                             router.openFeature(.impressions)

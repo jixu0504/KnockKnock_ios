@@ -302,15 +302,16 @@ struct KnockTextArea: View {
     }
 }
 
-// MARK: - 胶囊选择行（Menu 包装；关系类型 / 候选角色等）
+// MARK: - 胶囊选择行（敲敲自绘菜单；关系类型 / 候选角色等）
 
 /// 敲敲选择器行：胶囊底 + 1.5pt 次描边 + 左侧图标 + 当前值 + 上下箭头。
-/// `menuContent` 直接放 `Button`（选中态由 Menu 自带勾选）。
-struct KnockMenuRow<Content: View>: View {
+/// 选项走 `KnockContextMenu` 自绘面板（计划书第五章：不用系统 `Menu`，避免 iOS 26 液态玻璃）；
+/// 选中态由调用方在 `KnockMenuAction.systemImage` 里给 `checkmark`（与原系统菜单勾选一致）。
+struct KnockMenuRow: View {
     var systemImage: String
     var valueText: String
     var accessibilityLabelText: String?
-    private let menuContent: () -> Content
+    private let actions: [KnockMenuAction]
 
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
@@ -318,12 +319,12 @@ struct KnockMenuRow<Content: View>: View {
         systemImage: String,
         valueText: String,
         accessibilityLabel: String? = nil,
-        @ViewBuilder menuContent: @escaping () -> Content
+        actions: [KnockMenuAction]
     ) {
         self.systemImage = systemImage
         self.valueText = valueText
         self.accessibilityLabelText = accessibilityLabel
-        self.menuContent = menuContent
+        self.actions = actions
     }
 
     private var strokeColor: Color {
@@ -331,8 +332,8 @@ struct KnockMenuRow<Content: View>: View {
     }
 
     var body: some View {
-        Menu {
-            menuContent()
+        Button {
+            KnockMenuCenter.shared.present(KnockMenuPresentation(actions: actions))
         } label: {
             HStack(spacing: KnockTokens.spacingS) {
                 Image(systemName: systemImage)
@@ -355,7 +356,9 @@ struct KnockMenuRow<Content: View>: View {
             }
             .contentShape(Capsule(style: .continuous))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabelText ?? valueText)
+        .accessibilityHint("打开选项，共 \(actions.count) 项")
     }
 }
 

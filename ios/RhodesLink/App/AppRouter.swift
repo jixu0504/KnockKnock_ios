@@ -134,6 +134,13 @@ final class AppRouter: ObservableObject {
 
     init() {
         selectedTab = Self.initialTab()
+        // 截图/调试钩子：`--deep-link rhodes://features/ranking` 启动时直接应用深链
+        // （simctl openurl 会弹系统确认框，截图不可用）；无参数零影响
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--deep-link"), index + 1 < args.count,
+           let url = URL(string: args[index + 1]) {
+            _ = handle(url: url)
+        }
     }
 
     /// `--tab chat|contacts|features|settings` 启动参数用于验证四 Tab（截图脚本使用）
@@ -216,7 +223,8 @@ final class AppRouter: ObservableObject {
     /// 处理 rhodes:// 深链；返回是否命中已注册路由。
     @discardableResult
     func handle(url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(), scheme == "rhodes" else {
+        // 同时接受新 scheme `knock` 与旧 `rhodes`（Info.plist 已改名 knock；旧链接保持兼容）
+        guard let scheme = url.scheme?.lowercased(), scheme == "knock" || scheme == "rhodes" else {
             return false
         }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)

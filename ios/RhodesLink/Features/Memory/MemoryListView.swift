@@ -121,13 +121,12 @@ struct MemoryListView: View {
                                     Label("删除", systemImage: "trash")
                                 }
                             }
-                            .contextMenu {
-                                Button(role: .destructive) {
+                            // 长按菜单：敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）
+                            .knockContextMenu(actions: [
+                                KnockMenuAction("删除记忆", systemImage: "trash", role: .destructive) {
                                     pendingDelete = memory
-                                } label: {
-                                    Label("删除记忆", systemImage: "trash")
                                 }
-                            }
+                            ])
                             .memoryListRow()
                             .onAppear {
                                 if memory.identity == memories.last?.identity, hasMore, !isLoadingMore {

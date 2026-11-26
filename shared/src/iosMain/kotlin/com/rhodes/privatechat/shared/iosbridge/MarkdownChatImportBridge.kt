@@ -97,7 +97,18 @@ class MarkdownChatImportBridge internal constructor(
     ) {
         workScope.launch {
             try {
+                // 导入前记录 MAX(id)：导入器按「MAX(id)+1 起严格递增」分配消息 id（单事务内二次断言），
+                // 因此本次新增消息 id = [beforeMaxId+1, beforeMaxId+insertedMessages]，作为连续区间回传 UI。
+                // 用途：导入后已打开的私聊页 / 下次进入时能按 id 区间把「时间较早、不在首屏分页窗口内」的
+                // 导入记录直接取出来并入时间线（否则用户会以为导入失败——它们被更大的现有时间戳压到历史里）。
+                val beforeMaxId = currentMaxMessageId()
                 val outcome = importer.import(handle.document, targetOperatorId.ifBlank { null })
+                val insertedIds = if (outcome.insertedMessages > 0) {
+                    val firstId = (beforeMaxId ?: 0L) + 1L
+                    (0 until outcome.insertedMessages).map { firstId + it }
+                } else {
+                    emptyList()
+                }
                 val info = MarkdownChatImportInfoDto(
                     sessionId = outcome.sessionId,
                     operatorId = outcome.operatorId,
@@ -107,12 +118,22 @@ class MarkdownChatImportBridge internal constructor(
                     totalMessages = outcome.totalMessages,
                     createdSession = outcome.createdSession,
                     warning = outcome.warning,
+                    insertedIds = insertedIds,
                 )
                 mainScope.launch { onDone(info, null) }
             } catch (t: Throwable) {
                 mainScope.launch { onDone(null, userMessage(t)) }
             }
         }
+    }
+
+    /** 当前 `chat_messages.MAX(id)`（事务内读取，与导入器同一口径；无消息返回 null）。 */
+    private suspend fun currentMaxMessageId(): Long? {
+        var maxId: Long? = null
+        chatRepo.runRestoreTransaction {
+            maxId = chatMessagesQueries.getMaxId().executeAsOne().MAX
+        }
+        return maxId
     }
 
     /** 当前用户昵称（设置 `user_name`，默认「博士」）——供 UI 传给解析器判定 isMe。 */
@@ -362,6 +383,11 @@ class MarkdownChatImportInfoDto(
     val createdSession: Boolean,
     /** 非空 = 警告（例如重复导入零新增），仍算成功。 */
     val warning: String,
+    /**
+     * 本次新增消息的 id（严格升序连续，导入器从 MAX(id)+1 起分配；零新增时为空）。
+     * UI 用它把导入记录并入已加载时间线 / 下次进入会话时定位到导入块（见 MessageHistoryBridge.pageByIdRange）。
+     */
+    val insertedIds: List<Long> = emptyList(),
 )
 
 /**

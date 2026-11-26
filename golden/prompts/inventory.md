@@ -4,6 +4,16 @@
 提示词模块（behavior/protocol/runtime）、记忆流水线提示词、agent 人设（persona）、
 各玩法（galgame/报纸/麻将/朋友圈/日记）提示词，以及提示词存储/校验/编辑器代码。
 
+> **2026-11-26 重生成注记（绝区零世界观替换，task-11）**：shared `PromptTemplates.VERSION` 39→40
+> （罗德岛/龙门币/干员 → 绳网/新艾利都/丁尼/代理人），7 件 strict 金样已按
+> `shared/src/commonMain/kotlin/com/rhodes/privatechat/shared/prompt/PromptTemplates.kt`
+> 重新抽取，字节级与 VERSION 40 模板一致：DISPATCH_START（L136）/ DISPATCH_PROGRESS（L159）/
+> DISPATCH_ENDING（L185）/ PRIVATE_PROACTIVE（L561）/ MOMENT（L1120）/ MOMENT_COMMENT（L1166）/
+> DIARY（L1228）。这 7 件文件头的 `Source:`/`Git:` 行已改指 shared 源文件与重抽取日期，文件名
+> （含基线行号锚）不变；其余 107 件仍为基线抽取原文。下文「VERSION = 39」均指 Android 基线
+> oracle（`android-oracle/` 未随本次替换修改），shared 侧现状为 VERSION 40。allowlist 7 条
+> （TAG_* 行首空白豁免）与三档件数（27 strict + 7 canonical + 13 rawAnchor = 47）不变。
+
 ## 0. 总体结构
 
 - 主模板库：`app/src/main/java/com/rhodes/privatechat/viewmodel/shared/PromptTemplates.kt`

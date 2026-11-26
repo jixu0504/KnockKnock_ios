@@ -50,3 +50,15 @@ kotlin {
         }
     }
 }
+// iOS 测试资源：KGP 不会把 commonTest resources 拷入 debugTest bundle 目录，
+// 资源型测试（golden 金样等 35 件）依赖此 copy task（clean build 后自动补齐）。
+val copyIosTestResources = tasks.register<Copy>("copyIosTestResources") {
+    from("src/commonTest/resources")
+    into(layout.buildDirectory.dir("bin/iosSimulatorArm64/debugTest"))
+}
+tasks.matching { it.name == "linkDebugTestIosSimulatorArm64" }.configureEach {
+    finalizedBy(copyIosTestResources)
+}
+tasks.matching { it.name == "iosSimulatorArm64Test" }.configureEach {
+    dependsOn(copyIosTestResources)
+}

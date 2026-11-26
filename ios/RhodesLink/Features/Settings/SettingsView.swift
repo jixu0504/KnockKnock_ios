@@ -183,7 +183,7 @@ struct SettingsView: View {
                     )
                     .accessibilityLabel("外观模式")
 
-                    Text("大字号预览：博士，今晚的巡逻记录已经整理好了。ABC abc 123")
+                    Text("大字号预览：绳匠，今晚的巡逻记录已经整理好了。ABC abc 123")
                         .font(.body)
                         .foregroundStyle(KnockTokens.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)

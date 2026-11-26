@@ -230,7 +230,7 @@ def main() -> int:
 
     chars = json.loads((data_dir / "characters.json").read_text(encoding="utf-8"))
     chars.sort(key=lambda c: c["id"])
-    assert len(chars) == 62, f"characters.json 应为 62 个角色，实际 {len(chars)}"
+    assert len(chars) >= 62, f"characters.json 至少 62 个角色，实际 {len(chars)}"
 
     with open(data_dir / "联系人配置总表.csv", encoding="utf-8-sig", newline="") as f:
         csv_rows = {r["序号"].strip(): r for r in csv.DictReader(f)}
@@ -266,14 +266,20 @@ def main() -> int:
         catchphrase = csv_field(row, "口头禅", contact, "口头禅 / 关键词")
         taboo = csv_field(row, "雷区", contact, "雷区 / 注意")
 
-        title = f"{faction}·{c['specialty']}代理人" if c.get("specialty") else f"{faction}代理人"
+        spec = c.get("specialty") or ""
+        if spec == "绳匠":
+            title = f"{faction}·绳匠"
+        elif spec:
+            title = f"{faction}·{spec}代理人"
+        else:
+            title = f"{faction}代理人"
         description = cut(f"{note}｜{signature}", 60) if signature else cut(note, 60)
 
         habits_text = "；".join(habit_bullets)
         activity = pick_activity(habits_text)
         emotion = pick_emotion(habits_text, core_text)
 
-        prefix = f"你是{name}，{faction}的代理人。"
+        prefix = f"你是{name}，{faction}的" + ("绳匠" if spec == "绳匠" else "代理人") + "。"
         body = ensure_end(cut(core_text, 200)) + ensure_end(cut(habits_text, 150)) \
             + ensure_end(cut(bg_text, 100))
         suffix = (
@@ -307,6 +313,10 @@ def main() -> int:
             faction_order.append(faction)
         faction_members.setdefault(faction, []).append(oid)
 
+    FACTION_RULES.setdefault(
+        "Random Play",
+        "六分街的录像店「Random Play」：法厄同（绳匠兄妹）的据点；店面经营录像带租借，里间接绳匠委托，日常看店与委托闲聊。",
+    )
     missing_rules = [f for f in faction_order if f not in FACTION_RULES]
     extra_rules = [f for f in FACTION_RULES if f not in faction_order]
     assert not missing_rules, f"以下阵营缺 rules 描述：{missing_rules}"

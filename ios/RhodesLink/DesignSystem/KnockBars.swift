@@ -263,7 +263,8 @@ extension KnockFilterBar where Trailing == EmptyView {
 // MARK: - 下拉胶囊
 
 /// 敲敲下拉胶囊（同款 1.5pt 描边胶囊 + chevron.down），点击弹出选项菜单。
-/// 说明：菜单弹层当前用系统 `Menu`（P0 先保功能与尺寸；P5 收口时按计划书第五章换自绘面板）。
+/// 说明：菜单弹层走 `KnockContextMenu` 自绘面板（计划书第五章：不用系统 `Menu`，
+/// 避免 iOS 26 液态玻璃背景）；选项集合与选中态由调用方通过 `items` / `selection` 给出。
 struct KnockDropdown<Value: Hashable>: View {
     let items: [KnockSegmentItem<Value>]
     @Binding var selection: Value
@@ -286,18 +287,10 @@ struct KnockDropdown<Value: Hashable>: View {
     }
 
     var body: some View {
-        Menu {
-            ForEach(items) { item in
-                Button {
-                    selection = item.value
-                } label: {
-                    if item.value == selection {
-                        Label(item.title, systemImage: "checkmark")
-                    } else {
-                        Text(item.title)
-                    }
-                }
-            }
+        Button {
+            KnockMenuCenter.shared.present(
+                KnockMenuPresentation(title: "筛选", actions: dropdownActions)
+            )
         } label: {
             HStack(spacing: 6) {
                 KnockText(selectedTitle, role: .captionStrong, color: KnockTokens.textPrimary, lineLimit: 1)
@@ -314,6 +307,20 @@ struct KnockDropdown<Value: Hashable>: View {
             )
             .contentShape(Capsule(style: .continuous))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("筛选：\(selectedTitle)")
+        .accessibilityHint("打开筛选选项，共 \(items.count) 项")
+    }
+
+    /// 选项动作集合：当前值打勾（`checkmark`），点选后写回 `selection`（与原系统菜单一致）。
+    private var dropdownActions: [KnockMenuAction] {
+        items.map { item in
+            KnockMenuAction(
+                item.title,
+                systemImage: item.value == selection ? "checkmark" : nil
+            ) {
+                selection = item.value
+            }
+        }
     }
 }

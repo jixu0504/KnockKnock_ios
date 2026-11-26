@@ -272,8 +272,8 @@ struct RoleEditView: View {
     private var basicCard: some View {
         KnockFormCard(title: "基础信息", systemImage: "person.text.rectangle") {
             VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
-                KnockInputField(title: "姓名（必填）", placeholder: "如：新干员", text: $name)
-                KnockInputField(title: "标签（逗号分隔）", placeholder: "如：罗德岛干员,医疗,温和", text: $tags)
+                KnockInputField(title: "姓名（必填）", placeholder: "如：新代理人", text: $name)
+                KnockInputField(title: "标签（逗号分隔）", placeholder: "如：新艾利都代理人,支援,温和", text: $tags)
                 VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
                     KnockText("简介", role: .captionStrong, color: KnockTokens.textSecondary)
                     KnockTextArea("一句话介绍（留空自动生成）", text: $intro, minHeight: 88, accessibilityLabel: "简介")
@@ -317,14 +317,9 @@ struct RoleEditView: View {
                 KnockMenuRow(
                     systemImage: "link",
                     valueText: relationDisplayLabel,
-                    accessibilityLabel: "选择初始关系"
-                ) {
-                    Button("未设定") { relationType = "" }
-                    Divider()
-                    ForEach(relationOptions) { option in
-                        Button(option.label) { relationType = option.label }
-                    }
-                }
+                    accessibilityLabel: "选择初始关系",
+                    actions: relationMenuActions
+                )
 
                 if !relationOptions.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -540,7 +535,7 @@ struct RoleEditView: View {
                             }
 
                             KnockText(
-                                "素材放入 Resources/AvatarsKnock/knock_<id>.png 后自动生效；缺失时显示首字占位。旧内置头像（1–147）默认停用展示（资源与解析兼容保留）。",
+                                "素材放入 Resources/AvatarsKnock/knock_<id>.png 后自动生效；缺失时显示首字占位。旧内置头像（1–147）资源已移除，仅保留值域解析兼容（渲染走首字占位）。",
                                 role: .caption,
                                 color: KnockTokens.textSecondary,
                                 lineSpacing: 2
@@ -642,7 +637,7 @@ struct RoleEditView: View {
         if pendingAvatarFileURL != nil { return "相册图片（保存后入库）" }
         switch RoleAvatarResolver.source(for: avatarId) {
         case .knock: return "敲敲头像"
-        case .builtin: return "首字占位（内置头像已停用）"
+        case .builtin: return "首字占位（旧内置头像资源已移除）"
         case .media: return "上传头像"
         case .placeholder: return "首字占位"
         }
@@ -654,7 +649,7 @@ struct RoleEditView: View {
         case .knock(let id):
             return "当前：敲敲头像 knock:\(id)"
         case .builtin(let number):
-            return "当前：旧内置头像 \(number)（默认不展示，显示首字占位；保存不变更该值）"
+            return "当前：旧内置头像 \(number)（资源已移除，显示首字占位；保存不变更该值）"
         case .media(let id):
             return "当前：上传头像 \(id)"
         case .placeholder:
@@ -664,6 +659,26 @@ struct RoleEditView: View {
 
     private var relationDisplayLabel: String {
         relationType.isEmpty ? "未设定" : relationType
+    }
+
+    /// 初始关系菜单动作：未设定 + 24 种关系类型（当前值打勾）。
+    /// 原本是系统 `Menu`（iOS 26 液态玻璃），改走 `KnockContextMenu` 自绘面板；
+    /// 选中语义与原实现一致（写回 `relationType`）。
+    private var relationMenuActions: [KnockMenuAction] {
+        var actions: [KnockMenuAction] = [
+            KnockMenuAction("未设定", systemImage: relationType.isEmpty ? "checkmark" : nil) {
+                relationType = ""
+            }
+        ]
+        actions += relationOptions.map { option in
+            KnockMenuAction(
+                option.label,
+                systemImage: relationType == option.label ? "checkmark" : nil
+            ) {
+                relationType = option.label
+            }
+        }
+        return actions
     }
 
     // MARK: - 数据
@@ -785,7 +800,7 @@ struct RoleEditView: View {
 
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else {
-            errorText = "请输入干员名称"
+            errorText = "请输入代理人名称"
             return
         }
 

@@ -91,7 +91,7 @@ object AnchorSourcePolicy {
             DIARY -> "这是你自己在日记里整理出的想法"
             DISPATCH -> if (name.isNotBlank()) "这是${name}留下的任务记录" else "这是派遣任务留下的记录"
             MAHJONG -> "这是麻将对局后留下的记忆"
-            STATUS -> "这是你在罗德岛日常活动中注意到的"
+            STATUS -> "这是你在新艾利都日常活动中注意到的"
             else -> "这是你过去记住的事"
         }
     }

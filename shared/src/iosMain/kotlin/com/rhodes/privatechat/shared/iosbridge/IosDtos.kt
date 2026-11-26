@@ -18,6 +18,8 @@ class SessionDto(
     val mode: String,
     /** T40：置顶标记（对齐 Android ChatSessionEntity.isPinned；列表排序 pinned 在前）。 */
     val isPinned: Boolean,
+    /** 会话所属角色 id（私聊点头像进角色简介用；群聊为空串）。 */
+    val operatorId: String,
 )
 
 class MemoryDto(

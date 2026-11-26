@@ -71,7 +71,7 @@ struct MomentsView: View {
                         } else if items.isEmpty && !isLoading {
                             KnockEmptyState(
                                 title: "还没有动态",
-                                message: "干员们还没有发布动态。先写一条，记录今天和干员们的训练日常吧。",
+                                message: "代理人们还没有发布动态。先写一条，记录今天和代理人们的训练日常吧。",
                                 actionTitle: "发布第一条动态",
                                 action: { showComposer = true }
                             )
@@ -201,7 +201,7 @@ struct MomentsView: View {
             HStack(spacing: KnockTokens.spacingM) {
                 KnockRowGlyph(systemImage: "bubble.left.and.text.bubble.right.fill", size: 38)
                 VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
-                    KnockText("干员动态", role: .rowTitle, lineLimit: 1)
+                    KnockText("代理人动态", role: .rowTitle, lineLimit: 1)
                     KnockText(
                         "\(items.count) 条动态\(badgeText.isEmpty ? "" : " · \(badgeText)")",
                         role: .caption,
@@ -214,7 +214,7 @@ struct MomentsView: View {
                     showComposer = true
                 } label: {
                     Label("发布", systemImage: "plus")
-                        .font(.system(size: 13, weight: .heavy))
+                        .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 34))
                 .accessibilityLabel("发布动态")
@@ -239,12 +239,15 @@ struct MomentsView: View {
                             Spacer(minLength: 0)
                             KnockText(item.createdAtText, role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
                             if item.isMine {
-                                Menu {
-                                    Button(role: .destructive) {
-                                        deleteTarget = item
-                                    } label: {
-                                        Label("删除动态", systemImage: "trash")
-                                    }
+                                // 动态操作菜单：敲敲自绘面板（替代系统 `Menu` 的 iOS 26 液态玻璃）
+                                Button {
+                                    KnockMenuCenter.shared.present(
+                                        KnockMenuPresentation(actions: [
+                                            KnockMenuAction("删除动态", systemImage: "trash", role: .destructive) {
+                                                deleteTarget = item
+                                            }
+                                        ])
+                                    )
                                 } label: {
                                     Image(systemName: "ellipsis")
                                         .font(.system(size: 13, weight: .heavy))
@@ -254,6 +257,7 @@ struct MomentsView: View {
                                         .frame(minHeight: 44)
                                         .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                                 .accessibilityLabel("动态操作")
                                 .accessibilityIdentifier("moment-menu-\(item.id)")
                             }
@@ -502,7 +506,7 @@ struct MomentImageThumb: View {
                 .frame(height: 120)
                 .overlay {
                     Label("图片无法显示", systemImage: "photo")
-                        .font(.system(size: 13, weight: .heavy))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(KnockTokens.textSecondary)
                 }
                 .overlay {
@@ -619,7 +623,7 @@ struct MomentComposerView: View {
                                             .font(.system(size: 13, weight: .heavy))
                                         Text(pickedImage == nil ? "选择图片" : "更换图片")
                                     }
-                                    .font(.system(size: 13, weight: .heavy))
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(KnockTokens.textPrimary)
                                     .padding(.horizontal, KnockTokens.spacingL)
                                     .frame(minHeight: KnockTokens.buttonHeight)
@@ -677,7 +681,7 @@ struct MomentComposerView: View {
             }
             .overlay(alignment: .topLeading) {
                 if text.isEmpty {
-                    KnockText("说点什么…（记录和干员们的日常）", role: .body, color: KnockTokens.textTertiary)
+                    KnockText("说点什么…（记录和代理人们的日常）", role: .body, color: KnockTokens.textTertiary)
                         .padding(.horizontal, KnockTokens.spacingM)
                         .padding(.vertical, KnockTokens.spacingM)
                         .allowsHitTesting(false)
@@ -820,7 +824,7 @@ struct MomentCommentsSheet: View {
                         ScrollView {
                             KnockEmptyState(
                                 title: "还没有评论",
-                                message: "说点什么，让干员知道你的想法。"
+                                message: "说点什么，让代理人知道你的想法。"
                             )
                             .padding(.horizontal, KnockTokens.screenPadding)
                             .padding(.top, KnockTokens.spacingL)

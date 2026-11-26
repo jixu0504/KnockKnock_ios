@@ -189,7 +189,7 @@ struct ImpressionsView: View {
     private var emptyCard: some View {
         KnockEmptyState(
             title: "暂无印象数据",
-            message: "多聊几次后，干员会逐渐形成对你的近期了解和长期印象"
+            message: "多聊几次后，代理人会逐渐形成对你的近期了解和长期印象"
         )
     }
 

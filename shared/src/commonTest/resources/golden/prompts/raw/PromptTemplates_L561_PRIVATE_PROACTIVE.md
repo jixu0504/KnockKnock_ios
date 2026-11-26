@@ -1,7 +1,7 @@
 <!--
-  Source: app/src/main/java/com/rhodes/privatechat/viewmodel/shared/PromptTemplates.kt:561-611
+  Source: shared/src/commonMain/kotlin/com/rhodes/privatechat/shared/prompt/PromptTemplates.kt:562-612
   Decl  : PRIVATE_PROACTIVE
-  Git   : v1.14.27-android-baseline @ 3642d2c
+  Git   : re-extracted 2026-11-26 @ VERSION 40 (zzz worldview swap); prev baseline v1.14.27-android-baseline @ 3642d2c
   Note  : dedent approximates Kotlin trimIndent(); ${...} placeholders kept verbatim.
 -->
 
@@ -39,7 +39,7 @@
 - 距离上次互动：{{PROACTIVE_IDLE_DURATION}}
 - 上次互动：{{PROACTIVE_LAST_INTERACTION_TIME}}
 - 用户最后消息（{{PROACTIVE_LAST_USER_TIME}}）：{{PROACTIVE_LAST_USER_MESSAGE}}
-- 干员最后消息（{{PROACTIVE_LAST_AI_TIME}}）：{{PROACTIVE_LAST_AI_MESSAGE}}
+- 代理人最后消息（{{PROACTIVE_LAST_AI_TIME}}）：{{PROACTIVE_LAST_AI_MESSAGE}}
 - 明确未完成事项：{{PROACTIVE_UNRESOLVED_TOPIC}}
 
 【人设】

@@ -15,7 +15,8 @@
 //  - `narration` 旧字段仍可渲染（T59 起旁白走独立 `NarrationBubble`，本字段仅为兼容旧调用点）；
 //  - 撤回态（斜体 + 次文字色）、图片消息（含点击全屏回调）、流式光标（减弱动态效果时静止）；
 //  - 群聊 `senderName`（接收方向显示在气泡上方）、Dynamic Type（`KnockText` 全档位缩放）；
-//  - 长按菜单仍由 ChatView / GroupChatView 在外层 `.contextMenu` 负责（本文件不接管）。
+//  - 长按菜单由 ChatView / GroupChatView 在外层 `.knockContextMenu(actions:)` 负责（本文件不接管；
+//    自绘面板见 `KnockContextMenu.swift`，已替代系统 `.contextMenu` 的 iOS 26 液态玻璃）。
 //
 //  可访问性：
 //  - 气泡文字全部经 `KnockText`（Dynamic Type + 描边加粗补偿）；
@@ -177,7 +178,14 @@ struct MessageBubble: View {
             }
 
             if isImageMessage, let imageURL {
+                // 参考图：图片消息带白色相框（5pt 白边 + 大圆角）+ 气泡尾巴
                 LocalMessageImage(url: imageURL)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(Color.white)
+                    )
                     .onTapGesture { onImageTap?() }
                     .accessibilityLabel("图片消息，点击全屏查看")
                     .accessibilityAddTraits(.isButton)
@@ -190,10 +198,9 @@ struct MessageBubble: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// 正文：18pt heavy（`KnockTypography` 出口 + Dynamic Type）。
-    /// 说明：`KnockText` 的四向偏移描边补偿依赖 overlay 与被叠文字**逐行对齐**，
-    /// 对含显式换行（AI 回复常见的 `\n`）的多行文本会出现行错位重影（实机截图已验证）；
-    /// 气泡正文因此改为单份 `Text` + 同色微半径 shadow 做加粗补偿（视觉效果等价、且多行安全）。
+    /// 正文：18pt medium（`KnockTypography` 出口 + Dynamic Type），真字重渲染。
+    /// 说明：旧实现用「单份 `Text` + 同色 0.55pt shadow」近似加粗，真机多行时边缘发虚；
+    /// 现由 `KnockTypeRole.bubble` 的 Medium 真字重承担强调，气泡正文不再叠加任何 shadow。
     @ViewBuilder
     private var bubbleText: some View {
         Text(captionText)
@@ -203,7 +210,6 @@ struct MessageBubble: View {
             .lineSpacing(4)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
-            .shadow(color: primaryTextColor.opacity(0.85), radius: 0.55)
     }
 
     /// 图片消息的正文 = 附言（"[图片]"/"[图片发送失败]"/"（空消息）" 等占位不重复显示）

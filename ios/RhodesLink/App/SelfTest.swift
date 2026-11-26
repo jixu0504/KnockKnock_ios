@@ -111,7 +111,7 @@ enum SelfTestDriver {
         var firstSessionId: String?
         switch await environment.bridge.loadSessions() {
         case .success(let items):
-            firstSessionId = items.first?.id
+            firstSessionId = items.first(where: { !$0.id.hasPrefix("group_") })?.id ?? items.first?.id
             SelfTestLog.add("sessions count=\(items.count) first=\(items.first?.id ?? "-") title=\(items.first?.title ?? "-") lastMessage=\(items.first?.lastMessage ?? "-")")
         case .failure(let error):
             SelfTestLog.add("sessions FAILED error=\(error.message)")

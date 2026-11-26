@@ -51,15 +51,12 @@ struct KnockBrandMark: View {
 
     var body: some View {
         HStack(spacing: KnockTokens.spacingS) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(KnockTokens.electric)
-                Image(systemName: "hand.tap.fill")
-                    .font(.system(size: 14, weight: .heavy))
-                    .foregroundStyle(KnockTokens.onElectric)
-            }
-            .frame(width: 26, height: 26)
-            .accessibilityHidden(true)
+            // 敲敲标识：黄色手机（心形屏幕 + 信号波），资源 KnockPhone
+            Image("KnockPhone")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 40, height: 40)
+                .accessibilityHidden(true)
 
             KnockText(text, role: .brand, lineLimit: 1)
         }

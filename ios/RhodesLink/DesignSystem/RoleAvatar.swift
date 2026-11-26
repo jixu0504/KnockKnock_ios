@@ -3,16 +3,16 @@
 //  「敲敲」头像体系（P2 视觉口径，文件保留原 API，调用面零改动）。
 //
 //  设计依据：docs/敲敲UI改版计划书-v1.1.md
-//  - 决策 4 / 第六章：**不复用原 147 个内置头像**，先用「黑底 + 1.5pt 浅蓝圈 + 白色 heavy 首字」
-//    占位，后续替换绝区零人物；147 资源保留但默认不展示；
+//  - 决策 4 / 第六章：**不复用原 147 个内置头像**，统一用「黑底 + 1.5pt 浅蓝圈 + 白色 heavy 首字」
+//    占位，后续替换绝区零人物；旧 147 张 avatar_N.png 资源已删除（Release 体积 -6.9MB）；
 //  - `knock:<id>` 前缀 → `Resources/AvatarsKnock/knock_<id>.png`，用户丢素材即生效；
 //    无素材时回退首字占位（绝不 crash、绝不空白）；
 //  - 上传头像（`media/<uuid>.<ext>`）保留并套 1.5pt 浅蓝圈 `#8CC4FF`。
 //
 //  解析兼容（自检零破坏）：
-//  - `RoleAvatarResolver.image(for:)` / `description(for:)` 对旧内置数字保持原语义
-//    （`builtin:N` / `builtin-missing:N`），`RoleAvatarProbe` 接口全部保留；
-//  - 只在 **View 渲染层** 停用内置头像（`knockShowsLegacyAvatars` 环境值可临时打开做回归对比）；
+//  - 旧内置数字 "1".."147" 仍解析为 `builtin:N`（旧数据不 crash、不改写 DB），
+//    但资源已删除 → 渲染一律走首字占位，诊断描述固定 `builtin-missing:N`；
+//  - `RoleAvatarResolver.image(for:)` / `description(for:)` / `RoleAvatarProbe` 接口全部保留；
 //  - `knock:` 非法值（空 / 含路径字符）→ `.placeholder` 首字占位，不 crash。
 //
 //  可访问性：
@@ -56,7 +56,7 @@ struct KnockAvatarStyle {
 
 /// 头像值域来源：
 /// - `knock(id)`：`knock:<id>` 新素材（`Resources/AvatarsKnock/knock_<id>.png`）；
-/// - `builtin(N)`：旧内置数字头像 "1".."147"（Bundle 资源保留，View 层默认不展示）；
+/// - `builtin(N)`：旧内置数字头像 "1".."147"（仅解析兼容；资源已删除，渲染走首字占位）；
 /// - `media(id)`：T49 上传头像 `media/<uuid>.<ext>`（本机媒体目录文件）；
 /// - `placeholder`：空 / 远程 URL / 其它非法值 → 首字占位。
 enum RoleAvatarSource: Equatable {
@@ -81,7 +81,7 @@ enum RoleAvatarSource: Equatable {
 /// - `image` 用 `NSCache` 缓存已解码位图（内置头像走 UIKit 自身缓存，上传头像走本缓存）。
 @MainActor
 enum RoleAvatarResolver {
-    /// 旧内置头像值域 1...147（资源保留、默认不展示）。
+    /// 旧内置头像值域 1...147（仅解析兼容：资源已删除，渲染一律首字占位）。
     static let builtinRange = 1...147
 
     /// 媒体 ID 前缀（shared `MediaRepository.MEDIA_ID_PREFIX`）。
@@ -170,15 +170,15 @@ enum RoleAvatarResolver {
         return ""
     }
 
-    /// 头像位图：敲敲素材 / 内置 Bundle 资源 / 上传媒体文件；
+    /// 头像位图：敲敲素材 / 上传媒体文件；
     /// 不可渲染返回 nil（调用方回退首字占位）。
+    /// 旧内置数字（builtin）资源已删除 → 恒返回 nil（解析兼容保留，渲染走首字占位）。
     static func image(for avatarId: String) -> UIImage? {
         switch source(for: avatarId) {
         case .knock:
             return knockImage(for: avatarId)
-        case .builtin(let number):
-            // 资源保留（自检断言语义不变）；View 层默认不展示，见 RoleAvatar。
-            return UIImage(named: "avatar_\(number)")
+        case .builtin:
+            return nil
         case .media(let id):
             let key = id as NSString
             if let cached = imageCache.object(forKey: key) { return cached }
@@ -200,7 +200,7 @@ enum RoleAvatarResolver {
     }
 
     /// 诊断用的可读描述（角色列表/详情自检日志、DB 核对用）。
-    /// - `knock:<id>` / `knock-missing:<id>` / `builtin:12` / `builtin-missing:12` /
+    /// - `knock:<id>` / `knock-missing:<id>` / `builtin-missing:12`（旧内置资源已删除，恒 missing）/
     ///   `media:media/<uuid>.png` / `media-missing:media/<uuid>.png` /
     ///   `placeholder:empty` / `placeholder:<raw>`
     static func description(for avatarId: String) -> String {
@@ -208,7 +208,7 @@ enum RoleAvatarResolver {
         case .knock(let id):
             return knockImage(for: avatarId) != nil ? "knock:\(id)" : "knock-missing:\(id)"
         case .builtin(let number):
-            return UIImage(named: "avatar_\(number)") != nil ? "builtin:\(number)" : "builtin-missing:\(number)"
+            return "builtin-missing:\(number)"
         case .media(let id):
             return image(for: avatarId) != nil ? "media:\(id)" : "media-missing:\(id)"
         case .placeholder:
@@ -259,7 +259,7 @@ struct KnockAvatar: View {
                     .scaledToFill()
             } else {
                 Text(initial)
-                    .font(.system(size: max(11, size * 0.40), weight: .heavy))
+                    .font(.system(size: max(11, size * 0.40), weight: .semibold))
                     .foregroundStyle(style.initialColor)
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
@@ -280,7 +280,7 @@ struct KnockAvatar: View {
 /// 统一头像 View（角色列表 / 角色详情 / 群成员 / 新建聊天 / 动态 / 日记 / 会话列表全部复用）：
 /// - `knock:` 前缀 → 敲敲素材（缺失回退首字占位）；
 /// - `media/` 上传头像 → 位图 + 1.5pt 浅蓝圈；
-/// - 旧内置数字 1..147 → 默认首字占位（资源保留；`knockShowsLegacyAvatars` 可开回对比）；
+/// - 旧内置数字 1..147 → 首字占位（资源已删除，仅保留值域解析兼容）；
 /// - 空 / 其它 → 首字占位。
 struct RoleAvatar: View {
     /// operators.avatarUri 原样值：`knock:<id>` / 旧内置 "1".."147" / `media/<uuid>.<ext>` / 空。
@@ -288,27 +288,16 @@ struct RoleAvatar: View {
     let name: String
     var size: CGFloat = 52
 
-    /// 旧 147 内置头像展示开关（默认关；计划书决策 4）。
-    @Environment(\.knockShowsLegacyAvatars) private var showsLegacyAvatars
-
     var body: some View {
         Group {
             switch RoleAvatarResolver.source(for: avatarId) {
-            case .knock:
-                KnockAvatar(avatarId: avatarId, name: name, size: size)
             case .media:
                 if let image = RoleAvatarResolver.image(for: avatarId) {
                     imageAvatar(image)
                 } else {
                     KnockAvatar(avatarId: avatarId, name: name, size: size)
                 }
-            case .builtin:
-                if showsLegacyAvatars, let image = RoleAvatarResolver.image(for: avatarId) {
-                    imageAvatar(image)
-                } else {
-                    KnockAvatar(avatarId: avatarId, name: name, size: size)
-                }
-            case .placeholder:
+            case .knock, .builtin, .placeholder:
                 KnockAvatar(avatarId: avatarId, name: name, size: size)
             }
         }
@@ -329,33 +318,6 @@ struct RoleAvatar: View {
     }
 }
 
-// MARK: - 旧内置头像开关（环境值）
-
-private struct KnockShowsLegacyAvatarsKey: EnvironmentKey {
-    static let defaultValue: Bool = KnockPreferences.legacyAvatarsEnabled
-}
-
-extension EnvironmentValues {
-    /// 是否展示旧 147 内置头像（默认 false；仅回归对比时打开）。
-    var knockShowsLegacyAvatars: Bool {
-        get { self[KnockShowsLegacyAvatarsKey.self] }
-        set { self[KnockShowsLegacyAvatarsKey.self] = newValue }
-    }
-}
-
-extension KnockPreferences {
-    /// 旧内置头像开关键（默认 false）。
-    static let legacyAvatarsKey = "knock_legacy_avatars_enabled"
-
-    static var legacyAvatarsEnabled: Bool {
-        UserDefaults.standard.bool(forKey: legacyAvatarsKey)
-    }
-
-    static func setLegacyAvatarsEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: legacyAvatarsKey)
-    }
-}
-
 // MARK: - 诊断入口（自检日志；设置页/角色列表打点用）
 
 /// 头像数据源诊断：证明敲敲素材、旧内置资源、上传媒体文件、占位回退均可判定。
@@ -367,7 +329,7 @@ enum RoleAvatarProbe {
         RoleAvatarResolver.description(for: avatarId)
     }
 
-    /// Bundle 中可解析的旧内置头像数量（启动自检日志证据；资源保留口径不变）。
+    /// Bundle 中可解析的旧内置头像数量（启动自检日志证据；147 张旧资源已删除 → 恒为 0）。
     static func bundledAvatarCount() -> Int {
         RoleAvatarResolver.builtinRange.reduce(into: 0) { count, number in
             if UIImage(named: "avatar_\(number)") != nil { count += 1 }

@@ -324,7 +324,7 @@ class DiaryAutoGlue internal constructor(
     private suspend fun generateSync(operatorId: String, force: Boolean, useMock: Boolean): DiaryGenerateResultDto {
         val started = nowMillis()
         val operator = chatRepo.getOperator(operatorId)
-            ?: throw IllegalArgumentException("干员不存在：$operatorId")
+            ?: throw IllegalArgumentException("代理人不存在：$operatorId")
         val today = todayDate()
         val existing = chatRepo.getDiary(operatorId, today)
         if (!force && existing != null) {
@@ -415,7 +415,7 @@ class DiaryAutoGlue internal constructor(
         val yesterdayEnd = todayStart
         val yesterdayStr = beijingDate(yesterdayStart)
         val yesterdayKey = yesterdayStr.replace("-", "")
-        val userName = settingsRepo.userName.ifBlank { "博士" }
+        val userName = settingsRepo.userName.ifBlank { "绳匠" }
 
         val includePrivate = settingsRepo.isMemoryInjectionAllowed("diary", "PRIVATE_CHAT")
         val includeGroup = settingsRepo.isMemoryInjectionAllowed("diary", "GROUP_CHAT")
@@ -522,7 +522,7 @@ class DiaryAutoGlue internal constructor(
     }
 
     private suspend fun buildMessages(operator: Operator, context: DiaryContext, minChars: Int, maxChars: Int): List<AiMessage> {
-        val userName = settingsRepo.userName.ifBlank { "博士" }
+        val userName = settingsRepo.userName.ifBlank { "绳匠" }
         val template = settingsRepo.resolvePromptTemplate(
             type = "diary",
             mode = "",

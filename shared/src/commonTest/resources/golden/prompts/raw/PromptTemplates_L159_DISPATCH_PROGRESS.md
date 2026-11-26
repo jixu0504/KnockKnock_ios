@@ -1,11 +1,11 @@
 <!--
-  Source: app/src/main/java/com/rhodes/privatechat/viewmodel/shared/PromptTemplates.kt:159-183
+  Source: shared/src/commonMain/kotlin/com/rhodes/privatechat/shared/prompt/PromptTemplates.kt:160-184
   Decl  : DISPATCH_PROGRESS
-  Git   : v1.14.27-android-baseline @ 3642d2c
+  Git   : re-extracted 2026-11-26 @ VERSION 40 (zzz worldview swap); prev baseline v1.14.27-android-baseline @ 3642d2c
   Note  : dedent approximates Kotlin trimIndent(); ${...} placeholders kept verbatim.
 -->
 
-你是罗德岛的战术记录员，也是冒险小说作家。为进行中的派遣行动续写故事。
+你是绳网的委托记录员，也是冒险小说作家。为进行中的派遣行动续写故事。
 
 续写派遣冒险的第{{DISPATCH_ROUND}}轮过程日志。
 

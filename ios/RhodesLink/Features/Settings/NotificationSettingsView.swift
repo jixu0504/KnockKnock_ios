@@ -32,7 +32,7 @@ struct NotificationSettingsView: View {
             id: "private_reply",
             scope: "private_reply",
             title: "私聊回复提醒",
-            detail: "干员回复完成时提醒我（含主动消息）",
+            detail: "代理人回复完成时提醒我（含主动消息）",
             systemImage: "bubble.left.fill",
             key: "notify_private_reply"
         ),
@@ -40,7 +40,7 @@ struct NotificationSettingsView: View {
             id: "group_reply",
             scope: "group_reply",
             title: "群聊回复提醒",
-            detail: "群聊中有新消息或干员互动时提醒我",
+            detail: "群聊中有新消息或代理人互动时提醒我",
             systemImage: "person.3.fill",
             key: "notify_group_reply"
         ),
@@ -55,8 +55,8 @@ struct NotificationSettingsView: View {
         PrefToggle(
             id: "diary",
             scope: "diary",
-            title: "干员日记提醒",
-            detail: "干员写下新日记时提醒我",
+            title: "代理人日记提醒",
+            detail: "代理人写下新日记时提醒我",
             systemImage: "book.closed.fill",
             key: "notify_diary"
         ),

@@ -47,6 +47,11 @@ struct RolesView: View {
     @State private var groups: [GroupItem] = []
     @State private var showNewGroup = false
     @State private var searchText = ""
+    /// 分区展开/收起（群聊 / 私聊）
+    @Environment(\.accessibilityReduceMotion) private var reduceMotionEnabled
+    /// 截图/调试钩子：`--roles-collapse-groups` 启动时收起群聊分区（让私聊分区首屏可见）；无参数零影响
+    @State private var groupsExpanded = !ProcessInfo.processInfo.arguments.contains("--roles-collapse-groups")
+    @State private var privateExpanded = true
     @State private var isLoading = false
     @State private var errorText: String?
     /// P2：二级筛选（全部 / 有会话 / 未开始）
@@ -81,24 +86,31 @@ struct RolesView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                LazyVStack(spacing: KnockTokens.spacingM) {
+            VStack(spacing: 0) {
+                // 头部固定区（非 lazy）：搜索框焦点不会因列表 5s 刷新/懒加载重建而丢失
+                VStack(spacing: KnockTokens.spacingM) {
                     titleSection
-                    KnockSearchBar(placeholder: "搜索角色 / 身份 / 关系", text: $searchText)
+                    KnockSearchBar(placeholder: "搜索联系人 / 阵营 / 关系", text: $searchText)
                     KnockSegmentedBar(
                         items: filterItems,
                         selection: $filter,
                         height: KnockTokens.segmentedSmallHeight,
                         showsIcons: false
                     )
-                    .accessibilityLabel("角色筛选")
-
-                    groupSection
-                    contentSection
+                    .accessibilityLabel("联系人筛选")
                 }
                 .padding(.horizontal, KnockTokens.screenPadding)
                 .padding(.top, KnockTokens.spacingS)
-                .padding(.bottom, KnockTokens.spacingXL)
+
+                ScrollView {
+                    LazyVStack(spacing: KnockTokens.spacingM) {
+                        groupSection
+                        contentSection
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingM)
+                    .padding(.bottom, KnockTokens.spacingXL)
+                }
             }
             .scrollIndicators(.hidden)
             .refreshable { await reload() }
@@ -152,9 +164,9 @@ struct RolesView: View {
     private var titleSection: some View {
         HStack(alignment: .center, spacing: KnockTokens.spacingM) {
             VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
-                KnockText("角色", role: .display, lineLimit: 1)
+                KnockText("联系人", role: .display, lineLimit: 1)
                 KnockText(
-                    "\(roles.count) 位角色 · \(sessionCount) 个会话进行中",
+                    "\(roles.count) 位联系人 · \(sessionCount) 个会话进行中",
                     role: .caption,
                     color: KnockTokens.textSecondary,
                     lineLimit: 1
@@ -194,8 +206,20 @@ struct RolesView: View {
                         .font(.system(size: 13, weight: .heavy))
                         .foregroundStyle(KnockTokens.textSecondary)
                         .accessibilityHidden(true)
-                    KnockText("群聊", role: .sectionTitle, lineLimit: 1)
-                    KnockBadge(text: "\(groups.count)", variant: .neutral)
+                    Button {
+                        withAnimation(reduceMotionEnabled ? nil : .easeOut(duration: 0.16)) { groupsExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            KnockText("群聊", role: .sectionTitle, lineLimit: 1)
+                            KnockBadge(text: "\(groups.count)", variant: .neutral)
+                            Image(systemName: groupsExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 11, weight: .heavy))
+                                .foregroundStyle(KnockTokens.textSecondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(groupsExpanded ? "收起群聊分区" : "展开群聊分区")
                     Spacer(minLength: KnockTokens.spacingS)
                     Button {
                         showNewGroup = true
@@ -208,18 +232,20 @@ struct RolesView: View {
                 }
                 .accessibilityAddTraits(.isHeader)
 
-                if groups.isEmpty {
-                    KnockText(
-                        "还没有群聊。点「新建群聊」选择成员创建；首次打开会自动播种预设群。",
-                        role: .caption,
-                        color: KnockTokens.textSecondary,
-                        lineSpacing: 2
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    VStack(spacing: KnockTokens.spacingS) {
-                        ForEach(groups) { group in
-                            groupRow(group)
+                if groupsExpanded {
+                    if groups.isEmpty {
+                        KnockText(
+                            "还没有群聊。点「新建群聊」选择成员创建；首次打开会自动播种预设群。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(spacing: KnockTokens.spacingS) {
+                            ForEach(groups) { group in
+                                groupRow(group)
+                            }
                         }
                     }
                 }
@@ -278,7 +304,7 @@ struct RolesView: View {
             loadingCard
         } else if roles.isEmpty {
             KnockEmptyState(
-                title: "还没有角色",
+                title: "还没有联系人",
                 message: "shared operators 表为空。首次进入会自动补齐预设角色；若仍为空，可尝试重新播种。",
                 systemImage: "person.2",
                 actionTitle: "重新播种",
@@ -291,21 +317,44 @@ struct RolesView: View {
             )
         } else if filteredRoles.isEmpty {
             KnockEmptyState(
-                title: "没有匹配的角色",
-                message: "没有名字 / 身份 / 关系匹配「\(searchText)」的角色。",
+                title: "没有匹配的联系人",
+                message: "没有名字 / 阵营 / 关系匹配「\(searchText)」的联系人。",
                 systemImage: "magnifyingglass"
             )
         } else {
-            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
-                HStack(spacing: KnockTokens.spacingS) {
-                    KnockText("干员", role: .sectionTitle, lineLimit: 1)
-                    KnockBadge(text: "\(filteredRoles.count)", variant: .neutral)
-                    Spacer(minLength: KnockTokens.spacingS)
-                }
-                .accessibilityAddTraits(.isHeader)
+            // 私聊分区：与群聊分区同款 KnockPanel 卡片 bar（头部图标 + 标题 + 计数 badge + 折叠 chevron）
+            KnockPanel(padding: KnockTokens.spacingM) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textSecondary)
+                            .accessibilityHidden(true)
+                        Button {
+                            withAnimation(reduceMotionEnabled ? nil : .easeOut(duration: 0.16)) { privateExpanded.toggle() }
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingXS) {
+                                KnockText("私聊", role: .sectionTitle, lineLimit: 1)
+                                KnockBadge(text: "\(filteredRoles.count)", variant: .neutral)
+                                Image(systemName: privateExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 11, weight: .heavy))
+                                    .foregroundStyle(KnockTokens.textSecondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(privateExpanded ? "收起私聊分区" : "展开私聊分区")
+                        Spacer(minLength: KnockTokens.spacingS)
+                    }
+                    .accessibilityAddTraits(.isHeader)
 
-                ForEach(filteredRoles) { role in
-                    roleRow(role)
+                    if privateExpanded {
+                        VStack(spacing: KnockTokens.spacingS) {
+                            ForEach(filteredRoles) { role in
+                                roleRow(role)
+                            }
+                        }
+                    }
                 }
             }
         }

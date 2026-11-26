@@ -110,6 +110,38 @@ class MessageHistoryBridge internal constructor(
         }
     }
 
+    /**
+     * 按连续 id 区间读取（T 聊天记录导入定位用）：
+     * 导入器从 `MAX(id)+1` 起**连续**分配消息 id（见 MarkdownChatImporter），UI 拿到 `insertedIds`
+     * 后可一次取出整块导入记录——它们的 timestamp 通常早于首屏分页窗口（历史时间），
+     * 普通 `page(beforeId:)` 需要翻很多页才看得到，导入后「看起来没生效」正是这个原因。
+     * - 只返回属于 [sessionId] 且真实存在的行（已删除/id 冲突的跳过），按 id 升序；
+     * - [count] 上限 500，避免一次拉过多（导入定位只需要最近一段可滚动窗口）。
+     * 回调在 Main 队列；error == null 表示成功。
+     */
+    fun pageByIdRange(
+        sessionId: String,
+        fromId: Long,
+        count: Int,
+        onResult: (List<MessageDto>, String?) -> Unit,
+    ) {
+        workScope.launch {
+            try {
+                val safeCount = if (count <= 0) 0 else count.coerceAtMost(500)
+                val items = buildList {
+                    for (offset in 0 until safeCount) {
+                        val message = chatRepo.messages.getMessageById(fromId + offset) ?: continue
+                        if (message.sessionId != sessionId) continue
+                        add(message.toMessageDto())
+                    }
+                }
+                mainScope.launch { onResult(items, null) }
+            } catch (t: Throwable) {
+                mainScope.launch { onResult(emptyList(), t.message ?: "读取导入消息失败") }
+            }
+        }
+    }
+
     // MARK: - DTO 映射（content 解析）
 
     private fun ChatMessage.toMessageDto(): MessageDto {

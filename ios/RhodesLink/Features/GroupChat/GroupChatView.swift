@@ -27,23 +27,27 @@ struct GroupChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 6) {
             header
-            timeline
+            VStack(spacing: 0) {
+                timeline
+                GlassInputBar(
+                    text: $model.draft,
+                    isStreaming: model.isStreaming,
+                    placeholder: "在群里说点什么…",
+                    onSend: { model.send() },
+                    onCancel: { model.cancel() }
+                )
+            }
+            .background(KnockTokens.chatPanel)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.bottom, 4)
         }
         .background(GlassTokens.chatBackground)
         // 计划书 2.3 / 7.1-9：隐藏系统导航栏与 TabBar
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            GlassInputBar(
-                text: $model.draft,
-                isStreaming: model.isStreaming,
-                placeholder: "在群里说点什么…",
-                onSend: { model.send() },
-                onCancel: { model.cancel() }
-            )
-        }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .task {
             await model.load()
@@ -99,47 +103,34 @@ struct GroupChatView: View {
 
     // MARK: - 顶栏
 
+    /// 参考图聊天顶栏（群聊版）：浮动圆角黑条 = 返回 + 黄色手机标识 + 群名 + 成员胶囊。
     private var header: some View {
-        ZStack(alignment: .center) {
-            VStack(spacing: 3) {
-                // 标题行铺满可用宽度并居中 → 与屏幕中线严格对齐
-                KnockText(model.title, role: .pageTitle, lineLimit: 1, minimumScaleFactor: 0.7)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                KnockText(
-                    headerSubtitle,
-                    role: .caption,
-                    color: KnockTokens.textSecondary,
-                    lineLimit: 1,
-                    minimumScaleFactor: 0.8
-                )
-                .frame(maxWidth: .infinity, alignment: .center)
-            }
-            // 两侧等宽预留（返回胶囊 / 成员按钮），保证标题块真正居中
-            .padding(.horizontal, 96)
-
-            HStack(spacing: 0) {
-                backButton
-                Spacer(minLength: KnockTokens.spacingS)
-                KnockCapsuleIconButton(
-                    systemImage: "person.2.fill",
-                    variant: .neutral,
-                    accessibilityLabel: "群成员"
-                ) {
-                    model.openMembers()
-                }
-                .accessibilityHint("查看成员、禁言状态与自动互动开关")
-            }
-        }
-        .padding(.horizontal, KnockTokens.screenPadding)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
-        .background(KnockTokens.canvas)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(KnockTokens.stroke)
-                .frame(height: KnockTokens.hairline)
+        HStack(spacing: KnockTokens.spacingS) {
+            backButton
+            Image("KnockPhone")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 34, height: 34)
                 .accessibilityHidden(true)
+            KnockText(model.title, role: .pageTitle, lineLimit: 1, minimumScaleFactor: 0.7)
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockCapsuleIconButton(
+                systemImage: "person.2.fill",
+                variant: .neutral,
+                accessibilityLabel: "群成员"
+            ) {
+                model.openMembers()
+            }
+            .accessibilityHint("查看成员、禁言状态与自动互动开关")
         }
+        .padding(.horizontal, KnockTokens.spacingM)
+        .frame(height: 50)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(KnockTokens.chatHeaderBar)
+        )
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .padding(.top, KnockTokens.spacingXS)
     }
 
     /// 返回胶囊（左侧操作槽；不参与标题居中计算）。
@@ -147,21 +138,15 @@ struct GroupChatView: View {
         Button {
             dismiss()
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 13, weight: .heavy))
-                KnockText("返回", role: .captionStrong, lineLimit: 1)
-            }
-            .foregroundStyle(KnockTokens.textPrimary)
-            .padding(.horizontal, 12)
-            .frame(minHeight: 30)
-            .background(Capsule(style: .continuous).fill(KnockTokens.panel))
-            .overlay {
-                Capsule(style: .continuous)
-                    .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(KnockTokens.textPrimary)
+                .frame(width: 30, height: 30)
+                .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel("返回")
@@ -233,22 +218,17 @@ struct GroupChatView: View {
                 row,
                 side: .incoming,
                 avatarName: row.senderName.isEmpty ? "成员" : row.senderName
-            ) {
-                messageMenu(for: row)
-            }
+            )
         case .outgoing:
-            bubbleRow(row, side: .outgoing, avatarName: "我") {
-                messageMenu(for: row)
-            }
+            bubbleRow(row, side: .outgoing, avatarName: "我")
         }
     }
 
     /// 气泡行：头像 36pt 每消息独立（接收在左 / 发送在右），气泡本身见 MessageBubble。
-    private func bubbleRow<Menu: View>(
+    private func bubbleRow(
         _ row: GroupBubbleRow,
         side: BubbleSide,
-        avatarName: String,
-        @ViewBuilder menu: () -> Menu
+        avatarName: String
     ) -> some View {
         HStack(alignment: .top, spacing: KnockTokens.spacingS) {
             if side == .incoming {
@@ -272,7 +252,8 @@ struct GroupChatView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: side == .outgoing ? .trailing : .leading)
-        .contextMenu { menu() }
+        // 长按菜单：敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）
+        .knockContextMenu(actions: messageMenuActions(for: row))
     }
 
     private func groupAvatar(name: String) -> some View {
@@ -292,27 +273,29 @@ struct GroupChatView: View {
         return 10
     }
 
-    @ViewBuilder
-    private func messageMenu(for row: GroupBubbleRow) -> some View {
-        Button {
-            model.copy(row: row)
-        } label: {
-            Label("复制", systemImage: "doc.on.doc")
-        }
-        if row.kind == .incoming && row.type == "ai_json" {
-            Button(role: .destructive) {
-                pendingRecall = row
-            } label: {
-                Label("撤回这一段", systemImage: "arrow.uturn.backward")
+    /// 群消息操作动作集合：复制 → 撤回这一段（destructive）→ 重试。
+    /// 与系统 `.contextMenu` 版的文案 / 图标 / 顺序 / 条件 / destructive 标记逐一对应。
+    private func messageMenuActions(for row: GroupBubbleRow) -> [KnockMenuAction] {
+        var actions: [KnockMenuAction] = [
+            KnockMenuAction("复制", systemImage: "doc.on.doc") {
+                model.copy(row: row)
             }
+        ]
+        if row.kind == .incoming && row.type == "ai_json" {
+            actions.append(
+                KnockMenuAction("撤回这一段", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    pendingRecall = row
+                }
+            )
         }
         if row.type == "send_failed" || row.type == "gift_reply_failed" {
-            Button {
-                model.retry(row: row)
-            } label: {
-                Label("重试", systemImage: "arrow.clockwise")
-            }
+            actions.append(
+                KnockMenuAction("重试", systemImage: "arrow.clockwise") {
+                    model.retry(row: row)
+                }
+            )
         }
+        return actions
     }
 
     private func showsTimeSeparator(at index: Int, row: GroupBubbleRow) -> Bool {

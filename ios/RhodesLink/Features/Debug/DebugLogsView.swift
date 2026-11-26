@@ -167,7 +167,7 @@ struct DebugLogsView: View {
             ("WARN", "Provider", "供应商连接测试超时，已自动回退本地演示通道"),
             ("INFO", "Memory", "写入长期印象 memoryId=1024 operator=zzz008"),
             ("ERROR", "Notification", "通知授权被拒绝（status=denied），已引导用户前往系统设置"),
-            ("INFO", "Diary", "干员日记同步完成 count=3 未读=1"),
+            ("INFO", "Diary", "代理人日记同步完成 count=3 未读=1"),
             ("DEBUG", "Knowledge", "知识库召回命中 2 条 chunk，topScore=0.83"),
             ("INFO", "DebugLogs", "演示日志写入完成（--settings-extra-demo-logs）"),
         ]
@@ -254,14 +254,14 @@ struct DebugLogsView: View {
                         exportNow()
                     } label: {
                         Label("生成导出文件", systemImage: "doc.badge.plus")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 36))
 
                     if let exportedURL {
                         ShareLink(item: exportedURL) {
                             Label("分享", systemImage: "square.and.arrow.up")
-                                .font(.system(size: 13, weight: .heavy))
+                                .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
                     }
@@ -270,7 +270,7 @@ struct DebugLogsView: View {
                         showClearConfirm = true
                     } label: {
                         Label("清空", systemImage: "trash")
-                            .font(.system(size: 13, weight: .heavy))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(KnockDangerButtonStyle(fullWidth: false, height: 36))
                 }
@@ -364,7 +364,7 @@ struct DebugLogsView: View {
             ? KnockTokens.dangerBright
             : (entry.levelIsWarn ? KnockTokens.textPrimary : KnockTokens.textSecondary)
         return Text(entry.level)
-            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
             .foregroundStyle(color)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)

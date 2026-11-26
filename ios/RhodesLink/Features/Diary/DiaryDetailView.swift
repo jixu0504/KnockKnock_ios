@@ -30,7 +30,7 @@ struct DiaryDetailView: View {
 
             VStack(spacing: 0) {
                 KnockHeader(
-                    title: "干员日记",
+                    title: "代理人日记",
                     subtitle: detail?.operatorName ?? entry.operatorName,
                     showsBack: true,
                     onBack: { dismiss() }
@@ -103,7 +103,7 @@ struct DiaryDetailView: View {
                         .font(.system(size: 10, weight: .heavy))
                         .foregroundStyle(KnockTokens.textTertiary)
                         .accessibilityHidden(true)
-                    KnockText("日记仅保存在本机；打开即标记已读（干员维度未读）", role: .caption, color: KnockTokens.textTertiary, lineSpacing: 2)
+                    KnockText("日记仅保存在本机；打开即标记已读（代理人维度未读）", role: .caption, color: KnockTokens.textTertiary, lineSpacing: 2)
                 }
             }
         }

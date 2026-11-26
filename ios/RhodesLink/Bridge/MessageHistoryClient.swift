@@ -136,4 +136,31 @@ extension AppGraphClient {
             }
         }
     }
+
+    /// 按连续 id 区间读取（聊天记录导入定位用）：
+    /// 导入器从 `MAX(id)+1` 起连续分配 id，这里一次取回整块导入记录（时间戳通常早于首屏分页窗口）。
+    /// 不存在的 id 由 shared 跳过；结果按 id 升序。
+    func loadMessagesByIdRange(
+        sessionId: String,
+        fromId: Int64,
+        count: Int
+    ) async -> Result<[MessageItem], BridgeError> {
+        guard fromId > 0, count > 0 else { return .success([]) }
+        return await withCheckedContinuation { continuation in
+            historyBridge.pageByIdRange(
+                sessionId: sessionId,
+                fromId: fromId,
+                count: Int32(min(count, 500))
+            ) { dtos, error in
+                if !Thread.isMainThread {
+                    NSLog("[RhodesLink][Bridge] ⚠️ history.pageByIdRange 回调不在主线程")
+                }
+                if let error {
+                    continuation.resume(returning: .failure(BridgeError(message: error)))
+                } else {
+                    continuation.resume(returning: .success(dtos.map(MessageItem.init(dto:))))
+                }
+            }
+        }
+    }
 }
