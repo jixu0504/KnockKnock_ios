@@ -1,0 +1,98 @@
+CREATE TABLE IF NOT EXISTS memory_corpus_stats (
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    docCount INTEGER NOT NULL DEFAULT 0,
+    totalDocumentLength INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ownerType, ownerId)
+);
+
+CREATE TABLE IF NOT EXISTS memory_term_stats (
+    term TEXT NOT NULL,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    documentFrequency INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (term, ownerType, ownerId)
+);
+
+CREATE TABLE IF NOT EXISTS memory_document_stats (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    documentLength INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS memory_terms (
+    term TEXT NOT NULL,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    memoryId INTEGER NOT NULL,
+    tf INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (term, ownerType, ownerId, memoryId)
+);
+
+CREATE INDEX IF NOT EXISTS memory_terms_lookup
+ON memory_terms(term, ownerType, ownerId);
+
+-- 语料统计（BM25 的 N / avgdl）。docCount 与「active 条数」不一致即视为索引需要重建。
+lexicalGetCorpus:
+SELECT * FROM memory_corpus_stats WHERE ownerType = ? AND ownerId = ?;
+
+lexicalInsertOrReplaceCorpus:
+INSERT OR REPLACE INTO memory_corpus_stats(ownerType, ownerId, docCount, totalDocumentLength, updatedAt)
+VALUES (?, ?, ?, ?, ?);
+
+-- SQLite 3.18 dialect（本项目 SQLDelight 配置）不支持 UPSERT：用 INSERT OR REPLACE + 子查询做一行自增。
+lexicalBumpCorpus:
+INSERT OR REPLACE INTO memory_corpus_stats(ownerType, ownerId, docCount, totalDocumentLength, updatedAt)
+SELECT ?, ?,
+       COALESCE((SELECT docCount FROM memory_corpus_stats WHERE ownerType = ? AND ownerId = ?), 0) + 1,
+       COALESCE((SELECT totalDocumentLength FROM memory_corpus_stats WHERE ownerType = ? AND ownerId = ?), 0) + ?,
+       ?;
+
+lexicalDeleteTermStats:
+DELETE FROM memory_term_stats WHERE ownerType = ? AND ownerId = ?;
+
+lexicalDeleteTerms:
+DELETE FROM memory_terms WHERE ownerType = ? AND ownerId = ?;
+
+lexicalDeleteDocStatsForOwner:
+DELETE FROM memory_document_stats
+WHERE memoryId IN (SELECT id FROM memory_items WHERE ownerType = ? AND ownerId = ?);
+
+lexicalInsertTerm:
+INSERT OR REPLACE INTO memory_terms(term, ownerType, ownerId, memoryId, tf)
+VALUES (?, ?, ?, ?, ?);
+
+lexicalInsertDocStats:
+INSERT OR REPLACE INTO memory_document_stats(memoryId, documentLength) VALUES (?, ?);
+
+lexicalInsertOrReplaceTermStat:
+INSERT OR REPLACE INTO memory_term_stats(term, ownerType, ownerId, documentFrequency)
+VALUES (?, ?, ?, ?);
+
+lexicalBumpTermStat:
+INSERT OR REPLACE INTO memory_term_stats(term, ownerType, ownerId, documentFrequency)
+SELECT ?, ?, ?,
+       COALESCE((SELECT documentFrequency FROM memory_term_stats WHERE term = ? AND ownerType = ? AND ownerId = ?), 0) + 1;
+
+lexicalTermStats:
+SELECT term, documentFrequency FROM memory_term_stats
+WHERE ownerType = ? AND ownerId = ? AND term IN ?;
+
+lexicalPostings:
+SELECT term, memoryId, tf FROM memory_terms
+WHERE ownerType = ? AND ownerId = ? AND term IN ?;
+
+lexicalDocLengths:
+SELECT memoryId, documentLength FROM memory_document_stats WHERE memoryId IN ?;
+
+lexicalActiveContents:
+SELECT id, content FROM memory_items
+WHERE ownerType = ? AND ownerId = ? AND status = 'active' AND expiresAt > ?;
+
+lexicalActiveOwners:
+SELECT DISTINCT ownerType, ownerId FROM memory_items
+WHERE status = 'active' AND expiresAt > ?;
+
+lexicalActiveCount:
+SELECT COUNT(*) FROM memory_items
+WHERE ownerType = ? AND ownerId = ? AND status = 'active' AND expiresAt > ?;

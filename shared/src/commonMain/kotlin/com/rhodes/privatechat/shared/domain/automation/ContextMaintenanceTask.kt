@@ -368,25 +368,31 @@ class ContextMaintenanceTask(
             val rebuildOutcome = runRebuild(session, group, now)
             if (rebuildOutcome != null) return finishRebuildSession(rebuildOutcome, session.id, group)
         } else {
-            // §C-5 非重建分支：failed 且自动重试 → 到点重跑摘要；未开自动重试 → 跳过。
+            // §C-5 非重建分支：
+            // - failed 且关闭自动重试 → 跳过；
+            // - failed 且未到退避时刻 → 延后；
+            // - 其余（含 idle：回复后刚入队）→ 尝试生成一次。
+            //   生成器只在「确有可压缩的旧轮次」时才调用模型，没有到期内容时会立刻返回 false 并把
+            //   状态写回 idle，因此这里不必再自行门槛——否则回复后的触发永远不会产生摘要（审计 P0-2）。
             val status = settings.getRollingSummaryStatus(session.id)
-            if (ContextMaintenancePolicy.shouldRetrySummary(status.state, settings.summaryAutoRetryEnabled)) {
-                if (ContextMaintenancePolicy.summaryInBackoff(
-                        state = status.state,
-                        autoRetryEnabled = settings.summaryAutoRetryEnabled,
-                        now = now,
-                        nextRetryAt = status.nextRetryAt,
-                    )
-                ) {
+            val autoRetry = settings.summaryAutoRetryEnabled
+            when {
+                ContextMaintenancePolicy.shouldSkipSummary(status.state, autoRetry) ->
+                    events(ContextMaintenanceEvent.Skipped(session.id, "summary_auto_retry_disabled"))
+
+                ContextMaintenancePolicy.summaryInBackoff(status.state, autoRetry, now, status.nextRetryAt) -> {
                     events(ContextMaintenanceEvent.Deferred(session.id, ContextMaintenanceDeferReason.SUMMARY_BACKOFF, status.nextRetryAt))
                     return finishRebuildSession(DelayedTaskOutcome.RETRY, session.id, group)
                 }
-                val success = store.generateShortTermSummary(session, group)
-                events(ContextMaintenanceEvent.SummaryGenerated(session.id, success))
-                val after = settings.getRollingSummaryStatus(session.id)
-                if (!success || after.state == "failed") {
-                    events(ContextMaintenanceEvent.Deferred(session.id, ContextMaintenanceDeferReason.SUMMARY_BACKOFF, after.nextRetryAt))
-                    return finishRebuildSession(DelayedTaskOutcome.RETRY, session.id, group)
+
+                else -> {
+                    val success = store.generateShortTermSummary(session, group)
+                    events(ContextMaintenanceEvent.SummaryGenerated(session.id, success))
+                    val after = settings.getRollingSummaryStatus(session.id)
+                    if (after.state == "failed") {
+                        events(ContextMaintenanceEvent.Deferred(session.id, ContextMaintenanceDeferReason.SUMMARY_BACKOFF, after.nextRetryAt))
+                        return finishRebuildSession(DelayedTaskOutcome.RETRY, session.id, group)
+                    }
                 }
             }
         }

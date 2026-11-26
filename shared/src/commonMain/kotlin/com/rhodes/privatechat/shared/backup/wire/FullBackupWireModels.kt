@@ -22,6 +22,7 @@ import com.rhodes.privatechat.shared.model.MomentComment
 import com.rhodes.privatechat.shared.model.MomentLike
 import com.rhodes.privatechat.shared.model.Operator
 import com.rhodes.privatechat.shared.model.SharedExperience
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
@@ -56,6 +57,10 @@ data class FullBackupContentWire(
     val momentComments: List<MomentComment>? = null,
     val diaries: List<Diary>? = null,
     val memoryItems: List<MemoryItem>? = null,
+    val memoryFacts: List<MemoryFactWire>? = null,
+    val memoryRelations: List<MemoryRelationWire>? = null,
+    val impressions: List<ImpressionWire>? = null,
+    val impressionEvidence: List<ImpressionEvidenceWire>? = null,
     val knowledgeBases: List<FullBackupKnowledgeBaseWire>? = null,
     val knowledgeBaseChunks: List<FullBackupKnowledgeBaseChunkWire>? = null,
     val operatorKnowledgeBaseAssignments: List<FullBackupKnowledgeBaseAssignmentWire>? = null,
@@ -88,6 +93,77 @@ data class FullBackupArchiveWire(
     val manifest: BackupManifestWire,
     val payload: FullBackupPayloadWire,
     val issues: List<BackupIssue> = emptyList(),
+)
+
+/**
+ * 结构化事实（T88；oracle：`memory_facts` 表 / `MemoryFact` 模型）。
+ *
+ * `memoryId` 指向备份内 `memory_items.id`；`qualifiers` 在 DB 内是 JSON 数组文本，wire 用字符串列表承载。
+ * 旧包没有该数组时整段为 null，恢复按空列表处理。
+ */
+@Serializable
+data class MemoryFactWire(
+    val memoryId: Long,
+    val ownerType: String,
+    val ownerId: String,
+    val subject: String = "",
+    val predicate: String = "",
+    @SerialName("object") val objectValue: String = "",
+    val polarity: String = "unknown",
+    val qualifiers: List<String> = emptyList(),
+    val factKey: String = "",
+    val validFrom: Long? = null,
+    val validTo: Long? = null,
+    val recordedAt: Long = 0L,
+    val timeSource: String = "unknown",
+    val conflictStatus: String = "none",
+)
+
+/** 事实关系（T88；oracle：`memory_relations` 表）。DB 自增 id 不备份，恢复时重建。 */
+@Serializable
+data class MemoryRelationWire(
+    val fromMemoryId: Long,
+    val toMemoryId: Long,
+    val relationType: String,
+    val confidence: Double = 0.5,
+    val decidedBy: String = "rule",
+    val createdAt: Long = 0L,
+)
+
+/**
+ * 印象（oracle：`impressions` 表 / `ImpressionRepository.Impression` 读模型）。
+ *
+ * `id` 只是备份内局部 id，用于与 [ImpressionEvidenceWire.impressionId] 对应；DB 自增 id 恢复时重建，
+ * 证据外键按 old→new 映射回填（同 memoryItems 策略）。
+ */
+@Serializable
+data class ImpressionWire(
+    val id: Long,
+    val ownerType: String,
+    val ownerId: String,
+    val characterId: String = "",
+    val layer: String = "interaction",
+    val subject: String = "",
+    val predicate: String = "",
+    val value: String = "",
+    val polarity: String = "unknown",
+    val factKey: String = "",
+    val confidence: Double = 0.0,
+    val tone: String = "neutral",
+    val evidenceCount: Int = 0,
+    val firstSeenAt: Long = 0L,
+    val lastConfirmedAt: Long = 0L,
+    val status: String = "active",
+    val updatedAt: Long = 0L,
+)
+
+/** 印象证据（oracle：`memory_impression_evidence` 表；复合主键 (impressionId, memoryId)）。 */
+@Serializable
+data class ImpressionEvidenceWire(
+    val impressionId: Long,
+    val memoryId: Long,
+    val weight: Double = 1.0,
+    val createdAt: Long = 0L,
 )
 
 /** 角色关系（oracle：`ExportPayload.kt:71-84`；type 为枚举名字符串，恢复时容错降级）。 */

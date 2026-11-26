@@ -9,15 +9,16 @@ import com.rhodes.privatechat.shared.db.RhodesDatabase
  * - [expected]：按**过滤后 payload** 推导的期望计数（权威口径），按分类选择门禁裁剪；
  *   roles-only（roles=true、chats=false）时 operators/relationships 为 upsert 语义，计数不可预期，
  *   故不进入严格对账（与 T30 `BackupRestoreSelfCheck` 同原则）。
- * - [read]：单事务内读取 22 张恢复表的实际计数（全部走 SQLDelight 既有查询，零新 SQL/迁移）。
+ * - [read]：单事务内读取 26 张恢复表的实际计数（全部走 SQLDelight 查询，零新迁移）。
  * - [invariantViolations]：字段级不变量（向量清空 / 动态计数回填），以 mismatch 文本返回。
  */
 object BackupFullCounts {
 
-    /** 自检 checked 键（22 张恢复表 + settings；按选择裁剪后可能少于 23）。 */
+    /** 自检 checked 键（26 张恢复表 + settings；按选择裁剪后可能少于 27）。 */
     val ALL_KEYS = listOf(
         "operators", "relationships", "sessions", "messages", "displayEvents",
         "archives", "historySegments", "memories", "anchors", "memoryItems",
+        "memoryFacts", "memoryRelations", "impressions", "impressionEvidence",
         "moments", "comments", "likes", "diaries", "sharedExperiences", "participants",
         "knowledgeBases", "chunks", "assignments", "gifts", "dispatches", "mahjong", "settings",
     )
@@ -45,6 +46,10 @@ object BackupFullCounts {
             out["memories"] = c.memories.orEmpty().size
             out["anchors"] = c.anchors.orEmpty().size
             out["memoryItems"] = c.memoryItems.orEmpty().size
+            out["memoryFacts"] = c.memoryFacts.orEmpty().size
+            out["memoryRelations"] = c.memoryRelations.orEmpty().size
+            out["impressions"] = c.impressions.orEmpty().size
+            out["impressionEvidence"] = c.impressionEvidence.orEmpty().size
         }
         if (s.social) {
             out["moments"] = c.moments.orEmpty().size
@@ -81,6 +86,10 @@ object BackupFullCounts {
             "memories" to memoriesQueries.getAllMemoriesForBackup().executeAsList().size,
             "anchors" to memoryAnchorsQueries.getAnchorCount().executeAsOne().toInt(),
             "memoryItems" to memoryItemsQueries.getAllMemoryItems().executeAsList().size,
+            "memoryFacts" to memoryFactsQueries.countMemoryFacts().executeAsOne().toInt(),
+            "memoryRelations" to memoryRelationsQueries.countMemoryRelations().executeAsOne().toInt(),
+            "impressions" to impressionsQueries.selectAllForBackup().executeAsList().size,
+            "impressionEvidence" to impressionEvidenceQueries.selectAllForBackup().executeAsList().size,
             "moments" to momentsQueries.getAllMoments().executeAsList().size,
             "comments" to momentCommentsQueries.getAllCommentsForBackup().executeAsList().size,
             "likes" to momentLikesQueries.getAllLikesForBackup().executeAsList().size,

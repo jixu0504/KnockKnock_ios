@@ -1,0 +1,15 @@
+-- T83 印象纠正审计：编辑正文 / 拒绝 / 撤销拒绝 / 冻结 / 解冻各追加一条记录。
+-- 与 Impressions.sq 的定义一致；只建表建索引，不迁移历史裁决（升级前没有审计数据）。
+
+CREATE TABLE IF NOT EXISTS impression_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  impressionId INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  beforeValue TEXT NOT NULL DEFAULT '',
+  afterValue TEXT NOT NULL DEFAULT '',
+  beforeStatus TEXT NOT NULL DEFAULT '',
+  afterStatus TEXT NOT NULL DEFAULT '',
+  createdAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS impression_history_impression ON impression_history(impressionId, createdAt);

@@ -53,10 +53,49 @@ WHERE status = 'active' AND expiresAt > ? AND content != '' AND vectorId = ''
 ORDER BY createdAt ASC
 LIMIT ?;
 
+getActiveMemoryTopicRefs:
+SELECT id, topicKey FROM memory_items
+WHERE ownerType = ? AND ownerId = ? AND status = 'active' AND expiresAt > ? AND topicKey IN ?
+ORDER BY createdAt DESC
+LIMIT ?;
+
+getActiveMemoryItemsByIds:
+SELECT * FROM memory_items
+WHERE id IN ? AND status = 'active' AND expiresAt > ?
+ORDER BY createdAt DESC;
+
 getActiveMemoryItemsByLevel:
 SELECT * FROM memory_items
 WHERE ownerType = ? AND ownerId = ? AND memoryLevel = ? AND status = 'active' AND expiresAt > ?
 ORDER BY importance DESC, createdAt DESC;
+
+-- 索引重建：向量存在但签名与当前嵌入配置不一致（换嵌入模型/切第三方后历史向量全部失效）。
+getActiveMemoryItemsWithStaleVector:
+SELECT * FROM memory_items
+WHERE status = 'active' AND expiresAt > :now AND vectorId != ''
+  AND vectorId IN (SELECT id FROM vector_memories WHERE embeddingSignature != :signature)
+ORDER BY createdAt ASC
+LIMIT :limit;
+
+-- 索引重建（游标分页）：单条嵌入失败时不得让同一条目反复占据首页，否则后续条目永远轮不到。
+getActiveMemoryItemsMissingVectorAfter:
+SELECT * FROM memory_items
+WHERE status = 'active' AND expiresAt > :now AND content != '' AND vectorId = ''
+  AND (createdAt > :afterCreatedAt OR (createdAt = :afterCreatedAt AND id > :afterId))
+ORDER BY createdAt ASC, id ASC
+LIMIT :limit;
+
+getActiveMemoryItemsWithStaleVectorAfter:
+SELECT * FROM memory_items
+WHERE status = 'active' AND expiresAt > :now AND vectorId != ''
+  AND vectorId IN (SELECT id FROM vector_memories WHERE embeddingSignature != :signature)
+  AND (createdAt > :afterCreatedAt OR (createdAt = :afterCreatedAt AND id > :afterId))
+ORDER BY createdAt ASC, id ASC
+LIMIT :limit;
+
+-- 生命周期：软删（expired）保留宽限期后物理删除，避免只进不出。
+purgeExpiredMemoryItems:
+DELETE FROM memory_items WHERE status = 'expired' AND updatedAt < :cutoff;
 
 getMemoryItemsByType:
 SELECT * FROM memory_items WHERE ownerType = ? AND ownerId = ? AND memoryType = ? ORDER BY createdAt DESC;

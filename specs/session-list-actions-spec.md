@@ -80,7 +80,7 @@
 ## 5. 验证
 
 1. `./gradlew --no-daemon :shared:linkDebugFrameworkIosSimulatorArm64`（BUILD SUCCESSFUL）。
-2. `xcodebuild build -project RhodesLink.xcodeproj -scheme RhodesLink -destination 'generic/platform=iOS Simulator'`
+2. `xcodebuild build -project KnockKnock.xcodeproj -scheme KnockKnock -destination 'generic/platform=iOS Simulator'`
    （BUILD SUCCEEDED）。
 3. 模拟器自动化（`--selftest --sessions-selftest`）：置顶排序、取消置顶、markRead/markAllRead、
    hide→列表消失、send（引擎 UnhideSession）→恢复、hideAll→空、恢复 hiddenIds→列表恢复。

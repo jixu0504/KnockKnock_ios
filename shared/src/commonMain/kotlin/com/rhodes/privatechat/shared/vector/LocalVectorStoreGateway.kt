@@ -1,10 +1,11 @@
 package com.rhodes.privatechat.shared.vector
+
+import com.rhodes.privatechat.shared.domain.memory.MemoryVectorFormatter
 import kotlinx.datetime.Clock
 
 import com.rhodes.privatechat.shared.db.DatabaseWrapper
 import com.rhodes.privatechat.shared.db.DatabaseDispatcher
 import com.rhodes.privatechat.shared.db.RhodesDatabase
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
@@ -27,19 +28,45 @@ class LocalVectorStoreGateway(
         val id: String, val ownerType: String, val ownerId: String, val sourceType: String,
         val sourceId: String, val content: String, val importance: Double, val embeddingJson: String,
         val tags: String, val visibility: String, val embeddingSignature: String, val createdAt: Long, val expiresAt: Long,
+        val embeddingBlob: ByteArray?, val embeddingDimension: Long, val embeddingDtype: String,
     )
 
     private fun rawRow(
         id: String, ownerType: String, ownerId: String, sourceType: String, sourceId: String,
         content: String, importance: Double, embeddingJson: String, tags: String, visibility: String,
         embeddingSignature: String, createdAt: Long, expiresAt: Long,
-    ) = RawVectorRow(id, ownerType, ownerId, sourceType, sourceId, content, importance, embeddingJson, tags, visibility, embeddingSignature, createdAt, expiresAt)
+        embeddingBlob: ByteArray?, embeddingDimension: Long, embeddingDtype: String,
+    ) = RawVectorRow(
+        id, ownerType, ownerId, sourceType, sourceId, content, importance, embeddingJson, tags, visibility,
+        embeddingSignature, createdAt, expiresAt, embeddingBlob, embeddingDimension, embeddingDtype,
+    )
+
+    /**
+     * 新行优先 float32 BLOB；blob 为空（迁移前旧行）回退 embeddingJson。
+     * 返回 null 表示两处都存在但都不可用（计入诊断失败数）；emptyList 表示确实没有向量。
+     */
+    private fun decodeEmbedding(blob: ByteArray?, dimension: Long, dtype: String, embeddingJson: String): List<Double>? {
+        if (blob != null && blob.isNotEmpty()) {
+            if (dtype != VectorEmbeddingCodec.DTYPE_FLOAT32) return null
+            val decoded = VectorEmbeddingCodec.decode(blob) ?: return null
+            return decoded.takeIf { VectorEmbeddingCodec.isUsable(it, dimension.toInt()) }
+        }
+        return if (embeddingJson.isBlank()) emptyList()
+        else runCatching { json.decodeFromString<List<Double>>(embeddingJson) }.getOrDefault(emptyList())
+    }
+
+    private fun RawVectorRow.decodedEmbedding(): List<Double>? =
+        decodeEmbedding(embeddingBlob, embeddingDimension, embeddingDtype, embeddingJson)
 
     override suspend fun upsert(memory: VectorMemory) = withContext(DatabaseDispatcher.dispatcher) {
+        val embedding = memory.embedding
+        // 空向量按“无向量”落 NULL，保持旧 JSON '[]' 语义；BLOB 长度由维度推导，二者始终自洽。
+        require(embedding.isEmpty() || VectorEmbeddingCodec.isUsable(embedding)) { "向量维度非法或包含非有限值" }
+        val blob = if (embedding.isEmpty()) null else VectorEmbeddingCodec.encode(embedding)
         db.transaction {
         val source = if (memory.originMemoryId > 0) db.memoryItemsQueries.getMemoryItemById(memory.originMemoryId).executeAsOneOrNull() else null
         if (memory.originMemoryId > 0) check(source != null && source.status == "active" && source.content == memory.originContent && source.ownerType == memory.ownerType && source.ownerId == memory.ownerId && source.expiresAt == memory.expiresAt && (source.privacy == null || source.privacy == memory.visibility)) { "原记忆已修改、删除或归档，本次索引未覆盖" }
-        db.vectorMemoriesQueries.insertVectorMemory(
+        db.vectorMemoriesQueries.insertVectorMemoryWithBlob(
             id = memory.id,
             ownerType = memory.ownerType,
             ownerId = memory.ownerId,
@@ -47,12 +74,15 @@ class LocalVectorStoreGateway(
             sourceId = memory.sourceId,
             content = memory.content,
             importance = memory.importance,
-            embeddingJson = json.encodeToString(memory.embedding),
+            embeddingJson = "",
             tags = memory.tags,
             visibility = memory.visibility,
             embeddingSignature = memory.embeddingSignature,
             createdAt = memory.createdAt,
             expiresAt = memory.expiresAt,
+            embeddingBlob = blob,
+            embeddingDimension = embedding.size.toLong(),
+            embeddingDtype = VectorEmbeddingCodec.DTYPE_FLOAT32,
         )
         if (source != null) {
             db.memoryItemsQueries.updateMemoryItemVectorId(memory.id, source.updatedAt, source.id)
@@ -98,7 +128,7 @@ class LocalVectorStoreGateway(
         val (rows, now, sourceKinds) = withContext(DatabaseDispatcher.dispatcher) { loadCandidates(request) }
         val sqlMs = sqlStarted.elapsedNow().inWholeMilliseconds
         val scoreStarted = kotlin.time.TimeSource.Monotonic.markNow()
-        var decoded = 0
+        var decodedCount = 0
         var failures = 0
         var mismatches = 0
         val results = rows.asSequence()
@@ -108,8 +138,10 @@ class LocalVectorStoreGateway(
             .filter { request.embeddingSignature.isBlank() || it.embeddingSignature == request.embeddingSignature }
             .filter { it.expiresAt > now }
             .mapNotNull { row ->
-                val embedding = runCatching { json.decodeFromString<List<Double>>(row.embeddingJson) }.getOrElse { failures++; emptyList() }
-                if (embedding.isNotEmpty()) decoded++
+                val rowEmbedding = row.decodedEmbedding()
+                if (rowEmbedding == null) failures++
+                val embedding = rowEmbedding ?: emptyList()
+                if (embedding.isNotEmpty()) decodedCount++
                 if (request.queryEmbedding.isNotEmpty() && embedding.isNotEmpty() && request.queryEmbedding.size != embedding.size) {
                     mismatches++
                     return@mapNotNull null
@@ -118,7 +150,7 @@ class LocalVectorStoreGateway(
                 else keywordScore(request.query, row.content) + row.importance * 0.05
                 score.takeIf { it >= request.minScore }
             }.toList()
-        return DiagnosticMetrics(rows.size, decoded, failures, mismatches, results.size.coerceAtMost(request.limit), sqlMs, scoreStarted.elapsedNow().inWholeMilliseconds)
+        return DiagnosticMetrics(rows.size, decodedCount, failures, mismatches, results.size.coerceAtMost(request.limit), sqlMs, scoreStarted.elapsedNow().inWholeMilliseconds)
     }
 
     private fun loadCandidates(request: VectorSearchRequest): Triple<List<RawVectorRow>, Long, List<String>> {
@@ -204,7 +236,7 @@ class LocalVectorStoreGateway(
             .toList()
         return filtered
             .mapNotNull { row ->
-                val embedding = runCatching { json.decodeFromString<List<Double>>(row.embeddingJson) }.getOrDefault(emptyList())
+                val embedding = row.decodedEmbedding() ?: emptyList()
                 val score = if (request.queryEmbedding.isNotEmpty() && embedding.isNotEmpty() && request.queryEmbedding.size == embedding.size) {
                     cosineSimilarity(request.queryEmbedding, embedding)
                 } else if (request.queryEmbedding.isEmpty() || embedding.isEmpty()) {
@@ -228,6 +260,7 @@ class LocalVectorStoreGateway(
                     createdAt = row.createdAt,
                     expiresAt = row.expiresAt,
                     similarity = score,
+                    originMemoryId = MemoryVectorFormatter.originMemoryId(row.id),
                 ) to score
             }
             .sortedByDescending { it.second }
@@ -237,7 +270,7 @@ class LocalVectorStoreGateway(
 
     override suspend fun listMemories(ownerType: String, ownerId: String): List<VectorMemory> = withContext(DatabaseDispatcher.dispatcher) {
         db.vectorMemoriesQueries.getVectorMemoriesByOwner(ownerType, ownerId).executeAsList().map { row ->
-            val embedding = runCatching { json.decodeFromString<List<Double>>(row.embeddingJson) }.getOrDefault(emptyList())
+            val embedding = decodeEmbedding(row.embeddingBlob, row.embeddingDimension, row.embeddingDtype, row.embeddingJson) ?: emptyList()
             VectorMemory(
                 id = row.id,
                 ownerType = row.ownerType,
@@ -252,6 +285,7 @@ class LocalVectorStoreGateway(
                 embeddingSignature = row.embeddingSignature,
                 createdAt = row.createdAt,
                 expiresAt = row.expiresAt,
+                originMemoryId = MemoryVectorFormatter.originMemoryId(row.id),
             )
         }
     }

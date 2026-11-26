@@ -1,0 +1,29 @@
+CREATE TABLE IF NOT EXISTS memory_relations (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    fromMemoryId INTEGER NOT NULL,
+    toMemoryId INTEGER NOT NULL,
+    relationType TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    decidedBy TEXT NOT NULL DEFAULT 'rule',
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(fromMemoryId, toMemoryId, relationType)
+);
+
+CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations(fromMemoryId, relationType);
+CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations(toMemoryId, relationType);
+
+insertMemoryRelation:
+INSERT OR IGNORE INTO memory_relations(fromMemoryId, toMemoryId, relationType, confidence, decidedBy, createdAt)
+VALUES (?, ?, ?, ?, ?, ?);
+
+getRelationsForMemory:
+SELECT * FROM memory_relations WHERE fromMemoryId = ? OR toMemoryId = ? ORDER BY id ASC;
+
+countMemoryRelations:
+SELECT COUNT(*) FROM memory_relations;
+
+getAllMemoryRelationsForBackup:
+SELECT * FROM memory_relations ORDER BY id;
+
+deleteAllMemoryRelations:
+DELETE FROM memory_relations;

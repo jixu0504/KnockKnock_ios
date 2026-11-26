@@ -43,6 +43,9 @@ import com.rhodes.privatechat.shared.model.MomentLike
 import com.rhodes.privatechat.shared.model.Operator
 import com.rhodes.privatechat.shared.model.SharedExperience
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -242,6 +245,7 @@ abstract class FullBackupGoldenTest {
         try {
             val archive = FullBackupReader().read(FullBackupGoldens.load("full-all-v2.zip"))
             assertRestored(restore(env, FullBackupGoldens.load("full-all-v2.zip")).first)
+            assertTrue(env.settings.memoryIndexRebuildPending, "恢复后必须安排记忆索引重建（T65）")
             val expected = archive.payload
 
             assertEquals(
@@ -282,9 +286,8 @@ abstract class FullBackupGoldenTest {
                 assertEquals(item.usedCount.toLong(), row.usedCount)
                 assertEquals(item.confidence, row.confidence, 1e-9)
                 assertEquals(item.rawJson, row.rawJson)
-                // 派生归一：L1 保留 status，L2/L3 archived；vectorId 清空。
-                val expectedStatus = if (item.memoryLevel == MemoryLevel.L1) item.status else "archived"
-                assertEquals(expectedStatus, row.status)
+                // 状态原样保留（T65：不再把 L2/L3 强制 archived）；vectorId 清空，等待索引重建。
+                assertEquals(item.status, row.status)
                 assertEquals("", row.vectorId)
                 // sourceRefId 重映射（MOMENT/MOMENT_COMMENT → 本次新 id）。
                 val expectedRef = when (item.sourceKind.name) {
@@ -619,7 +622,7 @@ abstract class FullBackupGoldenTest {
             assertRestored(result)
             val check = result.selfCheck!!
             assertTrue(check.passed)
-            assertEquals(23, check.checked.size, "自检应覆盖 22 表 + settings 共 23 项")
+            assertEquals(27, check.checked.size, "自检应覆盖 26 表 + settings 共 27 项")
             assertEquals(2, check.checked["operators"]!!.first)
             assertEquals(12, check.checked["messages"]!!.first)
 
@@ -823,6 +826,215 @@ abstract class FullBackupGoldenTest {
             assertEquals("{\"round\":2}", FullBackupDb.mahjong(env.database)!!.saveJson)
         } finally {
             env.close()
+        }
+    }
+
+    // ------------------------------------------------------------------ #17 事实与关系表（T88）
+
+    @Test
+    fun acceptance17_memoryFactsAndRelationsRoundTrip() = runBlocking {
+        val facts = listOf(
+            MemoryFactWire(
+                memoryId = 1L, ownerType = "operator", ownerId = "golden",
+                subject = "用户", predicate = "prefer", objectValue = "川菜",
+                polarity = "positive", qualifiers = listOf("周末", "不加辣"),
+                factKey = "fact:positive:用户|prefer|川菜",
+                validFrom = 1749999000000L, validTo = null,
+                recordedAt = 1750000000000L, timeSource = "message", conflictStatus = "none",
+            ),
+            MemoryFactWire(
+                memoryId = 2L, ownerType = "operator", ownerId = "golden",
+                subject = "用户", predicate = "dislike", objectValue = "香菜",
+                polarity = "negative", qualifiers = emptyList(),
+                factKey = "fact:negative:用户|dislike|香菜",
+                validFrom = null, validTo = 1750000005000L,
+                recordedAt = 1750000001000L, timeSource = "recorded", conflictStatus = "conflicted",
+            ),
+        )
+        val relations = listOf(
+            MemoryRelationWire(1L, 2L, "contradicts", 0.85, "rule", 1750000002000L),
+            MemoryRelationWire(2L, 1L, "supports", 0.6, "model", 1750000003000L),
+        )
+        val factsJson = Json.encodeToJsonElement(ListSerializer(MemoryFactWire.serializer()), facts)
+        val relationsJson = Json.encodeToJsonElement(ListSerializer(MemoryRelationWire.serializer()), relations)
+        val bytes = FullBackupGoldenZip("full-all-v2.zip").let { zip ->
+            zip.mutatePayloadContent(zip.pagePath("memories", 20_000)) { content ->
+                JsonObject(content + mapOf("memoryFacts" to factsJson, "memoryRelations" to relationsJson))
+            }.build()
+        }
+
+        // 分页读入路径：完整模型拾取新数组，T10 校验模型忽略未知键（recordCount 不变）。
+        val archive = FullBackupReader().read(bytes)
+        assertEquals(facts, archive.payload.content.memoryFacts)
+        assertEquals(relations, archive.payload.content.memoryRelations)
+
+        val env = createEnv()
+        try {
+            assertRestored(restore(env, bytes).first)
+            val backupItemContentById = archive.payload.content.memoryItems.orEmpty().associate { it.id to it.content }
+            val restoredItemIdByContent = FullBackupDb.memoryItems(env.database).associate { it.content to it.id }
+            fun restoredId(backupId: Long): Long =
+                restoredItemIdByContent.getValue(backupItemContentById.getValue(backupId))
+
+            val dbFacts = FullBackupDb.memoryFacts(env.database)
+            assertEquals(facts.size, dbFacts.size, "事实行数应与备份一致")
+            facts.forEach { fact ->
+                val row = dbFacts.single { it.memoryId == restoredId(fact.memoryId) }
+                assertEquals(fact.ownerType, row.ownerType)
+                assertEquals(fact.ownerId, row.ownerId)
+                assertEquals(fact.subject, row.subject)
+                assertEquals(fact.predicate, row.predicate)
+                assertEquals(fact.objectValue, row.object_)
+                assertEquals(fact.polarity, row.polarity)
+                assertEquals(
+                    fact.qualifiers,
+                    Json.decodeFromString(ListSerializer(String.serializer()), row.qualifiers),
+                    "qualifiers JSON 应往返一致",
+                )
+                assertEquals(fact.factKey, row.factKey)
+                assertEquals(fact.validFrom, row.validFrom)
+                assertEquals(fact.validTo, row.validTo)
+                assertEquals(fact.recordedAt, row.recordedAt)
+                assertEquals(fact.timeSource, row.timeSource)
+                assertEquals(fact.conflictStatus, row.conflictStatus)
+                assertEquals(fact.recordedAt, row.updatedAt, "updatedAt 以 recordedAt 兜底")
+            }
+
+            val dbRelations = FullBackupDb.memoryRelations(env.database)
+            assertEquals(relations.size, dbRelations.size, "关系行数应与备份一致")
+            relations.forEach { relation ->
+                val row = dbRelations.single {
+                    it.fromMemoryId == restoredId(relation.fromMemoryId) &&
+                        it.toMemoryId == restoredId(relation.toMemoryId) &&
+                        it.relationType == relation.relationType
+                }
+                assertEquals(relation.confidence, row.confidence, 1e-9)
+                assertEquals(relation.decidedBy, row.decidedBy)
+                assertEquals(relation.createdAt, row.createdAt)
+            }
+        } finally {
+            env.close()
+        }
+
+        // 旧包（数组缺失）兼容为空，恢复不写这两表。
+        val legacyBytes = FullBackupGoldens.load("full-v1-single.zip")
+        val legacy = FullBackupReader().read(legacyBytes)
+        assertNull(legacy.payload.content.memoryFacts)
+        assertNull(legacy.payload.content.memoryRelations)
+        val legacyEnv = createEnv()
+        try {
+            assertRestored(restore(legacyEnv, legacyBytes).first)
+            assertEquals(0, FullBackupDb.memoryFacts(legacyEnv.database).size)
+            assertEquals(0, FullBackupDb.memoryRelations(legacyEnv.database).size)
+        } finally {
+            legacyEnv.close()
+        }
+    }
+
+    // ------------------------------------------------------------------ #18 印象与证据（T88）
+
+    @Test
+    fun acceptance18_impressionsAndEvidenceRoundTrip() = runBlocking {
+        val impressions = listOf(
+            ImpressionWire(
+                id = 11L, ownerType = "operator", ownerId = "golden", characterId = "golden",
+                layer = "long_term", subject = "用户", predicate = "prefer", value = "川菜",
+                polarity = "positive", factKey = "印象:prefer|川菜", confidence = 0.82,
+                tone = "warm", evidenceCount = 2, firstSeenAt = 1750000000000L,
+                lastConfirmedAt = 1750000100000L, status = "active", updatedAt = 1750000100000L,
+            ),
+            ImpressionWire(
+                id = 12L, ownerType = "operator", ownerId = "golden", characterId = "golden",
+                layer = "interaction", subject = "用户", predicate = "mention", value = "香菜",
+                polarity = "negative", factKey = "印象:mention|香菜", confidence = 0.4,
+                tone = "neutral", evidenceCount = 1, firstSeenAt = 1750000200000L,
+                lastConfirmedAt = 1750000200000L, status = "rejected", updatedAt = 1750000200000L,
+            ),
+        )
+        val evidence = listOf(
+            ImpressionEvidenceWire(11L, 1L, 0.9, 1750000050000L),
+            ImpressionEvidenceWire(11L, 2L, 0.3, 1750000060000L),
+            ImpressionEvidenceWire(12L, 2L, 1.0, 1750000250000L),
+        )
+        val impressionsJson = Json.encodeToJsonElement(ListSerializer(ImpressionWire.serializer()), impressions)
+        val evidenceJson =
+            Json.encodeToJsonElement(ListSerializer(ImpressionEvidenceWire.serializer()), evidence)
+        val bytes = FullBackupGoldenZip("full-all-v2.zip").let { zip ->
+            zip.mutatePayloadContent(zip.pagePath("memories", 20_000)) { content ->
+                JsonObject(content + mapOf("impressions" to impressionsJson, "impressionEvidence" to evidenceJson))
+            }.build()
+        }
+
+        // 分页读入路径：完整模型拾取新数组，T10 校验模型忽略未知键（recordCount 不变）。
+        val archive = FullBackupReader().read(bytes)
+        assertEquals(impressions, archive.payload.content.impressions)
+        assertEquals(evidence, archive.payload.content.impressionEvidence)
+
+        val env = createEnv()
+        try {
+            assertRestored(restore(env, bytes).first)
+            val itemContentById = archive.payload.content.memoryItems.orEmpty().associate { it.id to it.content }
+            val restoredItemIdByContent = FullBackupDb.memoryItems(env.database).associate { it.content to it.id }
+            fun restoredMemoryId(backupId: Long): Long =
+                restoredItemIdByContent.getValue(itemContentById.getValue(backupId))
+
+            val dbImpressions = FullBackupDb.impressions(env.database)
+            assertEquals(impressions.size, dbImpressions.size, "印象行数应与备份一致")
+            impressions.forEach { wire ->
+                val row = dbImpressions.single { it.factKey == wire.factKey }
+                assertEquals(wire.ownerType, row.ownerType)
+                assertEquals(wire.ownerId, row.ownerId)
+                assertEquals(wire.characterId, row.characterId)
+                assertEquals(wire.layer, row.layer)
+                assertEquals(wire.subject, row.subject)
+                assertEquals(wire.predicate, row.predicate)
+                assertEquals(wire.value, row.valueText)
+                assertEquals(wire.polarity, row.polarity)
+                assertEquals(wire.confidence, row.confidence, 1e-9)
+                assertEquals(wire.tone, row.tone)
+                assertEquals(wire.evidenceCount.toLong(), row.evidenceCount)
+                assertEquals(wire.firstSeenAt, row.firstSeenAt)
+                assertEquals(wire.lastConfirmedAt, row.lastConfirmedAt)
+                // 人工裁决状态原样保留（insertImpression 固定 active，恢复不能复用它）。
+                assertEquals(wire.status, row.status, "impressions.status 应原样保留")
+                assertEquals(wire.updatedAt, row.updatedAt)
+            }
+
+            // 证据外键：impressionId / memoryId 两侧都应指向本次恢复新建的行。
+            val dbEvidence = FullBackupDb.impressionEvidence(env.database)
+            assertEquals(evidence.size, dbEvidence.size, "证据行数应与备份一致")
+            val factKeyById = impressions.associate { it.id to it.factKey }
+            evidence.forEach { wire ->
+                val expectedImpressionId = dbImpressions.single { it.factKey == factKeyById.getValue(wire.impressionId) }.id
+                val expectedMemoryId = restoredMemoryId(wire.memoryId)
+                val row = dbEvidence.single {
+                    it.impressionId == expectedImpressionId && it.memoryId == expectedMemoryId
+                }
+                assertEquals(wire.weight, row.weight, 1e-9)
+                assertEquals(wire.createdAt, row.createdAt)
+            }
+            val restoredImpressionIds = dbImpressions.map { it.id }.toSet()
+            val restoredMemoryIds = FullBackupDb.memoryItems(env.database).map { it.id }.toSet()
+            assertTrue(
+                dbEvidence.all { it.impressionId in restoredImpressionIds && it.memoryId in restoredMemoryIds },
+                "恢复后证据外键不得悬空：$dbEvidence",
+            )
+        } finally {
+            env.close()
+        }
+
+        // 旧包（数组缺失）兼容为空，恢复不写这两表。
+        val legacyBytes = FullBackupGoldens.load("full-v1-single.zip")
+        val legacy = FullBackupReader().read(legacyBytes)
+        assertNull(legacy.payload.content.impressions)
+        assertNull(legacy.payload.content.impressionEvidence)
+        val legacyEnv = createEnv()
+        try {
+            assertRestored(restore(legacyEnv, legacyBytes).first)
+            assertEquals(0, FullBackupDb.impressions(legacyEnv.database).size)
+            assertEquals(0, FullBackupDb.impressionEvidence(legacyEnv.database).size)
+        } finally {
+            legacyEnv.close()
         }
     }
 

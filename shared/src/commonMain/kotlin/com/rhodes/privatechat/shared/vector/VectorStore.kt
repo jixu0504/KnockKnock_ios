@@ -20,6 +20,12 @@ data class VectorMemory(
     val expiresAt: Long = Long.MAX_VALUE,
     /** Runtime-only retrieval score; not persisted by the vector store. */
     val similarity: Double = 0.0,
+    /** Runtime-only lexical (BM25) score; >0 means the lexical channel also matched this item. */
+    val lexicalScore: Double = 0.0,
+    /** Runtime-only count of distinct query terms matched by the lexical channel. */
+    val lexicalMatchCount: Int = 0,
+    /** Runtime-only max IDF among matched query terms (discriminative-term gate). */
+    val lexicalMaxTermIdf: Double = 0.0,
     /** Optimistic source snapshot, used only while publishing a regenerated memory index. */
     val originMemoryId: Long = 0L,
     val originContent: String = "",

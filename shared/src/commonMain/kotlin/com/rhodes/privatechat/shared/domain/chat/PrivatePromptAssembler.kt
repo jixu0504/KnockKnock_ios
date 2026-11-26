@@ -138,12 +138,12 @@ class PrivatePromptAssembler(
         val publicMemoryContext = optionalRead(session.id, "public_memory_read", "prompt_public_memory", 20_000L, "无", ::remainingPromptBudgetMs, onStage) {
             providers.publicMemory(recallQuery)
         }.ifBlank { "无" }
-        val memoryV2Context = mergeContextBlocks(
+        val memoryV2Context = mergeContextBlocksWithinBudget(
             maxChars = 1600,
             personalMemoryContext,
             relationshipMemoryContext,
         ).ifBlank { "无" }
-        val recallMemoryContext = mergeContextBlocks(
+        val recallMemoryContext = mergeContextBlocksWithinBudget(
             maxChars = 3200,
             memoryV2Context,
             publicMemoryContext.takeIf { it != "无" }?.let { "【公开动态与评论】\n$it" }.orEmpty(),
@@ -332,10 +332,6 @@ class PrivatePromptAssembler(
         }
     }
 
-    private fun mergeContextBlocks(maxChars: Int, vararg blocks: String): String {
-        val merged = blocks.filter { it.isNotBlank() && it != "无" }.joinToString("\n")
-        return merged.take(maxChars).trim()
-    }
 
     /** oracle :3628-3647 应用保护边界（精简同款）。 */
     private fun applicationSafetyBoundary(): String = """

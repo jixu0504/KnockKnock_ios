@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-device.sh — 构建 / 安装 RhodesLink 到已连接的物理 iPhone
+# build-device.sh — 构建 / 安装 KnockKnock 到已连接的物理 iPhone
 # （本仓库布局适配版：仓库根 = rhodeslink_ios/，Xcode 工程在 ios/，KMP framework 在 shared/build/bin/）
 #
 # 前置条件：
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT="$ROOT/ios/RhodesLink.xcodeproj"
+PROJECT="$ROOT/ios/KnockKnock.xcodeproj"
 FRAMEWORK_DIR="$ROOT/shared/build/bin/iosArm64/releaseFramework"
 DERIVED="$ROOT/.build-device"
 JDK_HOME="${JDK_HOME:-$HOME/jdks/jdk-21.0.13.1+2/Contents/Home}"
@@ -62,7 +62,7 @@ echo "== 4/5 xcodebuild =="
 cd "$ROOT/ios"
 xcodebuild build \
   -project "$PROJECT" \
-  -scheme RhodesLink \
+  -scheme KnockKnock \
   -configuration Debug \
   -destination 'generic/platform=iOS' \
   -derivedDataPath "$DERIVED" \
@@ -70,7 +70,7 @@ xcodebuild build \
   ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
   | tail -20
 
-APP_PATH="$DERIVED/Build/Products/Debug-iphoneos/RhodesLink.app"
+APP_PATH="$DERIVED/Build/Products/Debug-iphoneos/KnockKnock.app"
 [[ -d "$APP_PATH" ]] || { echo "❌ 构建产物未找到: $APP_PATH"; exit 1; }
 
 echo "== 5/5 安装并启动 =="

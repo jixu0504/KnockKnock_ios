@@ -5,18 +5,22 @@ import com.rhodes.privatechat.shared.backup.BackupFormatException
 import com.rhodes.privatechat.shared.backup.BackupRestoreRepository
 import com.rhodes.privatechat.shared.data.ChatRepository
 import com.rhodes.privatechat.shared.db.RhodesDatabase
-import com.rhodes.privatechat.shared.model.MemoryLevel
 import com.rhodes.privatechat.shared.model.Operator
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 
 /**
  * 全类目字段级恢复执行器（T31；规格卡契约 C2/C3/C4/C5/C6/C7）。
  *
  * 严格镜像 Android oracle `RestoreDatabaseExecutor.kt:30-174`：
  *  - **删除**（子先于父，仅选中类目）：extras → memories → chats → social → knowledgeBases → roles&&chats；
+ *    记忆类目内部先删 memory_relations/memory_facts/impression_evidence/impressions 再删 memory_items；
  *  - **插入**（依赖拓扑）：operators → KB 三表 → relationships → sessions → messages → displayEvents →
  *    memories → anchors → moments → comments（父级拓扑循环）→ likes → backfill 计数 → diaries →
  *    gifts → dispatches → mahjong → sharedExperiences → participants → archives → historySegments →
- *    memoryItems（最后，消费 moments/comments 的新 id 映射）；
+ *    memoryItems（消费 moments/comments 的新 id 映射）→ memoryFacts/memoryRelations（消费 memoryItems 新 id 映射）
+ *    → impressions/impressionEvidence（证据同时消费 impressions 与 memoryItems 的新 id 映射）；
  *  - 自增表 id **不保留**（memories/anchors/moments/comments/likes/diaries/memoryItems/experiences），
  *    通过 `last_insert_rowid()` 建 old→new 映射；固定 id 表原样保留（operators/sessions/messages/
  *    KB/chunks/assignments/archives/history/gifts/dispatches/mahjong）；
@@ -84,6 +88,10 @@ class BackupFullRestoreExecutor(
             memorySourceQueueQueries.deleteAllMemorySources()
             memoryBatchesQueries.deleteAllMemoryBatches()
             vectorMemoriesQueries.deleteAllVectorMemories()
+            memoryRelationsQueries.deleteAllMemoryRelations()
+            memoryFactsQueries.deleteAllMemoryFacts()
+            impressionEvidenceQueries.deleteAllImpressionEvidence()
+            impressionsQueries.deleteAllImpressions()
             memoryItemsQueries.deleteAllMemoryItems()
             memoryAnchorsQueries.deleteAllAnchors()
             memoriesQueries.deleteAllMemories()
@@ -311,8 +319,13 @@ class BackupFullRestoreExecutor(
             report(payload.chatArchives.size + payload.chatHistorySegments.size)
         }
         if (selection.memories) {
+            // memory_items 的 id 由 DB 重新分配（oracle 同款），事实/关系里的原 id 需按此映射到新 id，
+            // 否则恢复后 facts 会指向不存在的记忆行（同 sourceRefId 的映射策略）。
+            val memoryItemIdMap = linkedMapOf<Long, Long>()
             c.memoryItems.orEmpty().forEach { item ->
-                val status = if (item.memoryLevel == MemoryLevel.L1) item.status else "archived"
+                // 保留备份里的原状态：强制把 L2/L3 改成 archived 会让恢复后「长期印象/持续了解」直接消失，
+                // 而 iOS 端过去没有重建入口兜底（审计 P0-3）。索引由 memoryIndexRebuildPending 触发重建。
+                val status = item.status.ifBlank { "active" }
                 val sourceRefId = when (item.sourceKind.name) {
                     "MOMENT" -> item.sourceRefId.toLongOrNull()?.let(momentIdMap::get)?.toString()
                         ?: item.sourceRefId
@@ -329,10 +342,55 @@ class BackupFullRestoreExecutor(
                     item.careType, item.topicKey, item.sourceActor, item.sourceTarget,
                     item.lastUsedAt, item.usedCount.toLong(), item.confidence, item.rawJson, "",
                 )
+                if (item.id > 0L) {
+                    memoryItemIdMap[item.id] = memoryItemsQueries.getLastInsertedMemoryItemId().executeAsOne()
+                }
             }
-            report(c.memoryItems.orEmpty().size)
+            c.memoryFacts.orEmpty().forEach { fact ->
+                // updatedAt 不在 wire 契约内，用 recordedAt 兜底（事实行按记录时刻排序）。
+                memoryFactsQueries.upsertFact(
+                    memoryItemIdMap[fact.memoryId] ?: fact.memoryId,
+                    fact.ownerType, fact.ownerId, fact.subject, fact.predicate, fact.objectValue,
+                    fact.polarity, encodeQualifiers(fact.qualifiers), fact.factKey, fact.validFrom,
+                    fact.validTo, fact.recordedAt, fact.timeSource, fact.conflictStatus, fact.recordedAt,
+                )
+            }
+            c.memoryRelations.orEmpty().forEach { relation ->
+                memoryRelationsQueries.insertMemoryRelation(
+                    memoryItemIdMap[relation.fromMemoryId] ?: relation.fromMemoryId,
+                    memoryItemIdMap[relation.toMemoryId] ?: relation.toMemoryId,
+                    relation.relationType, relation.confidence, relation.decidedBy, relation.createdAt,
+                )
+            }
+            // 印象与证据同样按备份内 id 重建：impressionId 与 memoryId 两侧都是新分配的 id。
+            val impressionIdMap = linkedMapOf<Long, Long>()
+            c.impressions.orEmpty().forEach { impression ->
+                impressionsQueries.insertImpressionForRestore(
+                    impression.ownerType, impression.ownerId, impression.characterId, impression.layer,
+                    impression.subject, impression.predicate, impression.value, impression.polarity,
+                    impression.factKey, impression.confidence, impression.tone,
+                    impression.evidenceCount.toLong(), impression.firstSeenAt, impression.lastConfirmedAt,
+                    impression.status.ifBlank { "active" }, impression.updatedAt,
+                )
+                if (impression.id > 0L) {
+                    impressionIdMap[impression.id] = impressionsQueries.lastInsertedImpressionId().executeAsOne()
+                }
+            }
+            c.impressionEvidence.orEmpty().forEach { evidence ->
+                impressionEvidenceQueries.link(
+                    impressionIdMap[evidence.impressionId] ?: evidence.impressionId,
+                    memoryItemIdMap[evidence.memoryId] ?: evidence.memoryId,
+                    evidence.weight, evidence.createdAt,
+                )
+            }
+            report(c.memoryItems.orEmpty().size + c.memoryFacts.orEmpty().size +
+                c.memoryRelations.orEmpty().size + c.impressions.orEmpty().size +
+                c.impressionEvidence.orEmpty().size)
         }
     }
+
+    private fun encodeQualifiers(values: List<String>): String =
+        Json.encodeToString(ListSerializer(String.serializer()), values)
 
     private fun RhodesDatabase.insertOperator(op: Operator) {
         operatorsQueries.insertAllOperators(

@@ -25,7 +25,7 @@ Phase 3 启动任务：把 Phase 0/1/2 的「玻璃壳 Demo + IosAppGraph 桥接
 
 ```
 RhodesLink/iosApp/
-├── RhodesLink.xcodeproj/
+├── KnockKnock.xcodeproj/
 │   ├── project.pbxproj                        # objectVersion 77 + PBXFileSystemSynchronizedRootGroup
 │   └── xcshareddata/xcschemes/RhodesLink.xcscheme
 ├── Config/Info.plist                          # 手写：CFBundleURLTypes(rhodes) + UILaunchScreen + SceneManifest
@@ -212,7 +212,7 @@ cd RhodesLink/iosApp
 # 1) 构建（工作区内 DerivedData；模拟器 arm64）
 pgrep -fl xcodebuild        # 并发纪律：先确认无并行构建
 TMPDIR="$PWD/tmp" xcodebuild build \
-  -project RhodesLink.xcodeproj -scheme RhodesLink \
+  -project KnockKnock.xcodeproj -scheme KnockKnock \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath "$PWD/DerivedData" \
   CODE_SIGNING_ALLOWED=NO
@@ -220,7 +220,7 @@ TMPDIR="$PWD/tmp" xcodebuild build \
 
 # 2) 安装 + 启动（模拟器 iPhone 17 / iOS 27.2）
 xcrun simctl boot "iPhone 17"
-xcrun simctl install booted DerivedData/Build/Products/Debug-iphonesimulator/RhodesLink.app
+xcrun simctl install booted DerivedData/Build/Products/Debug-iphonesimulator/KnockKnock.app
 xcrun simctl launch booted com.rhodeslink.app --selftest          # 自检（日志落盘 Documents/ios-shell-selftest.log）
 xcrun simctl io booted screenshot ../handoffs/evidence/t33-chat-selftest.png
 

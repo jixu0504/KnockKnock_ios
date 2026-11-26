@@ -244,7 +244,7 @@ cd RhodesLink && ./gradlew --no-daemon :shared:iosSimulatorArm64Test \
 python3 ios-port/handoffs/mock-provider-sse.py
 # 2) 构建 framework + App
 ./gradlew --no-daemon :shared:linkDebugFrameworkIosSimulatorArm64
-xcodebuild -project RhodesLink/iosApp/RhodesLink.xcodeproj -scheme RhodesLink \
+xcodebuild -project RhodesLink/iosApp/KnockKnock.xcodeproj -scheme KnockKnock \
   -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17' \
   -derivedDataPath ios-port/iosApp-run/DerivedData CODE_SIGNING_ALLOWED=NO build
 # 3) 启动自动化（演示回退 / 真实流式 / 401·429·500 错误映射 / 取消 / 连接测试矩阵）

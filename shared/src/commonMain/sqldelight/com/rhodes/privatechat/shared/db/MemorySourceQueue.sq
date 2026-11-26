@@ -139,6 +139,9 @@ DELETE FROM memory_source_queue WHERE id = ?;
 deleteAllMemorySources:
 DELETE FROM memory_source_queue;
 
+getMemorySourceRetryCount:
+SELECT retryCount FROM memory_source_queue WHERE id = ?;
+
 deleteProcessedMemorySourcesBefore:
 DELETE FROM memory_source_queue WHERE processedL1 = 1 AND createdAt < ?;
 

@@ -1,0 +1,23 @@
+-- T73 注入反馈计数（切片：只记 injection，不涉 salience）。
+-- 每条记忆一行，与 memory_items 分表：召回注入是热路径，独立窄表可避免改写记忆主体行。
+CREATE TABLE IF NOT EXISTS memory_usage (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    retrievalCount INTEGER NOT NULL DEFAULT 0,
+    injectionCount INTEGER NOT NULL DEFAULT 0,
+    usefulCount INTEGER NOT NULL DEFAULT 0,
+    lastInjectedAt INTEGER NOT NULL DEFAULT 0
+);
+
+-- SQLite 3.18 无 UPSERT：先 INSERT OR IGNORE 建行，再由 bumpInjected 做增量更新。
+upsert:
+INSERT OR IGNORE INTO memory_usage(memoryId) VALUES (?);
+
+getByMemory:
+SELECT memoryId, retrievalCount, injectionCount, usefulCount, lastInjectedAt
+FROM memory_usage
+WHERE memoryId = ?;
+
+bumpInjected:
+UPDATE memory_usage
+SET injectionCount = injectionCount + 1, lastInjectedAt = ?
+WHERE memoryId IN ?;

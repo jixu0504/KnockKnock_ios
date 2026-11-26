@@ -32,6 +32,31 @@ class ContextMaintenanceLockTest {
     }
 
     @Test
+    fun idleStateAlsoGeneratesSummaryAfterReplyTrigger() = runBlocking {
+        val harness = ContextMaintenanceHarness()
+        val session = harness.seedPrivateSession()
+        harness.seedMessages(session.id, 10)
+        // 默认状态是 idle（既非 failed 也非重建）：回复后必须仍尝试生成摘要。
+        // 修复前该分支只在 state == "failed" 时才生成，导致 iOS 端滚动摘要永远为空（审计 P0-2）。
+        assertEquals(DelayedTaskOutcome.SUCCESS, harness.task.maintainNow(session.id, false))
+        assertEquals(1, harness.port.summaryCalls.size)
+        assertEquals(session.id, harness.port.summaryCalls.single().first)
+    }
+
+    @Test
+    fun failedSummaryWithAutoRetryOffIsSkipped() = runBlocking {
+        val harness = ContextMaintenanceHarness()
+        val session = harness.seedPrivateSession()
+        harness.settings.summaryAutoRetryEnabled = false
+        harness.settings.putRollingSummaryStatus(
+            session.id,
+            com.rhodes.privatechat.shared.settings.SettingsRepository.RollingSummaryStatus(state = "failed", failureCount = 2),
+        )
+        assertEquals(DelayedTaskOutcome.SUCCESS, harness.task.maintainNow(session.id, false))
+        assertEquals(0, harness.port.summaryCalls.size, "关闭自动重试后不得再次调用摘要模型")
+    }
+
+    @Test
     fun deletedSessionIsDoneWithoutTouchingPipeline() = runBlocking {
         val harness = ContextMaintenanceHarness()
         assertEquals(DelayedTaskOutcome.DONE, harness.task.maintainNow("s-missing", false))
@@ -85,10 +110,11 @@ class ContextMaintenanceLockTest {
         assertEquals(1, harness.port.summaryCalls.size)
         assertEquals(false, harness.settings.getBoolean(ContextMaintenanceKeys.rebuildPendingKey(session.id)))
         assertTrue(harness.events.any { it is ContextMaintenanceEvent.Completed })
-        // 重复触发幂等：pending 已清，第二次不再跑摘要/抽取。
+        // 重复触发幂等：pending 已清，第二次不再重跑抽取；摘要按「有无到期轮次」由生成器自行判定
+        // （真实生成器没有可压缩轮次时不会调用模型，这里 fake 恒成功，因此允许再次进入摘要路径）。
         assertEquals(DelayedTaskOutcome.SUCCESS, harness.task.maintainNow(session.id, false))
-        assertEquals(1, harness.port.summaryCalls.size, "重复触发不重复生成摘要")
         assertEquals(2, harness.port.ingestCalls.size, "重复触发不重复抽取")
+        assertEquals(false, harness.settings.getBoolean(ContextMaintenanceKeys.rebuildPendingKey(session.id)))
     }
 
     @Test

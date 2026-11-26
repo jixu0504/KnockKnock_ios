@@ -52,7 +52,7 @@ DTO 纪律：普通 class、仅简单类型；**字段名避开 `description`**�
 
 - 资源：Android `app/src/main/res/drawable/avatar_1..147.png`（147 张连续，共 6.9 MB）原样复制到
   `RhodesLink/iosApp/RhodesLink/Resources/Avatars/`；由 `PBXFileSystemSynchronizedRootGroup` 自动进入
-  Copy Bundle Resources，构建后位于 `RhodesLink.app/avatar_<N>.png`（**Bundle 根目录、按文件名**）。
+  Copy Bundle Resources，构建后位于 `KnockKnock.app/avatar_<N>.png`（**Bundle 根目录、按文件名**）。
 - 解析：`RoleAvatar` 读取 `avatarId`，`Int(trimmed)` ∈ 1...147 时 `UIImage(named: "avatar_<N>")`；
   非数字 / 越界 / 资源缺失 → 回退 `AvatarBadge`（品牌橙渐变 + 首字色块）。
 - 用户上传头像：值域为 `media/<uuid>.<ext>`（MediaRepository 相对 ID，T17 语义），本波**不**解析文件，
@@ -91,12 +91,12 @@ cd RhodesLink && source ../ios-port/toolchain/env.sh
 ./gradlew --no-daemon :shared:linkDebugFrameworkIosSimulatorArm64
 
 # 2) app
-cd iosApp && TMPDIR="$PWD/tmp" xcodebuild build -project RhodesLink.xcodeproj -scheme RhodesLink \
+cd iosApp && TMPDIR="$PWD/tmp" xcodebuild build -project KnockKnock.xcodeproj -scheme KnockKnock \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/DerivedData" CODE_SIGNING_ALLOWED=NO
 
 # 3) 模拟器（不用 dsh-ios 工具）
 xcrun simctl boot "iPhone 17"   # 已启动则跳过
-xcrun simctl install booted DerivedData/Build/Products/Debug-iphonesimulator/RhodesLink.app
+xcrun simctl install booted DerivedData/Build/Products/Debug-iphonesimulator/KnockKnock.app
 xcrun simctl launch booted com.rhodeslink.app --tab roles
 xcrun simctl io booted screenshot shot.png
 

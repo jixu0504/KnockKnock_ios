@@ -1,0 +1,36 @@
+-- M1 / T70：词法与语料统计（BM25）所需表。
+-- 版本说明：计划书 §9.1 原把倒排放在 v26；为让词法通道先落地且不阻塞 T71 的向量 BLOB，
+-- 这里使用迁移 24（schema v24→v25），向量 BLOB 顺延到后续迁移，已在 handoff 记录。
+
+CREATE TABLE IF NOT EXISTS memory_corpus_stats (
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    docCount INTEGER NOT NULL DEFAULT 0,
+    totalDocumentLength INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ownerType, ownerId)
+);
+
+CREATE TABLE IF NOT EXISTS memory_term_stats (
+    term TEXT NOT NULL,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    documentFrequency INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (term, ownerType, ownerId)
+);
+
+CREATE TABLE IF NOT EXISTS memory_document_stats (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    documentLength INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS memory_terms (
+    term TEXT NOT NULL,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    memoryId INTEGER NOT NULL,
+    tf INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (term, ownerType, ownerId, memoryId)
+);
+
+CREATE INDEX IF NOT EXISTS memory_terms_lookup ON memory_terms(term, ownerType, ownerId);

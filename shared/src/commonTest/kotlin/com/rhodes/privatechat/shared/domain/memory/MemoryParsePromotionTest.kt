@@ -139,6 +139,120 @@ class MemoryParsePromotionTest {
     }
 
     @Test
+    fun structuredFieldsProduceFactTopicKeyWithCanonicalPredicate() {
+        val r = rules()
+        val parsed = r.parseMemoryItems(
+            json(
+                """{"type":"preference_expression","content":"用户不喜欢吃香菜","subject":"用户","predicate":"不喜欢","object":"吃香菜","polarity":"negative"}""",
+                """{"type":"event","content":"用户生日是三月十四日","subject":"用户","predicate":"生日","object":"三月十四日"}""",
+            ),
+            "operator", "op1", MemoryLevel.L1, MemorySourceKind.PRIVATE_CHAT, "src", "s1",
+        )
+        assertEquals("fact:negative:用户|dislike|吃香菜", parsed[0].topicKey)
+        // 未给 polarity 时按谓词推断：生日属于肯定事实
+        assertEquals("fact:positive:用户|birthday|三月十四日", parsed[1].topicKey)
+    }
+
+    @Test
+    fun structuredParaphrasesGroupWithoutTwentyIdenticalStrings() {
+        val r = rules()
+        // 同一事实的三种措辞：只有结构化 fact_key 相同，content 完全不同。
+        val items = listOf(
+            item(1, "preference_expression", "用户喜欢吃辣", importance = 60).copy(
+                topicKey = "fact:positive:用户|prefer|川菜", sessionId = "s1",
+            ),
+            item(2, "preference_expression", "用户口味偏重，爱吃川菜", importance = 55).copy(
+                topicKey = "fact:positive:用户|prefer|川菜", sessionId = "s2",
+            ),
+            item(3, "preference_expression", "用户无辣不欢", importance = 50).copy(
+                topicKey = "fact:positive:用户|prefer|川菜", sessionId = "s3",
+            ),
+        )
+        val picked = r.pickPromotionTopic(items, threshold = 20)
+        assertNotNull(picked, "结构化事实键 3 条应达到晋升组门（旧版内容指纹需 20 条逐字相同）")
+        assertEquals(3, picked.items.size)
+        assertEquals("fact:positive:用户|prefer|川菜", picked.topicKey)
+    }
+
+    @Test
+    fun oppositePolarityIsNeverMergedIntoOneTopic() {
+        val r = rules()
+        val positive = item(1, "preference_expression", "用户喜欢吃辣", importance = 60).copy(
+            topicKey = "fact:positive:用户|prefer|川菜", sessionId = "s1",
+        )
+        val negative = item(2, "preference_expression", "用户不喜欢吃辣", importance = 60).copy(
+            topicKey = "fact:negative:用户|prefer|川菜", sessionId = "s2",
+        )
+        assertNull(r.pickPromotionTopic(listOf(positive, negative), threshold = 20), "相反极性不得合并")
+    }
+
+    @Test
+    fun structuredGroupNeedsTwoSessionsUnlessStrongSignal() {
+        val r = rules()
+        val sameSession = (1..3).map {
+            item(it.toLong(), "event", "普通事实 $it", importance = 50).copy(
+                topicKey = "fact:positive:用户|work|杭州", sessionId = "s1",
+            )
+        }
+        assertNull(r.pickPromotionTopic(sameSession, threshold = 20), "同一会话的三条不能作为独立证据")
+
+        val strongSameSession = (1..2).map {
+            item(it.toLong(), "agreement_commitment", "用户答应周六看电影 $it", importance = 50).copy(
+                topicKey = "fact:positive:用户|promise|电影", sessionId = "s1",
+            )
+        }
+        val picked = r.pickPromotionTopic(strongSameSession, threshold = 20)
+        assertNotNull(picked, "强信号允许单会话多条（组门=importantPromotionThreshold）")
+        assertEquals(2, picked.items.size)
+    }
+
+    @Test
+    fun legacyContentFingerprintGroupingStillRequiresTwentyItems() {
+        val r = rules()
+        val legacy = (1..4).map {
+            item(it.toLong(), "event", "同一句没有结构的事实", importance = 40).copy(sessionId = "s$it")
+        }
+        assertNull(r.pickPromotionTopic(legacy, threshold = 20), "无结构化字段时保持旧门槛，避免误合并")
+    }
+
+    @Test
+    fun promotionEvidenceFollowsOriginalArrayIndexWhenItemsAreDropped() {
+        val r = rules()
+        val parents = listOf(item(11), item(22), item(33))
+        // 第 0 项非法会被丢弃：若按下标对齐「解析后列表」，证据会整体错位（审计 P1-5）。
+        val raw = json(
+            """{"type":"bogus","content":"非法类型"}""",
+            """{"type":"event","content":"新结论A","evidence_ids":[11]}""",
+            """{"type":"event","content":"新结论B","evidence_ids":[22,33]}""",
+        )
+        val promoted = r.parsePromotionItems(
+            raw, "operator", "op1", MemoryLevel.L2, MemorySourceKind.PRIVATE_CHAT, "event:x", parents,
+        )
+        assertEquals(2, promoted.size)
+        assertEquals(listOf(11L), r.evidenceIdsFrom(promoted[0].rawJson), "结论A必须挂父项 11")
+        assertEquals(listOf(22L, 33L), r.evidenceIdsFrom(promoted[1].rawJson), "结论B必须挂父项 22/33")
+        assertEquals("新结论B", promoted[1].content)
+    }
+
+    @Test
+    fun promotionEvidenceSurvivesDuplicateDedup() {
+        val r = rules()
+        val parents = listOf(item(11), item(22))
+        // 第 2 项与第 1 项内容重复 → 去重丢弃；剩余结论的证据仍须按各自原始下标取。
+        val raw = json(
+            """{"type":"event","content":"新结论A","evidence_ids":[11]}""",
+            """{"type":"event","content":"新结论B","evidence_ids":[22]}""",
+            """{"type":"event","content":"新结论A","evidence_ids":[22]}""",
+        )
+        val promoted = r.parsePromotionItems(
+            raw, "operator", "op1", MemoryLevel.L2, MemorySourceKind.PRIVATE_CHAT, "event:x", parents,
+        )
+        assertEquals(2, promoted.size)
+        assertEquals(listOf(11L), r.evidenceIdsFrom(promoted[0].rawJson))
+        assertEquals(listOf(22L), r.evidenceIdsFrom(promoted[1].rawJson))
+    }
+
+    @Test
     fun l2PromotionThresholdAndStrongSignalOverride() {
         val settings = SettingsRepository(PromptTestSettings())
         settings.memoryV2PromoteL1Threshold = 20

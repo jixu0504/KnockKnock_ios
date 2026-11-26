@@ -10,7 +10,8 @@ import java.io.FileOutputStream
 object DatabaseCompatibility {
     private const val DB_NAME = "rhodes_terminal.db"
     private const val TAG = "DbCompatibility"
-    // SQLDelight owns migrations 10+. Never advance beyond its last legacy schema here.
+    // SQLDelight owns migrations 10+. Never advance beyond its last legacy schema here;
+    // it stamps the current Schema.version (33 after 32.sqm) once the numbered migrations finish.
     private const val TARGET_VERSION = 9
     private const val SETTINGS_SP = "rhodes_settings"
     private const val DERIVED_CLEAN_KEY = "derived_data_cleaned_for_1_05"
@@ -497,13 +498,29 @@ object DatabaseCompatibility {
                 )
             """.trimIndent()
         )
-        for ((table, ddl) in newTables) {
+        for ((table, ddl) in newTables + MemoryV2CompatibilityDdl.tables) {
             if (!tableExists(db, table)) {
                 db.execSQL(ddl)
             }
         }
-        if (tableExists(db, "vector_memories") && "embeddingSignature" !in existingColumns(db, "vector_memories")) {
-            db.execSQL("ALTER TABLE vector_memories ADD COLUMN embeddingSignature TEXT NOT NULL DEFAULT ''")
+        for (index in MemoryV2CompatibilityDdl.indexes) {
+            db.execSQL(index)
+        }
+        if (tableExists(db, "vector_memories")) {
+            val vectorColumns = existingColumns(db, "vector_memories")
+            if ("embeddingSignature" !in vectorColumns) {
+                db.execSQL("ALTER TABLE vector_memories ADD COLUMN embeddingSignature TEXT NOT NULL DEFAULT ''")
+            }
+            // Migration 26 appends the BLOB columns while the database is still at version <= 26.
+            // Backfilling them here is only safe once that migration can no longer run, otherwise
+            // the ADD COLUMN would collide with 26.sqm on the normal 9 -> 32 upgrade path.
+            if (currentUserVersion(db) > 26) {
+                for ((name, definition) in MemoryV2CompatibilityDdl.vectorMemoryEmbeddingColumns) {
+                    if (name !in vectorColumns) {
+                        db.execSQL("ALTER TABLE vector_memories ADD COLUMN $name $definition")
+                    }
+                }
+            }
         }
     }
 
@@ -762,4 +779,171 @@ object DatabaseCompatibility {
         }
         return existing
     }
+}
+
+/**
+ * 迁移 24–32 引入的兼容表、索引与 vector_memories 的 BLOB 列。
+ * DDL 与 commonMain 的 .sq 定义逐列一致；独立成对象以便 androidUnitTest
+ * 用 JVM SQLite 驱动做「表存在 / 新列存在」断言。
+ */
+internal object MemoryV2CompatibilityDdl {
+    val tables: Map<String, String> = linkedMapOf(
+        "memory_corpus_stats" to """
+            CREATE TABLE IF NOT EXISTS memory_corpus_stats (
+                ownerType TEXT NOT NULL,
+                ownerId TEXT NOT NULL,
+                docCount INTEGER NOT NULL DEFAULT 0,
+                totalDocumentLength INTEGER NOT NULL DEFAULT 0,
+                updatedAt INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (ownerType, ownerId)
+            )
+        """.trimIndent(),
+        "memory_term_stats" to """
+            CREATE TABLE IF NOT EXISTS memory_term_stats (
+                term TEXT NOT NULL,
+                ownerType TEXT NOT NULL,
+                ownerId TEXT NOT NULL,
+                documentFrequency INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (term, ownerType, ownerId)
+            )
+        """.trimIndent(),
+        "memory_document_stats" to """
+            CREATE TABLE IF NOT EXISTS memory_document_stats (
+                memoryId INTEGER NOT NULL PRIMARY KEY,
+                documentLength INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent(),
+        "memory_terms" to """
+            CREATE TABLE IF NOT EXISTS memory_terms (
+                term TEXT NOT NULL,
+                ownerType TEXT NOT NULL,
+                ownerId TEXT NOT NULL,
+                memoryId INTEGER NOT NULL,
+                tf INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (term, ownerType, ownerId, memoryId)
+            )
+        """.trimIndent(),
+        "memory_relations" to """
+            CREATE TABLE IF NOT EXISTS memory_relations (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                fromMemoryId INTEGER NOT NULL,
+                toMemoryId INTEGER NOT NULL,
+                relationType TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                decidedBy TEXT NOT NULL DEFAULT 'rule',
+                createdAt INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(fromMemoryId, toMemoryId, relationType)
+            )
+        """.trimIndent(),
+        "memory_facts" to """
+            CREATE TABLE IF NOT EXISTS memory_facts (
+                memoryId INTEGER NOT NULL PRIMARY KEY,
+                ownerType TEXT NOT NULL,
+                ownerId TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                predicate TEXT NOT NULL DEFAULT '',
+                object TEXT NOT NULL DEFAULT '',
+                polarity TEXT NOT NULL DEFAULT 'unknown',
+                qualifiers TEXT NOT NULL DEFAULT '[]',
+                factKey TEXT NOT NULL DEFAULT '',
+                validFrom INTEGER,
+                validTo INTEGER,
+                recordedAt INTEGER NOT NULL DEFAULT 0,
+                timeSource TEXT NOT NULL DEFAULT 'unknown',
+                conflictStatus TEXT NOT NULL DEFAULT 'none',
+                updatedAt INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent(),
+        "memory_usage" to """
+            CREATE TABLE IF NOT EXISTS memory_usage (
+                memoryId INTEGER NOT NULL PRIMARY KEY,
+                retrievalCount INTEGER NOT NULL DEFAULT 0,
+                injectionCount INTEGER NOT NULL DEFAULT 0,
+                usefulCount INTEGER NOT NULL DEFAULT 0,
+                lastInjectedAt INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent(),
+        "canonical_entities" to """
+            CREATE TABLE IF NOT EXISTS canonical_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ownerType TEXT NOT NULL,
+                ownerId TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'entity',
+                name TEXT NOT NULL,
+                normalizedName TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                createdAt INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(ownerType, ownerId, kind, normalizedName)
+            )
+        """.trimIndent(),
+        "entity_aliases" to """
+            CREATE TABLE IF NOT EXISTS entity_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entityId INTEGER NOT NULL,
+                alias TEXT NOT NULL,
+                normalizedAlias TEXT NOT NULL,
+                UNIQUE(entityId, normalizedAlias)
+            )
+        """.trimIndent(),
+        "memory_entities" to """
+            CREATE TABLE IF NOT EXISTS memory_entities (
+                memoryId INTEGER NOT NULL,
+                entityId INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT 'mention',
+                PRIMARY KEY(memoryId, entityId, role)
+            )
+        """.trimIndent(),
+        "impressions" to """
+            CREATE TABLE IF NOT EXISTS impressions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ownerType TEXT NOT NULL, ownerId TEXT NOT NULL, characterId TEXT NOT NULL DEFAULT '',
+              layer TEXT NOT NULL DEFAULT 'interaction',
+              subject TEXT NOT NULL DEFAULT '', predicate TEXT NOT NULL DEFAULT '', value TEXT NOT NULL DEFAULT '',
+              polarity TEXT NOT NULL DEFAULT 'unknown', factKey TEXT NOT NULL DEFAULT '',
+              confidence REAL NOT NULL DEFAULT 0, tone TEXT NOT NULL DEFAULT 'neutral',
+              evidenceCount INTEGER NOT NULL DEFAULT 0,
+              firstSeenAt INTEGER NOT NULL DEFAULT 0, lastConfirmedAt INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'active',
+              updatedAt INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(ownerType, ownerId, factKey)
+            )
+        """.trimIndent(),
+        "memory_impression_evidence" to """
+            CREATE TABLE IF NOT EXISTS memory_impression_evidence (
+              impressionId INTEGER NOT NULL, memoryId INTEGER NOT NULL,
+              weight REAL NOT NULL DEFAULT 1.0, createdAt INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY(impressionId, memoryId)
+            )
+        """.trimIndent(),
+        "impression_history" to """
+            CREATE TABLE IF NOT EXISTS impression_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              impressionId INTEGER NOT NULL,
+              action TEXT NOT NULL,
+              beforeValue TEXT NOT NULL DEFAULT '',
+              afterValue TEXT NOT NULL DEFAULT '',
+              beforeStatus TEXT NOT NULL DEFAULT '',
+              afterStatus TEXT NOT NULL DEFAULT '',
+              createdAt INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent(),
+    )
+
+    val indexes: List<String> = listOf(
+        "CREATE INDEX IF NOT EXISTS memory_terms_lookup ON memory_terms(term, ownerType, ownerId)",
+        "CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations(fromMemoryId, relationType)",
+        "CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations(toMemoryId, relationType)",
+        "CREATE INDEX IF NOT EXISTS memory_facts_key ON memory_facts(ownerType, ownerId, factKey)",
+        "CREATE INDEX IF NOT EXISTS canonical_entities_lookup ON canonical_entities(ownerType, ownerId, normalizedName)",
+        "CREATE INDEX IF NOT EXISTS memory_entities_entity ON memory_entities(entityId)",
+        "CREATE INDEX IF NOT EXISTS impressions_owner ON impressions(ownerType, ownerId, status, layer)",
+        "CREATE INDEX IF NOT EXISTS memory_impression_evidence_memory ON memory_impression_evidence(memoryId)",
+        "CREATE INDEX IF NOT EXISTS impression_history_impression ON impression_history(impressionId, createdAt)"
+    )
+
+    val vectorMemoryEmbeddingColumns: List<Pair<String, String>> = listOf(
+        "embeddingBlob" to "BLOB",
+        "embeddingDimension" to "INTEGER NOT NULL DEFAULT 0",
+        "embeddingDtype" to "TEXT NOT NULL DEFAULT 'float32'"
+    )
 }

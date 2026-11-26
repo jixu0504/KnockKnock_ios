@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS memory_links (
 getMemoryLinksByParent:
 SELECT * FROM memory_links WHERE parentMemoryId = ? ORDER BY id ASC;
 
+getAllMemoryLinks:
+SELECT * FROM memory_links ORDER BY id ASC;
+
 getChildMemoryIds:
 SELECT childMemoryId FROM memory_links WHERE parentMemoryId = ?;
 

@@ -1,0 +1,17 @@
+-- T81：印象一等实体。此前「大家的印象」是 memory_items 的只读过滤视图（ImpressionFilter），
+-- 现在落成按事实键聚合的独立表：同一事实的多条 L2/L3 证据合成一行，证据数与置信度可增量维护。
+CREATE TABLE IF NOT EXISTS impressions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ownerType TEXT NOT NULL, ownerId TEXT NOT NULL, characterId TEXT NOT NULL DEFAULT '',
+  layer TEXT NOT NULL DEFAULT 'interaction',
+  subject TEXT NOT NULL DEFAULT '', predicate TEXT NOT NULL DEFAULT '', value TEXT NOT NULL DEFAULT '',
+  polarity TEXT NOT NULL DEFAULT 'unknown', factKey TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 0, tone TEXT NOT NULL DEFAULT 'neutral',
+  evidenceCount INTEGER NOT NULL DEFAULT 0,
+  firstSeenAt INTEGER NOT NULL DEFAULT 0, lastConfirmedAt INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  updatedAt INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(ownerType, ownerId, factKey)
+);
+
+CREATE INDEX IF NOT EXISTS impressions_owner ON impressions(ownerType, ownerId, status, layer);

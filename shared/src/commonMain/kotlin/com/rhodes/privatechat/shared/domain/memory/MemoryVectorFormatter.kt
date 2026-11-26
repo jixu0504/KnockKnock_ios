@@ -20,6 +20,9 @@ object MemoryVectorFormatter {
         return "[$time·$source] ${item.content}"
     }
 
+    /** 从向量 id 还原记忆行 id（`memory_v2_..._l1_7` / `manual_memory_operator_..._7`）。 */
+    fun originMemoryId(vectorId: String): Long = vectorId.substringAfterLast('_').toLongOrNull() ?: 0L
+
     fun vectorId(item: MemoryItem): String = if (item.sourceKind == MemorySourceKind.MANUAL_MEMORY) {
         "manual_memory_operator_${item.ownerId}_${item.id}"
     } else {

@@ -120,7 +120,10 @@ class BackupFullRestoreCoordinator(
                 throw e
             }
 
-            onProgress(BackupRestoreProgress(BackupRestoreStage.REBUILDING_RUNTIME, "正在重新安排自动内容"))
+            // 恢复的记忆行没有 vectorId（执行器按备份原样写入），索引必须重建才能召回。
+            // 这里只置标记，由下次活跃的前台维护分批重建——不在恢复事务里做嵌入（不阻塞、可续跑）。
+            settings.memoryIndexRebuildPending = true
+            onProgress(BackupRestoreProgress(BackupRestoreStage.REBUILDING_RUNTIME, "已安排记忆索引重建"))
             val check = runCatching {
                 selfCheck.check(archive.manifest, selection, filtered, repository, settings)
             }.getOrNull()

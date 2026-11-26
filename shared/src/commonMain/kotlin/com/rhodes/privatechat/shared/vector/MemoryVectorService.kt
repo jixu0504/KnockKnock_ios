@@ -1,5 +1,6 @@
 package com.rhodes.privatechat.shared.vector
 
+import com.rhodes.privatechat.shared.domain.memory.MemoryDiagnostics
 import com.rhodes.privatechat.shared.platformSynchronized
 import com.rhodes.privatechat.shared.settings.SettingsRepository
 import kotlinx.coroutines.sync.Mutex
@@ -59,8 +60,14 @@ class MemoryVectorService(
     ): List<VectorMemory> {
         val signature = currentEmbeddingSignature()
         val queryEmbedding = embedCached(query)
-        if (signature != currentEmbeddingSignature()) return emptyList()
-        if (!queryEmbedding.isUsableEmbedding()) return emptyList()
+        if (signature != currentEmbeddingSignature()) {
+            MemoryDiagnostics.log("Memory/Vector/降级", "嵌入签名在检索过程中变化，本轮结果作废（需重建索引）")
+            return emptyList()
+        }
+        if (!queryEmbedding.isUsableEmbedding()) {
+            MemoryDiagnostics.log("Memory/Vector/降级", "查询向量不可用（嵌入服务未返回有效向量）")
+            return emptyList()
+        }
         return vectorStoreGateway.search(
             VectorSearchRequest(
                 ownerType = ownerType,
@@ -79,7 +86,10 @@ class MemoryVectorService(
     suspend fun search(request: VectorSearchRequest): List<VectorMemory> {
         val signature = currentEmbeddingSignature()
         val queryEmbedding = embedCached(request.query)
-        if (signature != currentEmbeddingSignature()) return emptyList()
+        if (signature != currentEmbeddingSignature()) {
+            MemoryDiagnostics.log("Memory/Vector/降级", "嵌入签名在检索过程中变化，本轮结果作废（需重建索引）")
+            return emptyList()
+        }
         return searchWithEmbedding(request.copy(embeddingSignature = signature), queryEmbedding)
     }
 
@@ -89,7 +99,10 @@ class MemoryVectorService(
     suspend fun searchWithEmbedding(request: VectorSearchRequest, queryEmbedding: List<Double>): List<VectorMemory> {
         if (!queryEmbedding.isUsableEmbedding()) return emptyList()
         val signature = currentEmbeddingSignature()
-        if (request.embeddingSignature.isNotBlank() && request.embeddingSignature != signature) return emptyList()
+        if (request.embeddingSignature.isNotBlank() && request.embeddingSignature != signature) {
+            MemoryDiagnostics.log("Memory/Vector/降级", "请求签名与当前嵌入配置不一致：历史向量需重建后才能召回")
+            return emptyList()
+        }
         return vectorStoreGateway.search(request.copy(queryEmbedding = queryEmbedding, embeddingSignature = signature))
     }
 

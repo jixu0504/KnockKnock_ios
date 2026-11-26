@@ -63,6 +63,14 @@ data class A7GlueConfig(
     val groupAutoTimeoutMs: Long = 240_000L,
     /** 群自动互动唯一键前缀。 */
     val groupAutoKeyPrefix: String = "group-auto:",
+    /** 同一会话两次「回复后维护」触发的最小间隔（层本身有唯一键 KEEP，这里避免每轮都扫表）。 */
+    val replyMaintenanceThrottleMs: Long = 45_000L,
+    /** 生命周期清理的节流间隔：启动/回前台/后台机会执行，不承诺固定时刻。 */
+    val cleanupIntervalMs: Long = 6L * 60L * 60L * 1000L,
+    /** 自动索引重建的节流间隔与单次批量（剩余量留到下次活跃继续）。 */
+    val indexRepairThrottleMs: Long = 6L * 60L * 60L * 1000L,
+    val indexRepairBatchSize: Int = 100,
+    val indexRepairMaxBatches: Int = 3,
 )
 
 /**
@@ -145,6 +153,9 @@ class A7Glue internal constructor(
     private var lastCatchUpAt = 0L
     private var lastCatchUpExecuted = 0
     private var defaultAutoPlanListener: ((String, SettingsRepository.GroupAutoChatPlan?) -> Unit)? = null
+    /** 各会话上次「回复后维护」触发时间（仅内存；进程重启后由启动 catch-up 兜底）。 */
+    private val replyMaintenanceAt = mutableMapOf<String, Long>()
+    private var indexRepairRunning = false
 
     init {
         // 群自动互动计划状态变化 → 重排 DelayedTaskLayer（A1 计划状态机只负责计划，不 import 层）。
@@ -200,6 +211,83 @@ class A7Glue internal constructor(
         notificationRouter.setActiveSessionId(sessionId)
     }
 
+    // ------------------------------------------------------------------
+    // T62：回复后维护接线（滚动摘要 / 失败窗口重试 / 上下文重建）
+    // ------------------------------------------------------------------
+
+    /** 私聊回复落库后：节流入队一次上下文维护（不阻塞回复）。 */
+    fun onPrivateReplyStored(sessionId: String) = triggerContextMaintenance(sessionId, group = false)
+
+    /** 群聊回复落库后：同上（群聊分支）。 */
+    fun onGroupReplyStored(groupId: String) = triggerContextMaintenance(groupId, group = true)
+
+    private fun triggerContextMaintenance(sessionId: String, group: Boolean) {
+        if (sessionId.isBlank()) return
+        val now = clock()
+        val allowed = platformSynchronized(stateLock) {
+            val last = replyMaintenanceAt[sessionId] ?: 0L
+            if (now - last < config.replyMaintenanceThrottleMs) {
+                false
+            } else {
+                replyMaintenanceAt[sessionId] = now
+                true
+            }
+        }
+        if (!allowed) return
+        workScope.launch {
+            runCatching {
+                if (group) {
+                    contextTask.onGroupContextChanged(layer, sessionId)
+                } else {
+                    contextTask.onForegroundReplyCompleted(layer, sessionId, group = false)
+                }
+            }.onFailure {
+                A7GlueLog.log("maintenance.trigger.fail", "session=$sessionId group=$group err=${it.message?.take(120)}")
+            }
+        }
+    }
+
+    /**
+     * T64：手动重建记忆索引（设置/体检页入口）。恢复备份、换嵌入模型后使用。
+     * 完成回调在主线程，文本为一行可展示的结果摘要。
+     */
+    fun rebuildMemoryIndex(onDone: (String) -> Unit) {
+        settings.memoryIndexRebuildPending = true
+        workScope.launch {
+            val summary = runCatching {
+                val report = wiring.memoryV2.repairMemoryIndex(
+                    batchSize = 200,
+                    maxBatches = 100,
+                    shouldCancel = { false },
+                )
+                if (report.remaining == 0 && !report.cancelled) settings.memoryIndexRebuildPending = false
+                settings.memoryIndexLastRepairAt = clock()
+                "索引重建：修复 ${report.repaired} 条，失败 ${report.failed} 条，剩余 ${if (report.remaining > 0) "有" else "无"}"
+            }.getOrElse { "索引重建失败：${it.message ?: "未知错误"}" }
+            A7GlueLog.log("index.rebuild", summary)
+            mainScope.launch { onDone(summary) }
+        }
+    }
+
+    /** 记忆体检（轻量）：索引状态 + 待重建量（异步回主线程）。 */
+    fun memoryHealthLine(onDone: (String) -> Unit) {
+        workScope.launch {
+            val line = runCatching {
+                val health = wiring.memoryV2.indexHealth()
+                val deadLetters = settings.memoryConsolidationDeadLetterCount
+                val lastError = settings.memoryConsolidationLastError
+                buildString {
+                    append("记忆索引：可用 ${health.ready} · 缺失 ${health.missing} · 漂移 ${health.stale} · 过期 ${health.expired}")
+                    if (deadLetters > 0) {
+                        append(" · 整合失败 $deadLetters 次")
+                        if (lastError.isNotBlank()) append("（最近：${lastError.take(60)}）")
+                    }
+                }
+            }.getOrElse { "记忆索引：不可用（${it.message ?: "未知错误"}）" }
+            mainScope.launch { onDone(line) }
+        }
+    }
+
     /**
      * BGTaskScheduler 兜底路径（Swift 后台刷新 launchHandler 调用）：
      * 立即 catch-up，等待执行体结算后用回调返回「本次补算执行数」，供 `setTaskCompleted(success:)`。
@@ -232,6 +320,12 @@ class A7Glue internal constructor(
             // 3) 记忆维护启动分流（oracle MainViewModel.kt:632-639：rebuild pending 立即、摘要失败按退避）。
             val sessions = chatRepo.sessions.getAllSessionsSync()
             val contextKeys = contextTask.reconcile(layer, sessions)
+            // 3b) T63/T64：生命周期清理 + 索引自检/重建（机会式，节流；不承诺固定时刻）。
+            // 放到独立协程：远程嵌入可能较慢，不能拖住 catch-up 的任务补算与 BGTask 结算。
+            workScope.launch {
+                runCatching { runHousekeeping() }
+                    .onFailure { A7GlueLog.log("housekeeping.fail", "err=${it.message?.take(120)}") }
+            }
             // 4) 群自动互动计划重建（oracle GroupAutoChatScheduler.ensurePlan 批量）。
             runCatching { groupChat.domainEngine().refreshAutoGroupChats() }
             // 5) 刚 reconcile 进来的过期任务立即补算。
@@ -272,6 +366,81 @@ class A7Glue internal constructor(
         }
         A7GlueLog.log("catchup.settle", "reason=$reason executed=$executed")
         return executed
+    }
+
+    /**
+     * T63 + T64：启动/回前台/后台机会执行的生命周期维护。
+     * - 清理过期数据（软删 + 30 天宽限后硬删），按 [A7GlueConfig.cleanupIntervalMs] 节流；
+     * - 索引自检：有缺失/漂移或用户标记了重建时，分批重建（可被后台切换取消，剩余量下次继续）。
+     */
+    internal suspend fun runHousekeeping() {
+        val now = clock()
+        if (now - settings.memoryLastCleanupAt >= config.cleanupIntervalMs) {
+            runCatching { backfillImpressionsIfNeeded() }
+            runCatching { chatRepo.cleanupExpiredData() }
+                .onSuccess {
+                    settings.memoryLastCleanupAt = now
+                    A7GlueLog.log("cleanup.ok", "expired 清理完成")
+                }
+                .onFailure { A7GlueLog.log("cleanup.fail", "err=${it.message?.take(120)}") }
+        }
+        // T70：词法索引预热（升级后第一次召回不再同步扫全库）。
+        runCatching { chatRepo.memoryV2.warmLexicalIndex(now) }
+            .onFailure { A7GlueLog.log("lexical.warm.fail", "err=${it.message?.take(120)}") }
+        repairIndexIfNeeded(now)
+    }
+
+    /**
+     * 印象表一次性回填：老库升级后现有 L2/L3 不会自动进新表，这里按角色重建一次。
+     * 只跑一次（settings 标记），失败不置位，下次 housekeeping 重试。
+     */
+    private suspend fun backfillImpressionsIfNeeded() {
+        if (settings.impressionsBackfillDone) return
+        val operators = runCatching { chatRepo.getAllOperatorsSync() }.getOrDefault(emptyList())
+            .filter { !it.id.startsWith("group") && it.id != "user" }
+        var total = 0
+        operators.forEach { op ->
+            total += runCatching { wiring.memoryV2.rebuildImpressionsForOwner("operator", op.id) }.getOrDefault(0)
+        }
+        settings.impressionsBackfillDone = true
+        A7GlueLog.log("impressions.backfill", "operators=${operators.size} impressions=$total")
+    }
+
+    private suspend fun repairIndexIfNeeded(now: Long) {
+        val pending = settings.memoryIndexRebuildPending
+        val due = now - settings.memoryIndexLastRepairAt >= config.indexRepairThrottleMs
+        if (!pending && !due) return
+        val claimed = platformSynchronized(stateLock) {
+            if (indexRepairRunning) false else {
+                indexRepairRunning = true
+                true
+            }
+        }
+        if (!claimed) return
+        try {
+            val health = runCatching { wiring.memoryV2.indexHealth() }.getOrNull() ?: return
+            if (!pending && !health.needsRepair) {
+                settings.memoryIndexLastRepairAt = now
+                return
+            }
+            val report = wiring.memoryV2.repairMemoryIndex(
+                batchSize = config.indexRepairBatchSize,
+                maxBatches = if (pending) 25 else config.indexRepairMaxBatches,
+                shouldCancel = { !platformSynchronized(stateLock) { foreground } },
+            )
+            settings.memoryIndexLastRepairAt = now
+            if (report.remaining == 0 && !report.cancelled) settings.memoryIndexRebuildPending = false
+            A7GlueLog.log(
+                "index.repair",
+                "repaired=${report.repaired} failed=${report.failed} remaining=${report.remaining} cancelled=${report.cancelled}",
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            A7GlueLog.log("index.repair.fail", "err=${t.message?.take(120)}")
+        } finally {
+            platformSynchronized(stateLock) { indexRepairRunning = false }
+        }
     }
 
     private fun startTickLoop() {

@@ -30,7 +30,11 @@ class DatabaseMigrationTest {
         "chat_archives", "chat_display_events", "chat_history_segments", "chat_messages", "chat_sessions",
         "daily_deliveries", "diaries", "dispatch_records", "gift_records",
         "knowledge_base_chunks", "knowledge_bases", "mahjong_saves", "memories", "memory_anchors",
-        "memory_batches", "memory_items", "memory_links", "memory_source_queue",
+        "canonical_entities", "entity_aliases", "impression_history", "impressions", "memory_batches",
+        "memory_corpus_stats", "memory_document_stats", "memory_entities", "memory_facts",
+        "memory_impression_evidence", "memory_items",
+        "memory_links", "memory_relations", "memory_source_queue", "memory_term_stats", "memory_terms",
+        "memory_usage",
         "moment_comments", "moment_likes", "moments", "operator_knowledge_bases", "operators",
         "relationships", "reply_turns", "shared_experience_participants", "shared_experiences", "vector_memories",
     )
@@ -62,10 +66,10 @@ class DatabaseMigrationTest {
         var dbSizeBytes = "?"
         try {
             // SQLDelight 版本口径：23 个迁移文件 + 1 = 当前版本 24
-            assertEquals(24L, RhodesDatabase.Schema.version, "Schema.version 应为 24（23 迁移 + 1）")
-            assertEquals(24L, userVersion(driver), "fresh 冷开后 user_version 应为 24")
+            assertEquals(33L, RhodesDatabase.Schema.version, "Schema.version 应为 33（32 迁移 + 1）")
+            assertEquals(33L, userVersion(driver), "fresh 冷开后 user_version 应为 33")
 
-            // fresh 冷开 = 28 张当前表（迁移不在 create 路径执行）
+            // fresh 冷开 = 41 张当前表（迁移不在 create 路径执行；41 = 原 28 + 词法 4 + 关系 1 + 事实 1 + 使用 1 + 实体 3 + 印象 2 + 印象历史 1）
             val tables = tableNames(driver)
             val missing = currentSchemaTables - tables
             val extra = tables - currentSchemaTables
@@ -100,16 +104,36 @@ class DatabaseMigrationTest {
         //    - PRAGMA user_version = 18
         val driver1 = DatabaseDriverFactory().createDriver(dbPath)
         driver1.execute(null, "ALTER TABLE knowledge_bases DROP COLUMN sourceType", 0)
+        // 迁移 26 会 ALTER vector_memories ADD COLUMN：先 DROP 掉新列，模拟 v18 库形态
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingBlob", 0)
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingDimension", 0)
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingDtype", 0)
         driver1.execute(null, "PRAGMA user_version = 18", 0)
         assertEquals(18L, userVersion(driver1))
         driver1.close()
 
-        // 2) 重开触发升级 18→24：迁移 18/19/20/21/22/23 依次执行
+        // 2) 重开触发升级 18→33：迁移 18…32 依次执行
         val upgradeStart = TimeSource.Monotonic.markNow()
         val driver2 = DatabaseDriverFactory().createDriver(dbPath)
         val upgradeMs = upgradeStart.elapsedNow().inWholeMilliseconds
         try {
-            assertEquals(24L, userVersion(driver2), "升级后 user_version 应为 24")
+            assertEquals(33L, userVersion(driver2), "升级后 user_version 应为 33")
+            assertTrue("memory_terms" in tableNames(driver2), "迁移 24 应创建词法索引表")
+            assertTrue("memory_relations" in tableNames(driver2), "迁移 25 应创建事实关系表")
+            val vectorCols = mutableSetOf<String>()
+            driver2.executeQuery(null, "PRAGMA table_info(vector_memories)", { cursor ->
+                while (cursor.next().value) {
+                    cursor.getString(1)?.let { vectorCols += it }
+                }
+                QueryResult.Value(Unit)
+            }, 0)
+            assertTrue("embeddingBlob" in vectorCols, "迁移 26 应增加 vector_memories.embeddingBlob，实际列: $vectorCols")
+            assertTrue("memory_facts" in tableNames(driver2), "迁移 27 应创建事实表")
+            assertTrue("memory_usage" in tableNames(driver2), "迁移 28 应创建使用反馈表")
+            assertTrue("canonical_entities" in tableNames(driver2), "迁移 29 应创建实体表")
+            assertTrue("impressions" in tableNames(driver2), "迁移 30 应创建印象表")
+            assertTrue("memory_impression_evidence" in tableNames(driver2), "迁移 31 应创建印象证据表")
+            assertTrue("impression_history" in tableNames(driver2), "迁移 32 应创建印象历史表")
             // 迁移 18 创建了 data_repair_runs（fresh 冷开没有的表）
             assertTrue("data_repair_runs" in tableNames(driver2), "迁移 18 应创建 data_repair_runs")
             // 迁移 20 恢复了 sourceType 列
@@ -124,7 +148,7 @@ class DatabaseMigrationTest {
         } finally {
             driver2.close()
         }
-        println("IOS-DB upgrade-18-to-24: ${upgradeMs}ms")
+        println("IOS-DB upgrade-18-to-33: ${upgradeMs}ms")
         assertTrue(upgradeMs < 10_000, "升级路径应 <10s，实测 ${upgradeMs}ms")
     }
 

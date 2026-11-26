@@ -122,6 +122,13 @@ class GroupChatBridge internal constructor(
     private var capturedReplyId: Long = 0L
     private var capturedUserIds: Set<Long> = emptySet()
     private var capturedError: String = ""
+
+    /** 群聊回复落库后的维护触发（T62：群聊摘要/记忆维护此前无调用点）。 */
+    private var replyMaintenanceHook: ((String) -> Unit)? = null
+
+    internal fun setReplyMaintenanceHook(hook: ((String) -> Unit)?) {
+        replyMaintenanceHook = hook
+    }
     private var capturedSpeakers: List<String> = emptyList()
     private var capturedNarrationCount: Int = 0
 
@@ -392,13 +399,17 @@ class GroupChatBridge internal constructor(
 
     private fun onEngineEvent(event: GroupEngineEvent) {
         when (event) {
-            is GroupEngineEvent.ReplyStored -> platformSynchronized(lock) {
-                if (activeSessionId.isEmpty() || event.groupId == activeSessionId) {
-                    capturedReplyId = event.aiMessageId
-                    capturedUserIds = event.userMessageIds
-                    capturedSpeakers = event.speakers
-                    capturedNarrationCount = event.narrationCount
+            is GroupEngineEvent.ReplyStored -> {
+                platformSynchronized(lock) {
+                    if (activeSessionId.isEmpty() || event.groupId == activeSessionId) {
+                        capturedReplyId = event.aiMessageId
+                        capturedUserIds = event.userMessageIds
+                        capturedSpeakers = event.speakers
+                        capturedNarrationCount = event.narrationCount
+                    }
                 }
+                // T62：群聊回复后触发上下文维护（摘要/记忆重试）。
+                runCatching { replyMaintenanceHook?.invoke(event.groupId) }
             }
             is GroupEngineEvent.Toast -> platformSynchronized(lock) {
                 if (capturedError.isEmpty()) capturedError = event.message

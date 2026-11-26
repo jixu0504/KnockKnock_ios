@@ -1,0 +1,11 @@
+-- T73 注入反馈计数：每条记忆一行召回/注入/有用计数与最近注入时间。
+-- retrievalCount/usefulCount 先占列（本切片只写 injectionCount/lastInjectedAt），
+-- 后续 salience 反馈（有用/无用）直接复用同一行，不再改表。
+
+CREATE TABLE IF NOT EXISTS memory_usage (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    retrievalCount INTEGER NOT NULL DEFAULT 0,
+    injectionCount INTEGER NOT NULL DEFAULT 0,
+    usefulCount INTEGER NOT NULL DEFAULT 0,
+    lastInjectedAt INTEGER NOT NULL DEFAULT 0
+);

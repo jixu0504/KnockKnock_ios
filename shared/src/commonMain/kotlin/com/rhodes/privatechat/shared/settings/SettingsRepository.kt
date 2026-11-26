@@ -288,6 +288,49 @@ class SettingsRepository(private val settings: ObservableSettings) {
         get() = getBoolean("memory_v2_enabled", true)
         set(value) = putBoolean("memory_v2_enabled", value)
 
+    /**
+     * 索引重建标记：备份恢复完成 / 用户点「重建索引」时置位，由下次活跃的维护任务消费。
+     * 不承诺「立即完成」——iOS 后台是机会式调度（计划书 §4.10）。
+     */
+    var memoryIndexRebuildPending: Boolean
+        get() = getBoolean("memory_index_rebuild_pending", false)
+        set(value) = putBoolean("memory_index_rebuild_pending", value)
+
+    /** 上次索引重建时间（毫秒）；启动自检据此节流，避免每次前台都全量扫表。 */
+    var memoryIndexLastRepairAt: Long
+        get() = getLong("memory_index_last_repair_at", 0L)
+        set(value) = putLong("memory_index_last_repair_at", value)
+
+    /** 上次生命周期清理时间（毫秒）：启动/回前台机会执行时按此节流。 */
+    var memoryLastCleanupAt: Long
+        get() = getLong("memory_last_cleanup_at", 0L)
+        set(value) = putLong("memory_last_cleanup_at", value)
+
+    /** 整合预算：每角色每天最多几次整合运行（每次最多 L2+L3 两次模型请求）。 */
+    var memoryConsolidationPerOwnerDailyLimit: Int
+        get() = getInt("memory_consolidation_owner_daily_limit", 4).coerceIn(1, 100)
+        set(value) = putInt("memory_consolidation_owner_daily_limit", value.coerceIn(1, 100))
+
+    /** 整合预算：全设备每天最多几次整合运行（计划书 300 次/日的近似口径）。 */
+    var memoryConsolidationDeviceDailyLimit: Int
+        get() = getInt("memory_consolidation_device_daily_limit", 300).coerceIn(1, 10_000)
+        set(value) = putInt("memory_consolidation_device_daily_limit", value.coerceIn(1, 10_000))
+
+    /** 印象表历史回填是否已完成（老库升级后一次性执行）。 */
+    var impressionsBackfillDone: Boolean
+        get() = getBoolean("impressions_backfill_done", false)
+        set(value) = putBoolean("impressions_backfill_done", value)
+
+    /** 累计进入 dead-letter（连续 3 次失败）的次数，供记忆体检页展示。 */
+    var memoryConsolidationDeadLetterCount: Int
+        get() = getInt("memory_consolidation_dead_letters", 0)
+        set(value) = putInt("memory_consolidation_dead_letters", value.coerceAtLeast(0))
+
+    /** 最近一次整合失败原因（脱敏，≤160 字）。 */
+    var memoryConsolidationLastError: String
+        get() = getString("memory_consolidation_last_error", "")
+        set(value) = putString("memory_consolidation_last_error", value.take(160))
+
     /** fast, balanced, or deep; controls candidate work, not what the character knows. */
     var memoryRecallMode: String
         get() = getString("memory_recall_mode", "balanced").takeIf { it in setOf("fast", "balanced", "deep") } ?: "balanced"

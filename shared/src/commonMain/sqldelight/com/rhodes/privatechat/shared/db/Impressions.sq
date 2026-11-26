@@ -1,0 +1,148 @@
+CREATE TABLE IF NOT EXISTS impressions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ownerType TEXT NOT NULL, ownerId TEXT NOT NULL, characterId TEXT NOT NULL DEFAULT '',
+  layer TEXT NOT NULL DEFAULT 'interaction',   -- long_term / ongoing / interaction
+  subject TEXT NOT NULL DEFAULT '', predicate TEXT NOT NULL DEFAULT '', value TEXT NOT NULL DEFAULT '',
+  polarity TEXT NOT NULL DEFAULT 'unknown', factKey TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 0, tone TEXT NOT NULL DEFAULT 'neutral',
+  evidenceCount INTEGER NOT NULL DEFAULT 0,
+  firstSeenAt INTEGER NOT NULL DEFAULT 0, lastConfirmedAt INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',     -- active / rejected / frozen
+  updatedAt INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(ownerType, ownerId, factKey)
+);
+
+CREATE INDEX IF NOT EXISTS impressions_owner ON impressions(ownerType, ownerId, status, layer);
+
+-- T83 人工纠正审计：编辑正文 / 拒绝 / 撤销拒绝 / 冻结 / 解冻都留一条不可变记录。
+-- 只追加不更新，供“改了什么、从什么状态到什么状态”追溯；不参与页面读取。
+CREATE TABLE IF NOT EXISTS impression_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  impressionId INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  beforeValue TEXT NOT NULL DEFAULT '',
+  afterValue TEXT NOT NULL DEFAULT '',
+  beforeStatus TEXT NOT NULL DEFAULT '',
+  afterStatus TEXT NOT NULL DEFAULT '',
+  createdAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS impression_history_impression ON impression_history(impressionId, createdAt);
+
+-- SQLite 3.18 无 UPSERT：先按唯一键查，命中就更新，未命中才插入（ImpressionRepository.upsert 内同事务）。
+selectByFactKey:
+SELECT id, ownerType, ownerId, characterId, layer, subject, predicate, value AS valueText, polarity, factKey,
+       confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt
+FROM impressions
+WHERE ownerType = ? AND ownerId = ? AND factKey = ?;
+
+-- 新印象一律以 active 落库；rejected/frozen 只由后续人工裁决写入。
+insertImpression:
+INSERT INTO impressions(ownerType, ownerId, characterId, layer, subject, predicate, value, polarity, factKey,
+                        confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?);
+
+lastInsertedImpressionId:
+SELECT last_insert_rowid();
+
+updateImpressionByFactKey:
+UPDATE impressions
+SET characterId = ?, layer = ?, subject = ?, predicate = ?, value = ?, polarity = ?,
+    confidence = ?, tone = ?, evidenceCount = ?, firstSeenAt = ?, lastConfirmedAt = ?, status = ?, updatedAt = ?
+WHERE ownerType = ? AND ownerId = ? AND factKey = ?;
+
+-- 层深优先（长期 → 持续 → 互动），同层按最近确认时间倒序。
+listForCharacter:
+SELECT id, ownerType, ownerId, characterId, layer, subject, predicate, value AS valueText, polarity, factKey,
+       confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt
+FROM impressions
+WHERE ownerType = ? AND ownerId = ? AND status = ?
+ORDER BY CASE layer WHEN 'long_term' THEN 0 WHEN 'ongoing' THEN 1 ELSE 2 END,
+         updatedAt DESC, id DESC
+LIMIT ? OFFSET ?;
+
+countByStatus:
+SELECT COUNT(*) FROM impressions
+WHERE ownerType = ? AND ownerId = ? AND status = ?;
+
+markEvidence:
+UPDATE impressions SET evidenceCount = evidenceCount + ?, lastConfirmedAt = ?, updatedAt = ?
+WHERE id = ?;
+
+listAllForOwner:
+SELECT id, ownerType, ownerId, characterId, layer, subject, predicate, value AS valueText, polarity, factKey,
+       confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt
+FROM impressions
+WHERE ownerType = ? AND ownerId = ?
+ORDER BY id;
+
+-- T88 备份全量：恢复与计数按 id 升序读出所有字段（status 也原样带出，含人工裁决的 rejected/frozen）。
+selectAllForBackup:
+SELECT id, ownerType, ownerId, characterId, layer, subject, predicate, value AS valueText, polarity, factKey,
+       confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt
+FROM impressions
+ORDER BY id;
+
+-- 恢复用插入：insertImpression 固定写 active，会把备份里的 rejected/frozen 洗掉，故单列一条保留 status 的语句。
+insertImpressionForRestore:
+INSERT INTO impressions(ownerType, ownerId, characterId, layer, subject, predicate, value, polarity, factKey,
+                        confidence, tone, evidenceCount, firstSeenAt, lastConfirmedAt, status, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteAllImpressions:
+DELETE FROM impressions;
+
+-- ==================== T82 分页 ====================
+
+-- 全表分页（所有角色一起排，Swift 侧再按角色分组）：层深优先 → 最近更新 → id 降序。
+-- limit = page * pageSize，调用方传「累计到第几页」，一次返回前 N 行。
+listVisiblePage:
+SELECT * FROM impressions
+WHERE ownerType = ? AND status IN ('active', 'frozen')
+ORDER BY CASE layer WHEN 'long_term' THEN 0 WHEN 'ongoing' THEN 1 ELSE 2 END,
+         updatedAt DESC, id DESC
+LIMIT ?;
+
+-- 已拒绝印象单独读取（撤销拒绝入口用），不进入正常列表快照。
+listRejected:
+SELECT * FROM impressions
+WHERE ownerType = ? AND status = 'rejected'
+ORDER BY updatedAt DESC, id DESC
+LIMIT ?;
+
+countVisible:
+SELECT COUNT(*) FROM impressions
+WHERE ownerType = ? AND status IN ('active', 'frozen');
+
+countAll:
+SELECT COUNT(*) FROM impressions WHERE ownerType = ?;
+
+countVisibleByLayer:
+SELECT layer, COUNT(*) AS rowCount FROM impressions
+WHERE ownerType = ? AND status IN ('active', 'frozen')
+GROUP BY layer;
+
+-- ==================== T83 纠正 ====================
+
+selectImpressionById:
+SELECT * FROM impressions WHERE id = ?;
+
+updateValueById:
+UPDATE impressions SET value = ?, updatedAt = ? WHERE id = ?;
+
+updateStatusById:
+UPDATE impressions SET status = ?, updatedAt = ? WHERE id = ?;
+
+-- 证据展示：memory_items 正文摘要与会话 id（记忆已删除时 content/sessionId 为空）。
+selectMemoryRefs:
+SELECT id, content, sessionId FROM memory_items WHERE id IN ?;
+
+insertHistory:
+INSERT INTO impression_history(impressionId, action, beforeValue, afterValue, beforeStatus, afterStatus, createdAt)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+historyForImpression:
+SELECT id, impressionId, action, beforeValue, afterValue, beforeStatus, afterStatus, createdAt
+FROM impression_history
+WHERE impressionId = ?
+ORDER BY createdAt, id;

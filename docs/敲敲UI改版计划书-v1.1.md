@@ -229,13 +229,13 @@
    - `gradle/libs.versions.toml`：Kotlin **2.3.21**（已确认 Maven 存在）、SQLDelight **2.2.1**、Ktor **3.0.3**、kotlinx-datetime 0.8.0、russhwolf multiplatform-settings、koin、kotlinx-serialization（按 shared 源码实际 import 校准）
    - `build.gradle.kts`（iOS-only 版）：去掉 `android.library`/`androidTarget()`/Compose 插件与依赖（源码实测 0 处 `androidx.compose` import），保留 `iosArm64` + `iosSimulatorArm64` 静态 framework 与 SQLDelight 配置
 4. **构建 framework**：`gradle :shared:linkDebugFrameworkIosArm64`（真机 debug）+ release 版（安装用）。首次会下载 Kotlin/Native 工具链（约 1–2GB，来自 download.jetbrains.com）。
-5. **重写 `scripts/build-device.sh`**：现脚本路径按旧工作区（`RhodesLink/iosApp`、`ios-port/toolchain/env.sh`）写死 → 改为本仓库布局（`ios/RhodesLink.xcodeproj`、`shared/build/bin/...`），加入 `xcodebuild -allowProvisioningUpdates` + `xcrun devicectl device install/launch`。
+5. **重写 `scripts/build-device.sh`**：现脚本路径按旧工作区（`RhodesLink/iosApp`、`ios-port/toolchain/env.sh`）写死 → 改为本仓库布局（`ios/KnockKnock.xcodeproj`、`shared/build/bin/...`），加入 `xcodebuild -allowProvisioningUpdates` + `xcrun devicectl device install/launch`。
 6. **编译校验**：`xcodebuild -sdk iphoneos ... build`（真机 SDK）。
 7. **模拟器截图（本轮验收主路径）**：
    ```bash
    xcrun simctl list runtimes                      # 确认 iOS 27.2 已装
    xcrun simctl boot "iPhone 17" && open -a Simulator
-   xcrun simctl install booted /tmp/rhodes-dd/Build/Products/Debug-iphonesimulator/RhodesLink.app
+   xcrun simctl install booted /tmp/rhodes-dd/Build/Products/Debug-iphonesimulator/KnockKnock.app
    xcrun simctl launch booted com.rhodeslink.app
    xcrun simctl io booted screenshot screenshots/knock-chat.png
    ```

@@ -38,6 +38,29 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.time.TimeSource
 import kotlinx.datetime.Clock
 
+/** 记忆索引健康（记忆体检页与启动自检共用口径）。 */
+data class MemoryIndexHealth(
+    val signature: String,
+    val active: Int,
+    val ready: Int,
+    val missing: Int,
+    val stale: Int,
+    val expired: Int,
+    val inactive: Int,
+) {
+    val needsRepair: Boolean get() = missing + stale > 0
+}
+
+/** 一次索引重建的进度/结果；`remaining` 为 -1 表示批次进行中尚未统计。 */
+data class MemoryIndexRepairReport(
+    val signature: String,
+    val scanned: Int,
+    val repaired: Int,
+    val failed: Int,
+    val remaining: Int,
+    val cancelled: Boolean,
+)
+
 class MemoryV2Pipeline(
     private val repository: ChatRepository,
     private val settings: SettingsRepository,
@@ -54,6 +77,10 @@ class MemoryV2Pipeline(
     private val memoryRetryDelaysMs = longArrayOf(10_000L, 60_000L, 300_000L)
 
     private fun nowMillis(): Long = clock.now().toEpochMilliseconds()
+
+    /** 失败窗口已重试次数：退避阶梯必须从真实次数继续，否则永远停留在第 1 档（审计 X-07）。 */
+    private suspend fun retryCountOf(sourceId: Long): Int =
+        runCatching { repository.memoryV2.memorySourceRetryCount(sourceId) }.getOrDefault(0)
 
     private suspend fun scheduleMemoryRetry(sourceId: Long, token: String, priorFailures: Int, reason: String): String {
         return if (priorFailures < memoryRetryDelaysMs.size) {
@@ -78,6 +105,7 @@ class MemoryV2Pipeline(
                 temperature = settings.aiTemperature, requestType = requestType
             )
             MemoryDiagnostics.log("AI/$requestType/响应", "记忆模型请求成功\n耗时=${startedAt.elapsedNow().inWholeMilliseconds}ms\n输入Token=${result.inputTokens}\n输出Token=${result.outputTokens}\n输出字符=${result.content.length}")
+            recordTokenUsage(result.inputTokens, result.outputTokens)
             if (settings.provider == "deepseek") {
                 val reasoning = result.reasoningContent.orEmpty()
                 // 思维链原文不落任何日志：用户可能导出调试日志，思考过程不应出现在里面。
@@ -94,6 +122,19 @@ class MemoryV2Pipeline(
         } catch (e: Exception) {
             MemoryDiagnostics.log("AI/$requestType/错误", "记忆模型请求失败\n耗时=${startedAt.elapsedNow().inWholeMilliseconds}ms\n异常=${e::class.simpleName}\n原因=${e.message ?: "未知错误"}")
             throw e
+        }
+    }
+
+    private fun recordTokenUsage(inputTokens: Int, outputTokens: Int) {
+        if (inputTokens <= 0 && outputTokens <= 0) return
+        // Consumption stats page aggregates the "memory" category;记忆的额外成本必须可对账（审计 P1-4）。
+        if (inputTokens > 0) {
+            settings.addInputTokenCount(TOKEN_CATEGORY_MEMORY, inputTokens)
+            settings.addDailyInputTokenCount(TOKEN_CATEGORY_MEMORY, beijingDate(nowMillis()), inputTokens)
+        }
+        if (outputTokens > 0) {
+            settings.addOutputTokenCount(TOKEN_CATEGORY_MEMORY, outputTokens)
+            settings.addDailyOutputTokenCount(TOKEN_CATEGORY_MEMORY, beijingDate(nowMillis()), outputTokens)
         }
     }
 
@@ -139,7 +180,7 @@ class MemoryV2Pipeline(
             if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
             MemoryDiagnostics.log("MemoryV2", "私聊L1提取失败，已保留队列等待重试: ${e.message?.take(80)}")
             leaseRenewal.cancel()
-            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = 0, e.message?.take(160) ?: "提取失败")
+            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = retryCountOf(sourceId), e.message?.take(160) ?: "提取失败")
             MemoryDiagnostics.conversationStep(operationId, "私聊记忆提取", "本轮总览", "失败", "${e::class.simpleName}；$retryMessage")
             return false
         }
@@ -162,7 +203,7 @@ class MemoryV2Pipeline(
                     outputCount = l1.size,
                     windowStart = messages.first().timestamp,
                     windowEnd = messages.last().timestamp,
-                    promptVersion = "memory_v2_l1_v2",
+                    promptVersion = "memory_v2_l1_v3",
                     createdAt = nowMillis()
                 ))
             }
@@ -178,7 +219,7 @@ class MemoryV2Pipeline(
             true
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
-            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = 0, e.message?.take(160) ?: "记忆保存失败")
+            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = retryCountOf(sourceId), e.message?.take(160) ?: "记忆保存失败")
             MemoryDiagnostics.conversationStep(operationId, "私聊记忆提取", "本轮总览", "失败", "${e::class.simpleName}；保存失败，$retryMessage")
             false
         } finally {
@@ -222,7 +263,7 @@ class MemoryV2Pipeline(
             if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
             MemoryDiagnostics.log("MemoryV2", "群聊L1提取失败，已保留队列等待重试: ${e.message?.take(80)}")
             leaseRenewal.cancel()
-            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = 0, e.message?.take(160) ?: "提取失败")
+            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = retryCountOf(sourceId), e.message?.take(160) ?: "提取失败")
             MemoryDiagnostics.conversationStep(operationId, "群聊记忆提取", "本轮总览", "失败", "${e::class.simpleName}；$retryMessage")
             return false
         }
@@ -262,7 +303,7 @@ class MemoryV2Pipeline(
             true
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
-            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = 0, e.message?.take(160) ?: "记忆保存失败")
+            val retryMessage = scheduleMemoryRetry(sourceId, claimToken, priorFailures = retryCountOf(sourceId), e.message?.take(160) ?: "记忆保存失败")
             MemoryDiagnostics.conversationStep(operationId, "群聊记忆提取", "本轮总览", "失败", "${e::class.simpleName}；保存失败，$retryMessage")
             false
         } finally {
@@ -362,7 +403,7 @@ class MemoryV2Pipeline(
             repository.completeMemorySource(sourceId, token)
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (error: Exception) {
-            scheduleMemoryRetry(sourceId, token, 0, error::class.simpleName.orEmpty())
+            scheduleMemoryRetry(sourceId, token, retryCountOf(sourceId), error::class.simpleName.orEmpty())
         }
     }
 
@@ -396,8 +437,35 @@ class MemoryV2Pipeline(
         // become a character's private-chat impression just because it has a copied owner.
         val l1Items = repository.getActiveMemoryItemsByLevel(ownerType, ownerId, MemoryLevel.L1, now)
             .filter { it.sourceKind == sourceKind }
+        val stateKey = consolidationStateKey(ownerType, ownerId, sourceKind)
+        val state = MemoryConsolidationPolicy.decode(settings.getString(stateKey, ""))
+        val signature = MemoryConsolidationPolicy.signature(
+            l1Items.map { Triple(it.id, it.updatedAt, it.importance) },
+            CONSOLIDATION_PROMPT_VERSION,
+        )
+        if (MemoryConsolidationPolicy.shouldSkip(state, signature, now)) {
+            MemoryDiagnostics.log(
+                "Memory/Consolidation",
+                "跳过整合：候选未变或退避中 owner=$ownerId source=$sourceKind status=${state.status}",
+            )
+            return
+        }
+        val day = beijingDate(now)
+        var spentToday = false
+        // 只有真的要调用模型时才消耗预算；没有达标 topic 的空跑不占额度。
+        fun ensureBudget(): Boolean {
+            if (spentToday) return true
+            if (!MemoryConsolidationPolicy.canSpend(settings, ownerId, day)) {
+                MemoryDiagnostics.log("Memory/Consolidation", "跳过整合：日预算用尽 owner=$ownerId day=$day")
+                return false
+            }
+            MemoryConsolidationPolicy.recordSpend(settings, ownerId, day)
+            spentToday = true
+            return true
+        }
+        try {
         val l1Topic = parseRules.pickPromotionTopic(l1Items, thresholdL1)
-        if (l1Topic != null) {
+        if (l1Topic != null && ensureBudget()) {
             val selected = l1Topic.items
             val messages = buildLevelMessages(MemoryV2PromptTemplates.L2, selected)
             val raw = withTimeout(50_000) { requestMemoryModel(messages, "MemoryL2") }
@@ -414,7 +482,7 @@ class MemoryV2Pipeline(
                     outputCount = saved.size,
                     windowStart = selected.minOfOrNull { it.createdAt } ?: nowMillis(),
                     windowEnd = selected.maxOfOrNull { it.createdAt } ?: nowMillis(),
-                    promptVersion = "memory_v2_l2_v2",
+                    promptVersion = "memory_v2_l2_v3",
                     createdAt = nowMillis()
                 ))
             }
@@ -423,7 +491,7 @@ class MemoryV2Pipeline(
         val l2Items = repository.getActiveMemoryItemsByLevel(ownerType, ownerId, MemoryLevel.L2, now)
             .filter { it.sourceKind == sourceKind }
         val l2Topic = parseRules.pickPromotionTopic(l2Items, thresholdL2, requireStable = true)
-        if (l2Topic != null) {
+        if (l2Topic != null && ensureBudget()) {
             val selected = l2Topic.items
             val messages = buildLevelMessages(MemoryV2PromptTemplates.L3, selected)
             val raw = withTimeout(50_000) { requestMemoryModel(messages, "MemoryL3") }
@@ -440,15 +508,159 @@ class MemoryV2Pipeline(
                     outputCount = saved.size,
                     windowStart = selected.minOfOrNull { it.createdAt } ?: nowMillis(),
                     windowEnd = selected.maxOfOrNull { it.createdAt } ?: nowMillis(),
-                    promptVersion = "memory_v2_l3_v2",
+                    promptVersion = "memory_v2_l3_v3",
                     createdAt = nowMillis()
                 ))
             }
         }
+        settings.putString(stateKey, MemoryConsolidationPolicy.encode(MemoryConsolidationPolicy.onSuccess(signature, nowMillis())))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val nextState = MemoryConsolidationPolicy.onFailure(
+                previous = state,
+                signature = signature,
+                now = nowMillis(),
+                error = e.message ?: e::class.simpleName.orEmpty(),
+            )
+            settings.putString(stateKey, MemoryConsolidationPolicy.encode(nextState))
+            if (!MemoryConsolidationPolicy.isDeadLetter(state) && MemoryConsolidationPolicy.isDeadLetter(nextState)) {
+                settings.memoryConsolidationDeadLetterCount += 1
+                settings.memoryConsolidationLastError = nextState.lastError
+                MemoryDiagnostics.log(
+                    "Memory/Consolidation",
+                    "进入 dead-letter owner=$ownerId source=$sourceKind error=${nextState.lastError}",
+                )
+            }
+            throw e
+        }
     }
 
+    private fun consolidationStateKey(ownerType: String, ownerId: String, sourceKind: MemorySourceKind): String =
+        "memory_consolidation_state_${ownerType}_${ownerId}_${sourceKind.name}"
 
-    private val recallEngine by lazy { MemoryRecallEngine(settings, memoryVectorService) { nowMillis() } }
+    private val recallEngine by lazy {
+        MemoryRecallEngine(
+            settings = settings,
+            memoryVectorService = memoryVectorService,
+            lexicalRecall = { operatorId, query -> buildLexicalRecallCandidates(operatorId, query) },
+            factKeyResolver = { memoryIds ->
+                repository.memoryV2.getActiveMemoryItemsByIds(memoryIds, nowMillis())
+                    .associate { it.id to it.topicKey }
+            },
+            // T73：本轮最终注入的记忆累加 injectionCount（失败不影响召回，见 engine.notifySelected）。
+            onSelected = { ids -> repository.memoryV2.bumpInjectionUsage(ids, nowMillis()) },
+            nowMillis = { nowMillis() },
+        )
+    }
+
+    /**
+     * 词法通道候选：BM25 命中 → 回表 active 记忆 → 过滤来源开关 → 转成统一候选结构。
+     * 只提供候选与分数，是否准入由 [MemoryRecallEngine] 的两阶段规则决定。
+     */
+    private suspend fun buildLexicalRecallCandidates(operatorId: String, query: String): List<VectorMemory> {
+        if (!settings.memoryV2Enabled || query.isBlank()) return emptyList()
+        val now = nowMillis()
+        val hits = repository.memoryV2.searchLexical("operator", operatorId, query, limit = 120, now = now)
+        if (hits.isEmpty()) return emptyList()
+        val allowed = listOf(
+            MemorySourceKind.PRIVATE_CHAT,
+            MemorySourceKind.GROUP_CHAT,
+            MemorySourceKind.MOMENT,
+            MemorySourceKind.MOMENT_COMMENT,
+            MemorySourceKind.DIARY,
+            MemorySourceKind.MANUAL_MEMORY,
+        ).filter { settings.isMemoryInjectionAllowed("private_chat", it.name) }
+            .mapTo(mutableSetOf()) { it.name }
+        if (allowed.isEmpty()) return emptyList()
+        val items = repository.memoryV2.getActiveMemoryItemsByIds(hits.map { it.memoryId }, now)
+        val byId = items.associateBy { it.id }
+        val lexical = hits.mapNotNull { hit ->
+            val item = byId[hit.memoryId] ?: return@mapNotNull null
+            if (item.sourceKind.name !in allowed) return@mapNotNull null
+            VectorMemory(
+                id = MemoryVectorFormatter.vectorId(item),
+                ownerType = item.ownerType,
+                ownerId = item.ownerId,
+                sourceType = MemoryVectorFormatter.sourceType(item),
+                sourceId = item.sourceRefId.ifBlank { item.sessionId },
+                content = MemoryVectorFormatter.content(item),
+                importance = item.importance.coerceIn(0, 100) / 100.0,
+                tags = MemoryVectorFormatter.tags(item),
+                visibility = item.privacy ?: parseRules.defaultPrivacy(item.sourceKind),
+                createdAt = item.createdAt,
+                expiresAt = item.expiresAt,
+                originMemoryId = item.id,
+                originContent = item.content,
+                lexicalScore = hit.score,
+                lexicalMatchCount = hit.matchedTermCount,
+                lexicalMaxTermIdf = hit.maxTermIdf,
+            )
+        }
+        return mergeEntityRecallCandidates(lexical, operatorId, query, allowed, now)
+    }
+
+    /**
+     * 实体通道（T72）：查询里出现的实体名（归一后长度≥2）直接换回挂在该实体上的记忆。
+     *
+     * 只补词法命中不到的语义类查询（「我养了什么猫」→ 实体「猫」），因此给固定分
+     * [ENTITY_RECALL_SCORE]：足以过 FACT/TIME 的准入，但不冒充高相关；
+     * 实体名天然具备区分度，故 [ENTITY_RECALL_IDF] 高于判别门槛。
+     * 已由词法命中的记忆不重复加入。
+     */
+    private suspend fun mergeEntityRecallCandidates(
+        lexical: List<VectorMemory>,
+        operatorId: String,
+        query: String,
+        allowed: Set<String>,
+        now: Long,
+    ): List<VectorMemory> {
+        if (query.isBlank()) return lexical
+        val matchedNames = runCatching {
+            repository.memoryV2.listMemoryEntities("operator", operatorId, ENTITY_CATALOG_LIMIT)
+                .filter { it.normalizedName.length >= 2 && query.contains(it.normalizedName) }
+                .map { it.normalizedName }
+                .distinct()
+        }.getOrDefault(emptyList())
+        if (matchedNames.isEmpty()) return lexical
+        val existing = lexical.mapTo(mutableSetOf()) { it.originMemoryId }
+        val ids = runCatching {
+            repository.memoryV2.findMemoryIdsByEntityNames("operator", operatorId, matchedNames, ENTITY_HIT_LIMIT)
+        }.getOrDefault(emptyList()).filter { it !in existing }
+        if (ids.isEmpty()) return lexical
+        val items = repository.memoryV2.getActiveMemoryItemsByIds(ids, now)
+        val entityHits = items.filter { it.sourceKind.name in allowed }.map { item ->
+            VectorMemory(
+                id = MemoryVectorFormatter.vectorId(item),
+                ownerType = item.ownerType,
+                ownerId = item.ownerId,
+                sourceType = MemoryVectorFormatter.sourceType(item),
+                sourceId = item.sourceRefId.ifBlank { item.sessionId },
+                content = MemoryVectorFormatter.content(item),
+                importance = item.importance.coerceIn(0, 100) / 100.0,
+                tags = MemoryVectorFormatter.tags(item),
+                visibility = item.privacy ?: parseRules.defaultPrivacy(item.sourceKind),
+                createdAt = item.createdAt,
+                expiresAt = item.expiresAt,
+                originMemoryId = item.id,
+                originContent = item.content,
+                lexicalScore = ENTITY_RECALL_SCORE,
+                lexicalMatchCount = 2,
+                lexicalMaxTermIdf = ENTITY_RECALL_IDF,
+            )
+        }
+        if (entityHits.isNotEmpty()) {
+            MemoryDiagnostics.log(
+                "Memory/Recall/实体",
+                "实体通道命中：实体=${matchedNames.size} 记忆=${entityHits.size}",
+            )
+        }
+        return lexical + entityHits
+    }
+
+    /** T81 回填入口：老库升级后把 L2/L3 聚合成印象（可重入）。 */
+    suspend fun rebuildImpressionsForOwner(ownerType: String, ownerId: String): Int =
+        repository.memoryV2.rebuildImpressionsForOwner(ownerType, ownerId, nowMillis())
 
     suspend fun buildPrivateMemoryContext(
         operatorId: String,
@@ -800,12 +1012,100 @@ class MemoryV2Pipeline(
             }
             if (id > 0) {
                 val withId = item.copy(id = id)
+                saveMemoryFact(withId, nowMillis())
                 saveMemoryItemToVector(id, withId)
                 saved += withId
             }
         }
         MemoryDiagnostics.log("Memory/Save", "记忆保存完成：新增=${saved.size}条，输入=${items.size}条")
+        if (saved.isNotEmpty()) {
+            recordStructuredRelations(saved)
+            if (saved.any { it.memoryLevel == MemoryLevel.L2 || it.memoryLevel == MemoryLevel.L3 }) {
+                runCatching { repository.memoryV2.upsertImpressions(saved, nowMillis()) }
+                    .onFailure { e ->
+                        MemoryDiagnostics.log(
+                            "Memory/ImpressionError",
+                            "印象聚合失败：${e.message?.take(120) ?: "未知"}",
+                        )
+                    }
+            }
+        }
         return saved
+    }
+
+    /**
+     * 结构化事实独立表（T69）：只有 L1 且 rawJson 里能解析出 subject/predicate/object 才写行。
+     * 事实是可选的派生数据：解析失败或写入失败只记诊断，记忆本身已经保存成功。
+     */
+    private suspend fun saveMemoryFact(item: MemoryItem, now: Long) {
+        if (item.memoryLevel != MemoryLevel.L1 || item.rawJson.isBlank()) return
+        val fact = parseRules.structuredFactOf(item.rawJson) ?: return
+        try {
+            repository.memoryV2.upsertMemoryFact(item, fact, now)
+            runCatching { repository.memoryV2.upsertMemoryEntities(item, fact, now) }
+                .onFailure { e ->
+                    MemoryDiagnostics.log(
+                        "Memory/EntityError",
+                        "实体索引写入失败：memoryId=${item.id}，原因=${e.message?.take(160) ?: "未知"}",
+                    )
+                }
+        } catch (e: Exception) {
+            MemoryDiagnostics.log(
+                "Memory/FactError",
+                "结构化事实写入失败：memoryId=${item.id}，原因=${e.message?.take(160) ?: e::class.simpleName ?: "未知原因"}",
+            )
+        }
+    }
+
+    /**
+     * 结构化 L1 落库后记录事实关系（T78 数据基础）：
+     * 同基座同极性 → supports；同基座相反极性 → contradicts；其余留给 T78 完整版的模型/用户裁决。
+     * contradicts 同时把新旧事实行标为 suspected（待确认），只写标记不关闭/合并任何记忆。
+     */
+    private suspend fun recordStructuredRelations(saved: List<MemoryItem>) {
+        var conflictRelations = 0
+        val conflictIds = linkedSetOf<Long>()
+        saved.filter { it.memoryLevel == MemoryLevel.L1 && it.topicKey.startsWith(MemoryRelationRules.FACT_PREFIX) }
+            .forEach { item ->
+                val opposite = MemoryRelationRules.oppositeKey(item.topicKey) ?: return@forEach
+                val refs = runCatching {
+                    repository.memoryV2.getActiveMemoryTopicRefs(
+                        ownerType = item.ownerType,
+                        ownerId = item.ownerId,
+                        topicKeys = listOf(item.topicKey, opposite),
+                        now = nowMillis(),
+                        limit = 20,
+                    )
+                }.getOrDefault(emptyList())
+                refs.forEach { (otherId, otherKey) ->
+                    if (otherId == item.id) return@forEach
+                    val type = MemoryRelationRules.relationType(item.topicKey, otherKey) ?: return@forEach
+                    runCatching {
+                        repository.memoryV2.insertMemoryRelation(
+                            fromMemoryId = item.id,
+                            toMemoryId = otherId,
+                            relationType = type,
+                            confidence = if (type == MemoryRelationRules.SUPPORTS) 0.85 else 0.6,
+                            decidedBy = "rule",
+                            now = nowMillis(),
+                        )
+                    }
+                    if (type == MemoryRelationRules.CONTRADICTS) {
+                        conflictRelations++
+                        conflictIds += item.id
+                        conflictIds += otherId
+                    }
+                }
+            }
+        if (conflictIds.isNotEmpty()) {
+            val marked = runCatching {
+                repository.memoryV2.markMemoryFactConflict(conflictIds.toList(), nowMillis())
+            }.getOrDefault(0)
+            MemoryDiagnostics.log(
+                "Memory/FactConflict",
+                "事实冲突标记：contradicts=$conflictRelations 候选=${conflictIds.size} 实际标记=$marked",
+            )
+        }
     }
 
     private suspend fun linkAndArchiveParents(children: List<MemoryItem>, parents: List<MemoryItem>, linkType: String) {
@@ -844,9 +1144,96 @@ class MemoryV2Pipeline(
         )
     }
 
-    private suspend fun saveMemoryItemToVector(id: Long, item: MemoryItem) {
-        val service = memoryVectorService ?: return
-        if (item.content.isBlank()) return
+    // ------------------------------------------------------------------
+    // 索引健康与重建（审计 P0-3 / P0-4：恢复备份、换嵌入模型后必须能自助恢复）
+    // ------------------------------------------------------------------
+
+    /** 当前索引状态分布（与记忆体检页/启动自检共用同一口径）。 */
+    suspend fun indexHealth(): MemoryIndexHealth {
+        val signature = memoryVectorService?.currentEmbeddingSignature().orEmpty()
+        val states = repository.memoryV2.memoryIndexStates(signature, nowMillis()).values
+        return MemoryIndexHealth(
+            signature = signature,
+            active = states.count { it == "ready" || it == "missing" || it == "stale" },
+            ready = states.count { it == "ready" },
+            missing = states.count { it == "missing" },
+            stale = states.count { it == "stale" },
+            expired = states.count { it == "expired" },
+            inactive = states.count { it == "inactive" },
+        )
+    }
+
+    /**
+     * 分批重建缺失/签名漂移的向量。
+     *
+     * - 可取消：每批开始与每条之前检查 [shouldCancel]；
+     * - 有限次：最多 [maxBatches] 批，剩余量由返回报告的 `remaining` 体现，下次活跃继续；
+     * - 幂等：已尝试失败的条目不再重复计入本批次，避免同一条卡住整批。
+     */
+    suspend fun repairMemoryIndex(
+        batchSize: Int = 200,
+        maxBatches: Int = 25,
+        shouldCancel: () -> Boolean = { false },
+        onProgress: (MemoryIndexRepairReport) -> Unit = {},
+    ): MemoryIndexRepairReport {
+        val signature = memoryVectorService?.currentEmbeddingSignature().orEmpty()
+        if (memoryVectorService == null || signature.isBlank()) {
+            return MemoryIndexRepairReport(signature, scanned = 0, repaired = 0, failed = 0, remaining = 0, cancelled = false)
+        }
+        var scanned = 0
+        var repaired = 0
+        var failed = 0
+        var cancelled = false
+        // 游标而非「重试同一页」：单条内容持续无法嵌入时，不能让它永远占据首页。
+        var cursorCreatedAt = 0L
+        var cursorId = 0L
+        var batches = 0
+        while (batches < maxBatches) {
+            if (shouldCancel()) {
+                cancelled = true
+                break
+            }
+            val now = nowMillis()
+            val missing = runCatching {
+                repository.memoryV2.getActiveMemoryItemsMissingVectorAfter(now, cursorCreatedAt, cursorId, batchSize)
+            }.getOrDefault(emptyList())
+            val stale = runCatching {
+                repository.memoryV2.getActiveMemoryItemsWithStaleVectorAfter(signature, now, cursorCreatedAt, cursorId, batchSize)
+            }.getOrDefault(emptyList())
+            val batch = (missing + stale).distinctBy { it.id }
+                .sortedWith(compareBy({ it.createdAt }, { it.id }))
+            if (batch.isEmpty()) break
+            for (item in batch) {
+                if (shouldCancel()) {
+                    cancelled = true
+                    break
+                }
+                if (saveMemoryItemToVector(item.id, item)) repaired++ else failed++
+                scanned++
+                cursorCreatedAt = item.createdAt
+                cursorId = item.id
+            }
+            batches++
+            onProgress(MemoryIndexRepairReport(signature, scanned, repaired, failed, remaining = -1, cancelled = cancelled))
+            if (cancelled) break
+        }
+        val remaining = runCatching {
+            val now = nowMillis()
+            repository.memoryV2.getActiveMemoryItemsMissingVector(now, 1).size +
+                repository.memoryV2.getActiveMemoryItemsWithStaleVector(signature, now, 1).size
+        }.getOrDefault(0)
+        val report = MemoryIndexRepairReport(signature, scanned, repaired, failed, remaining = if (remaining > 0) 1 else 0, cancelled = cancelled)
+        MemoryDiagnostics.log(
+            "Memory/IndexRepair",
+            "索引重建：扫描=$scanned 修复=$repaired 失败=$failed 仍有剩余=${report.remaining} 取消=$cancelled 签名=$signature",
+        )
+        onProgress(report)
+        return report
+    }
+
+    private suspend fun saveMemoryItemToVector(id: Long, item: MemoryItem): Boolean {
+        val service = memoryVectorService ?: return false
+        if (item.content.isBlank()) return false
         val indexed = item.copy(id = id)
         val vectorId = MemoryVectorFormatter.vectorId(indexed)
         try {
@@ -865,10 +1252,25 @@ class MemoryV2Pipeline(
                     expiresAt = item.expiresAt,
                 )
             )
+            return true
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             MemoryDiagnostics.log("Vector/Save", "记忆向量写入失败 owner=${item.ownerId} level=${item.memoryLevel} err=${e.message?.take(80)}")
+            return false
         }
+    }
+
+    companion object {
+        /** 消费统计页的「记忆」分类键（RankingBridge.TOKEN_CATEGORIES 同口径）。 */
+        const val TOKEN_CATEGORY_MEMORY = "memory"
+        /** 整合幂等签名里的提示词版本；prompt 升级时递增。 */
+        const val CONSOLIDATION_PROMPT_VERSION = "v3"
+        /** 实体通道：命中记忆的固定词法分（≥ FACT 2.0 / TIME 2.5 准入）。 */
+        const val ENTITY_RECALL_SCORE = 2.6
+        /** 实体名天然具备区分度，视作高于判别门槛的 IDF。 */
+        const val ENTITY_RECALL_IDF = 2.5
+        const val ENTITY_CATALOG_LIMIT = 400
+        const val ENTITY_HIT_LIMIT = 40
     }
 }

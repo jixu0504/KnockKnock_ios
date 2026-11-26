@@ -1,0 +1,68 @@
+-- T69 实体索引：canonical 实体按 owner 隔离，同名不跨角色合并。
+-- 实体名字归一后进 UNIQUE，别名表先占位（本切片只做 canonical + 记忆关联）。
+CREATE TABLE IF NOT EXISTS canonical_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'entity',
+    name TEXT NOT NULL,
+    normalizedName TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.8,
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(ownerType, ownerId, kind, normalizedName)
+);
+
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entityId INTEGER NOT NULL,
+    alias TEXT NOT NULL,
+    normalizedAlias TEXT NOT NULL,
+    UNIQUE(entityId, normalizedAlias)
+);
+
+CREATE TABLE IF NOT EXISTS memory_entities (
+    memoryId INTEGER NOT NULL,
+    entityId INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'mention',
+    PRIMARY KEY(memoryId, entityId, role)
+);
+
+CREATE INDEX IF NOT EXISTS canonical_entities_lookup ON canonical_entities(ownerType, ownerId, normalizedName);
+CREATE INDEX IF NOT EXISTS memory_entities_entity ON memory_entities(entityId);
+
+findEntity:
+SELECT id FROM canonical_entities
+WHERE ownerType = ? AND ownerId = ? AND kind = ? AND normalizedName = ?
+LIMIT 1;
+
+insertEntity:
+INSERT INTO canonical_entities(ownerType, ownerId, kind, name, normalizedName, confidence, createdAt)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+lastInsertedEntityId:
+SELECT last_insert_rowid();
+
+linkMemory:
+INSERT OR IGNORE INTO memory_entities(memoryId, entityId, role)
+VALUES (?, ?, ?);
+
+listEntitiesForOwner:
+SELECT id, kind, name, normalizedName FROM canonical_entities
+WHERE ownerType = ? AND ownerId = ?
+ORDER BY id DESC
+LIMIT ?;
+
+findMemoryIdsByNames:
+SELECT DISTINCT me.memoryId
+FROM memory_entities me
+INNER JOIN canonical_entities ce ON ce.id = me.entityId
+WHERE ce.ownerType = ? AND ce.ownerId = ? AND ce.normalizedName IN ?
+ORDER BY me.memoryId DESC
+LIMIT ?;
+
+getEntitiesForMemory:
+SELECT ce.id AS entityId, ce.kind AS kind, ce.name AS name, ce.normalizedName AS normalizedName, me.role AS role
+FROM memory_entities me
+INNER JOIN canonical_entities ce ON ce.id = me.entityId
+WHERE me.memoryId = ?
+ORDER BY CASE me.role WHEN 'subject' THEN 0 WHEN 'object' THEN 1 ELSE 2 END, ce.id;

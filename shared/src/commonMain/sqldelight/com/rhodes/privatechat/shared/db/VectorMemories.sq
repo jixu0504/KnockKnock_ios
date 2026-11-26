@@ -11,7 +11,11 @@ CREATE TABLE IF NOT EXISTS vector_memories (
     visibility TEXT NOT NULL DEFAULT 'public',
     embeddingSignature TEXT NOT NULL DEFAULT '',
     createdAt INTEGER NOT NULL DEFAULT 0,
-    expiresAt INTEGER NOT NULL DEFAULT 9223372036854775807
+    expiresAt INTEGER NOT NULL DEFAULT 9223372036854775807,
+    -- T71：float32 小端 BLOB；新行写这里并把 embeddingJson 置空，旧行 blob 为 NULL 时回退 JSON。
+    embeddingBlob BLOB,
+    embeddingDimension INTEGER NOT NULL DEFAULT 0,
+    embeddingDtype TEXT NOT NULL DEFAULT 'float32'
 );
 
 CREATE INDEX IF NOT EXISTS vector_memories_owner_candidates
@@ -94,6 +98,10 @@ LIMIT ?;
 insertVectorMemory:
 INSERT OR REPLACE INTO vector_memories(id, ownerType, ownerId, sourceType, sourceId, content, importance, embeddingJson, tags, visibility, embeddingSignature, createdAt, expiresAt)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+insertVectorMemoryWithBlob:
+INSERT OR REPLACE INTO vector_memories(id, ownerType, ownerId, sourceType, sourceId, content, importance, embeddingJson, tags, visibility, embeddingSignature, createdAt, expiresAt, embeddingBlob, embeddingDimension, embeddingDtype)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteVectorMemory:
 DELETE FROM vector_memories WHERE id = ?;

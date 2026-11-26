@@ -121,6 +121,16 @@ class ChatEngineBridge internal constructor(
     private var capturedUserIds: Set<Long> = emptySet()
     private var capturedError: String = ""
 
+    /**
+     * 回复落库后的维护触发（A7 记忆维护接线）。由 AppGraph 注入，桥本身不依赖 A7Glue，
+     * 避免「聊天桥 → A7 → 群聊桥」的循环引用。回调实现必须自行切协程且不得抛异常。
+     */
+    private var replyMaintenanceHook: ((String) -> Unit)? = null
+
+    internal fun setReplyMaintenanceHook(hook: ((String) -> Unit)?) {
+        replyMaintenanceHook = hook
+    }
+
     // T42 消息操作（撤回/重试/重说/继续说/本地删除/图片重发）的单次操作错误捕获。
     private var actionError: String = ""
     private var actionFailed: Boolean = false
@@ -964,6 +974,8 @@ class ChatEngineBridge internal constructor(
                 }
                 // T45：回复落库后 fire-and-forget 记忆提取（不阻塞回复；失败静默记录）。
                 scheduleMemoryIngest(event.sessionId)
+                // T62：同一时机触发滚动摘要/维护（此前 5 个触发点在 iOS 端 0 调用点，摘要永远为空）。
+                runCatching { replyMaintenanceHook?.invoke(event.sessionId) }
             }
             is EngineEvent.Toast -> platformSynchronized(lock) {
                 if (capturedError.isEmpty()) capturedError = event.message

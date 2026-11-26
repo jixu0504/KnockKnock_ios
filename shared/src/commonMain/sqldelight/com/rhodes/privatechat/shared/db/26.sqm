@@ -1,0 +1,8 @@
+-- T71 向量 BLOB 存储：嵌入向量由 embeddingJson 文本改为 float32 小端 BLOB。
+-- 三列追加在表尾，与 VectorMemories.sq 的 CREATE TABLE 列序保持一致（旧库 ALTER 只能追加），
+-- 否则 `SELECT *` 的 mapper 在迁移库上会按错误下标取列。
+-- 旧行不回填：embeddingBlob 为 NULL 时读取端回退 embeddingJson。
+
+ALTER TABLE vector_memories ADD COLUMN embeddingBlob BLOB;
+ALTER TABLE vector_memories ADD COLUMN embeddingDimension INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vector_memories ADD COLUMN embeddingDtype TEXT NOT NULL DEFAULT 'float32';

@@ -1,0 +1,17 @@
+-- T78 数据基础：事实关系表（supports / contradicts / refines / contextual / supersedes / duplicate_of）。
+-- 本迁移只建表；关系由结构化 L1 落库时的规则判定写入（见 MemoryRelationRules）。
+-- 事实独立列、实体表、有效性/冲突状态表与向量 BLOB 仍在后续迁移（编号顺延，见 handoff）。
+
+CREATE TABLE IF NOT EXISTS memory_relations (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    fromMemoryId INTEGER NOT NULL,
+    toMemoryId INTEGER NOT NULL,
+    relationType TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    decidedBy TEXT NOT NULL DEFAULT 'rule',
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(fromMemoryId, toMemoryId, relationType)
+);
+
+CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations(fromMemoryId, relationType);
+CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations(toMemoryId, relationType);

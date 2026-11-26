@@ -36,12 +36,22 @@ internal class MemoryParseRules(
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     internal fun parseMemoryItems(raw: String, ownerType: String, ownerId: String, level: MemoryLevel, sourceKind: MemorySourceKind, sourceRefId: String = "", sessionId: String = ""): List<MemoryItem> {
+        return parseMemoryItemsIndexed(raw, ownerType, ownerId, level, sourceKind, sourceRefId, sessionId).map { it.second }
+    }
+
+    /**
+     * 与 [parseMemoryItems] 相同，但保留「模型原始数组下标」。
+     *
+     * 晋升证据必须按原始下标对齐：解析会丢弃非法项并去重，若用「解析后列表的下标」去取
+     * `evidence_ids`，一旦有丢弃就会整体错位，把证据挂到错误的父项上（审计 P1-5）。
+     */
+    internal fun parseMemoryItemsIndexed(raw: String, ownerType: String, ownerId: String, level: MemoryLevel, sourceKind: MemorySourceKind, sourceRefId: String = "", sessionId: String = ""): List<Pair<Int, MemoryItem>> {
         return try {
             val clean = cleanJson(raw)
             val arr = json.decodeFromString(ListSerializer(JsonObject.serializer()), clean)
-            arr.mapNotNull { obj ->
-                val type = textValue(obj["type"])?.takeIf { it in allowedTypes } ?: return@mapNotNull null
-                val content = sanitizeContent(textValue(obj["content"]).orEmpty()).takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            arr.mapIndexedNotNull { index, obj ->
+                val type = textValue(obj["type"])?.takeIf { it in allowedTypes } ?: return@mapIndexedNotNull null
+                val content = sanitizeContent(textValue(obj["content"]).orEmpty()).takeIf { it.isNotBlank() } ?: return@mapIndexedNotNull null
                 val nickname = textValue(obj["nickname"])?.takeIf { it.isNotBlank() } ?: userNicknameProvider()
                 val importance = intValue(obj["importance"]).coerceIn(0, 100)
                 val requestedPrivacy = textValue(obj["privacy"])?.takeIf { it in allowedPrivacy }
@@ -60,7 +70,8 @@ internal class MemoryParseRules(
                 val scheduledTime = textValue(obj["scheduled_time"])?.takeIf { it.isNotBlank() }
                 val action = textValue(obj["action"]) ?: ""
                 val careType = textValue(obj["care_type"])?.takeIf { it in allowedCareTypes } ?: "none"
-                MemoryItem(
+                val structuredTopic = if (level == MemoryLevel.L1) structuredTopicKey(obj) else null
+                index to MemoryItem(
                     ownerType = ownerType,
                     ownerId = ownerId,
                     memoryLevel = level,
@@ -79,7 +90,7 @@ internal class MemoryParseRules(
                     scheduledTime = scheduledTime,
                     action = action,
                     careType = careType,
-                    topicKey = if (level == MemoryLevel.L1) topicKey(type, content) else "",
+                    topicKey = structuredTopic ?: if (level == MemoryLevel.L1) topicKey(type, content) else "",
                     sourceActor = nickname,
                     sourceTarget = ownerId,
                     lastUsedAt = 0L,
@@ -90,7 +101,7 @@ internal class MemoryParseRules(
                     updatedAt = nowMillis(),
                     expiresAt = expiresAtFor(type, level)
                 )
-            }.distinctBy { normalizeForDedup(it.memoryType, it.content) }
+            }.distinctBy { (_, item) -> normalizeForDedup(item.memoryType, item.content) }
         } catch (_: Exception) {
             emptyList()
         }
@@ -135,11 +146,11 @@ internal class MemoryParseRules(
         topicKey: String,
         parents: List<MemoryItem>
     ): List<MemoryItem> {
-        val parsed = parseMemoryItems(raw, ownerType, ownerId, level, sourceKind)
+        val parsed = parseMemoryItemsIndexed(raw, ownerType, ownerId, level, sourceKind)
         val objects = runCatching { json.decodeFromString(ListSerializer(JsonObject.serializer()), cleanJson(raw)) }.getOrDefault(emptyList())
         val allowedIds = parents.map { it.id }.filter { it > 0 }.toSet()
-        return parsed.mapIndexedNotNull { index, item ->
-            val evidenceIds = objects.getOrNull(index)?.let { obj: JsonObject -> evidenceIdsFrom(obj) }
+        return parsed.mapNotNull { (sourceIndex, item) ->
+            val evidenceIds = objects.getOrNull(sourceIndex)?.let { obj: JsonObject -> evidenceIdsFrom(obj) }
                 ?.filter { it in allowedIds }
                 ?.distinct()
                 .orEmpty()
@@ -159,6 +170,78 @@ internal class MemoryParseRules(
         }.getOrElse {
             value.jsonPrimitive.contentOrNull.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() }
         }
+    }
+
+    /**
+     * 结构化事实（计划书 §4.1.3 的最小落地）：subject/predicate/object + 极性 + 限定词。
+     *
+     * [factKey] 即原 `topicKey` 事实键：`fact:<polarity>:<subject>|<predicate>|<object>[|q=…]`。
+     * 同一事实的不同措辞才能落进同一组（P0-1），极性/限定词进入键本身，相反事实不会被合并；
+     * 真正的 supersede/contradicts 语义仍属 T78。
+     */
+    internal data class StructuredFact(
+        val subject: String,
+        val predicate: String,
+        val objectValue: String,
+        val polarity: String,
+        val qualifiers: List<String>,
+        val factKey: String,
+    )
+
+    internal fun structuredFactOf(rawJson: String): StructuredFact? = runCatching {
+        structuredFactOf(json.parseToJsonElement(rawJson).jsonObject)
+    }.getOrNull()
+
+    internal fun structuredFactOf(obj: JsonObject): StructuredFact? {
+        val subject = normalizeFactPart(textValue(obj["subject"]))
+        val predicateText = textValue(obj["predicate"]).orEmpty()
+        val objectText = normalizeFactPart(textValue(obj["object"]))
+        if (subject.isBlank() || predicateText.isBlank() || objectText.isBlank()) return null
+        val predicate = canonicalPredicate(predicateText)
+        val explicit = textValue(obj["polarity"])?.lowercase()?.takeIf { it in setOf("positive", "negative", "unknown") }
+        val inferred = when (predicate) {
+            "dislike" -> "negative"
+            "unknown" -> "unknown"
+            else -> "positive"
+        }
+        val polarity = when (explicit) {
+            "positive", "negative" -> explicit
+            else -> inferred
+        }
+        val qualifiers = qualifiersOf(obj)
+        val factKey = buildString {
+            append("fact:").append(polarity).append(':').append(subject).append('|').append(predicate).append('|').append(objectText)
+            if (qualifiers.isNotEmpty()) append("|q=").append(qualifiers.joinToString(","))
+        }
+        return StructuredFact(subject, predicate, objectText, polarity, qualifiers, factKey)
+    }
+
+    private fun structuredTopicKey(obj: JsonObject): String? = structuredFactOf(obj)?.factKey
+
+    private fun canonicalPredicate(raw: String): String {
+        val text = raw.trim().lowercase()
+        PREDICATE_CANONICAL[text]?.let { return it }
+        PREDICATE_SYNONYMS.forEach { (canonical, words) ->
+            if (words.any { text.contains(it) }) return canonical
+        }
+        if (text.matches(Regex("[a-z_]{2,20}"))) return text
+        // 未知中文谓词保留原文，不塌缩成 other：否则「喜欢猫/养了猫」会被并成一组。
+        return normalizeFactPart(text).ifBlank { "other" }
+    }
+
+    private fun qualifiersOf(obj: JsonObject): List<String> {
+        val element = obj["qualifiers"] ?: return emptyList()
+        val values = runCatching {
+            element.jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }
+        }.getOrElse {
+            element.jsonPrimitive.contentOrNull.orEmpty().split('、', ',', '，').map { it.trim() }
+        }
+        return values
+            .map { normalizeFactPart(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+            .take(3)
     }
 
     private fun textValue(element: JsonElement?): String? = element?.jsonPrimitive?.contentOrNull?.trim()
@@ -208,17 +291,33 @@ internal class MemoryParseRules(
     internal data class PromotionTopic(val topicKey: String, val items: List<MemoryItem>)
 
     internal fun pickPromotionTopic(items: List<MemoryItem>, threshold: Int, requireStable: Boolean = false): PromotionTopic? {
-        if (items.size < threshold) return null
+        if (items.isEmpty()) return null
         val grouped = items
             .filter { it.content.isNotBlank() && it.importance >= 20 }
-            .groupBy { topicKey(it.memoryType, it.content) }
+            .groupBy { it.topicKey.ifBlank { topicKey(it.memoryType, it.content) } }
             .mapValues { (_, values) -> values.sortedByDescending { promotionItemScore(it) } }
-            .filterValues { values -> values.size >= topicThreshold(threshold, values) }
+            .filterValues { values -> values.size >= requiredGroupSize(threshold, values) }
         if (grouped.isEmpty()) return null
         val picked = grouped.maxByOrNull { (_, values) -> values.sumOf { it.importance } + values.size * 10 } ?: return null
         val selected = picked.value.take(12)
         if (requireStable && !isStableEnoughForL3(selected)) return null
         return PromotionTopic(picked.key, selected)
+    }
+
+    /**
+     * 组门：结构化事实组按计划书 §4.4.1 的独立性要求（≥2 会话，强信号除外），组门 3 条；
+     * 旧版内容指纹组保持原 20/2 门槛，避免无结构数据被误合并。
+     */
+    private fun requiredGroupSize(baseThreshold: Int, values: List<MemoryItem>): Int {
+        val structured = values.any { it.topicKey.startsWith(STRUCTURED_TOPIC_PREFIX) }
+        if (!structured) return topicThreshold(baseThreshold, values)
+        val strong = values.any {
+            it.importance >= 80 || it.unmetNeed ||
+                it.memoryType == "agreement_commitment" || it.memoryType == "care_reminder"
+        }
+        val sessions = values.map { it.sessionId }.filter { it.isNotBlank() }.distinct().size
+        if (sessions < 2 && !strong) return Int.MAX_VALUE
+        return if (strong) settings.memoryV2ImportantPromotionThreshold else STRUCTURED_GROUP_THRESHOLD
     }
 
     internal fun topicThreshold(baseThreshold: Int, values: List<MemoryItem>): Int {
@@ -292,6 +391,28 @@ internal class MemoryParseRules(
     }
 
     internal companion object {
+        /** 事实各部分的归一化口径：小写、去标点空白、最多 24 字符。 */
+        internal fun normalizeFactPart(raw: String?): String = raw.orEmpty()
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+            .take(24)
+
+        const val STRUCTURED_TOPIC_PREFIX = "fact:"
+        const val STRUCTURED_GROUP_THRESHOLD = 3
+        /** 谓词同义归一（顺序敏感：否定优先于肯定）。 */
+        val PREDICATE_SYNONYMS: List<Pair<String, List<String>>> = listOf(
+            "dislike" to listOf("讨厌", "不喜欢", "受不了", "反感", "戒了"),
+            "prefer" to listOf("喜欢", "爱吃", "爱喝", "偏好", "偏爱"),
+            "reside" to listOf("住在", "居住", "搬家", "搬到"),
+            "work" to listOf("工作", "上班", "职业", "就职"),
+            "allergy" to listOf("过敏"),
+            "promise" to listOf("答应", "约定", "承诺"),
+            "plan" to listOf("计划", "打算", "准备"),
+            "own" to listOf("养", "拥有"),
+            "study" to listOf("学", "学习"),
+            "birthday" to listOf("生日", "出生"),
+        )
+        val PREDICATE_CANONICAL: Map<String, String> = PREDICATE_SYNONYMS.map { it.first }.associateWith { it }
         const val MAX_L1_ITEMS_PER_EXTRACTION = 5
         const val MAX_L2_ITEMS_PER_PROMOTION = 2
         const val MAX_L3_ITEMS_PER_PROMOTION = 1

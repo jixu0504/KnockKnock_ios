@@ -1,8 +1,13 @@
 package com.rhodes.privatechat.shared.iosbridge
 
 import com.rhodes.privatechat.shared.data.ChatRepository
+import com.rhodes.privatechat.shared.data.ImpressionEvidenceRepository
+import com.rhodes.privatechat.shared.data.ImpressionRepository
 import com.rhodes.privatechat.shared.db.DatabaseLocations
 import com.rhodes.privatechat.shared.db.DatabaseWrapper
+import com.rhodes.privatechat.shared.domain.memory.MemoryDiagnostics
+import com.rhodes.privatechat.shared.domain.memory.MemoryOperationSink
+import com.rhodes.privatechat.shared.platform.IosDebugLogger
 import com.rhodes.privatechat.shared.model.Memory
 import com.rhodes.privatechat.shared.model.MemoryType
 import com.rhodes.privatechat.shared.network.ProviderConfigResolver
@@ -44,14 +49,53 @@ import platform.Foundation.NSProcessInfo
 class IosAppGraph internal constructor() {
     private val dbPath: String = DatabaseLocations.defaultDatabasePath()
 
-    init {
-        // 两阶段恢复：在第一次打开数据库之前换入 pending 备份（否则驱动会锁文件）。
-        BackupBridge.applyPendingRestoreIfAny(dbPath)
-    }
+    /** 两阶段恢复：在第一次打开数据库之前换入 pending 备份（否则驱动会锁文件）。 */
+    private val restoredFromPending: Boolean = BackupBridge.applyPendingRestoreIfAny(dbPath)
 
     private val dbWrapper: DatabaseWrapper = DatabaseWrapper()
     private val settingsRepo: SettingsRepository = SettingsRepository(createPlatformSettings())
+
+    init {
+        // 文件级恢复（冷启动换入备份）后，向量索引可能来自旧嵌入签名或与恢复的记忆不匹配：
+        // 标记一次重建，由下次活跃的维护任务分批补齐（不阻塞启动）。
+        if (restoredFromPending) {
+            settingsRepo.memoryIndexRebuildPending = true
+            NSLog("[RhodesLink][Memory] pending restore applied → index rebuild scheduled")
+        }
+        installMemoryDiagnostics()
+    }
+
+    /** T66：把记忆域诊断接回宿主持久日志（此前 MemoryDiagnostics 无 install，全部日志被丢弃）。 */
+    private fun installMemoryDiagnostics() {
+        MemoryDiagnostics.enabled = true
+        MemoryDiagnostics.install { tag, message -> IosDebugLogger.log("INFO", "Mem/$tag", message) }
+        val sequence = operationSequence()
+        MemoryDiagnostics.installOperations(object : MemoryOperationSink {
+            override fun beginOperation(surface: String, target: String, mode: String): String {
+                val id = "mem-" + sequence()
+                IosDebugLogger.log("INFO", "Mem/Op", "开始 id=$id surface=$surface target=$target mode=$mode")
+                return id
+            }
+
+            override fun conversationStep(roundId: String, surface: String, stage: String, status: String, details: String) {
+                IosDebugLogger.log("INFO", "Mem/Op", "步骤 id=$roundId stage=$stage status=$status $details")
+            }
+        })
+    }
+
+    /** 进程内单调序号：只用于日志关联 operation id，不做业务标识。 */
+    private fun operationSequence(): () -> Int {
+        var counter = 0
+        return {
+            counter += 1
+            counter
+        }
+    }
     private val chatRepo: ChatRepository = ChatRepository(dbWrapper, settingsRepo)
+
+    // T82：印象实体表读写（页面优先读 impressions，桥内做人工裁决与证据展开）。
+    private val impressionRepository = ImpressionRepository(dbWrapper.database)
+    private val impressionEvidenceRepository = ImpressionEvidenceRepository(dbWrapper.database)
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val workScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -88,6 +132,12 @@ class IosAppGraph internal constructor() {
         mainScope = mainScope,
         sessionProvider = sessionBridge,
     )
+
+    init {
+        // T62：回复落库 → A7 上下文维护（滚动摘要/失败窗口重试）。lambda 内才触达 a7Glue，保持懒构建。
+        chatEngineBridge.setReplyMaintenanceHook { sessionId -> a7Glue.onPrivateReplyStored(sessionId) }
+        groupChatBridge.setReplyMaintenanceHook { groupId -> a7Glue.onGroupReplyStored(groupId) }
+    }
 
     // T48：知识库（导入/切块/索引/召回测试）。服务在桥内按真实依赖组装，见 KnowledgeBaseBridge。
     private val knowledgeBridge = KnowledgeBaseBridge(
@@ -133,16 +183,20 @@ class IosAppGraph internal constructor() {
         mainScope = mainScope,
     )
 
-    // T54：大家的印象（真实 memory_items L1/L2/L3 + 旧版 memories 长期印象兜底）。
+    // T82：大家的印象（优先 impressions 实体表，空表回退 memory_items 旧视图 + 旧版 memories 兜底）。
     private val impressionsBridge = ImpressionsBridge(
         chatRepo = chatRepo,
+        impressionRepo = impressionRepository,
+        evidenceRepo = impressionEvidenceRepository,
         workScope = workScope,
         mainScope = mainScope,
     )
 
     // T56：A7 自动化接线（延迟任务/前台 tick/通知事件源）。懒构建：仅 Swift 调 a7() 或自检时创建。
+    private val memoryWiring: A7MemoryWiring by lazy { A7MemoryWiring(chatRepo, dbWrapper, settingsRepo) }
+
     private val a7Glue: A7Glue by lazy {
-        val wiring = A7MemoryWiring(chatRepo, dbWrapper, settingsRepo)
+        val wiring = memoryWiring
         A7Glue(
             chatRepo = chatRepo,
             dbWrapper = dbWrapper,
@@ -237,7 +291,7 @@ class IosAppGraph internal constructor() {
     /** 聊天排行榜/消费统计（T54）：消息数/互动天数/消费估算 + Token 今日/本周/全部 + 自检。 */
     fun ranking(): RankingBridge = rankingBridge
 
-    /** 大家的印象（T54）：memory_items L1/L2/L3 + 旧版 memories 兜底 + 自检。 */
+    /** 大家的印象（T82）：impressions 实体表优先（冻结/拒绝/证据），空表回退 memory_items 旧视图。 */
     fun impressions(): ImpressionsBridge = impressionsBridge
 
     /**

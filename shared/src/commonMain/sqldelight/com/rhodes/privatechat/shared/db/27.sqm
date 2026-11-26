@@ -1,0 +1,24 @@
+-- T69 结构化事实与有效性：memoryId 主键的独立事实表。
+-- 事实键从 memory_items.topicKey 迁到独立 factKey 列并建 (ownerType, ownerId, factKey) 索引；
+-- 有效性窗口 validFrom/validTo 与冲突状态先落库，冲突裁决（supersedes/contradicts）留给 T78。
+-- 不往 memory_items 加列：避免所有 SELECT * mapper 跟着改。
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    object TEXT NOT NULL DEFAULT '',
+    polarity TEXT NOT NULL DEFAULT 'unknown',
+    qualifiers TEXT NOT NULL DEFAULT '[]',
+    factKey TEXT NOT NULL DEFAULT '',
+    validFrom INTEGER,
+    validTo INTEGER,
+    recordedAt INTEGER NOT NULL DEFAULT 0,
+    timeSource TEXT NOT NULL DEFAULT 'unknown',
+    conflictStatus TEXT NOT NULL DEFAULT 'none',
+    updatedAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS memory_facts_key ON memory_facts(ownerType, ownerId, factKey);

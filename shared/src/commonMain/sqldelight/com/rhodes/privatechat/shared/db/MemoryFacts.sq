@@ -1,0 +1,66 @@
+CREATE TABLE IF NOT EXISTS memory_facts (
+    memoryId INTEGER NOT NULL PRIMARY KEY,
+    ownerType TEXT NOT NULL,
+    ownerId TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    object TEXT NOT NULL DEFAULT '',
+    polarity TEXT NOT NULL DEFAULT 'unknown',
+    qualifiers TEXT NOT NULL DEFAULT '[]',
+    factKey TEXT NOT NULL DEFAULT '',
+    validFrom INTEGER,
+    validTo INTEGER,
+    recordedAt INTEGER NOT NULL DEFAULT 0,
+    timeSource TEXT NOT NULL DEFAULT 'unknown',
+    conflictStatus TEXT NOT NULL DEFAULT 'none',
+    updatedAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS memory_facts_key ON memory_facts(ownerType, ownerId, factKey);
+
+upsertFact:
+INSERT OR REPLACE INTO memory_facts(memoryId, ownerType, ownerId, subject, predicate, object, polarity, qualifiers, factKey, validFrom, validTo, recordedAt, timeSource, conflictStatus, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+getByMemory:
+SELECT memoryId, ownerType, ownerId, subject, predicate, object AS objectValue, polarity, qualifiers, factKey, validFrom, validTo, recordedAt, timeSource, conflictStatus, updatedAt
+FROM memory_facts
+WHERE memoryId = ?;
+
+getAllMemoryFactsForBackup:
+SELECT * FROM memory_facts ORDER BY memoryId;
+
+countMemoryFacts:
+SELECT COUNT(*) FROM memory_facts;
+
+deleteAllMemoryFacts:
+DELETE FROM memory_facts;
+
+-- 有效性/冲突由调用方判定：本查询只按事实键取该 owner 的全部候选，最近更新的排在前面。
+findByFactKey:
+SELECT memoryId, ownerType, ownerId, subject, predicate, object AS objectValue, polarity, qualifiers, factKey, validFrom, validTo, recordedAt, timeSource, conflictStatus, updatedAt
+FROM memory_facts
+WHERE ownerType = ? AND ownerId = ? AND factKey = ?
+ORDER BY updatedAt DESC, memoryId DESC
+LIMIT ?;
+
+-- T78：只标记待确认，不关闭/合并记忆；行不存在时 UPDATE 自然忽略。
+markFactConflict:
+UPDATE memory_facts SET conflictStatus = 'suspected', updatedAt = ?
+WHERE memoryId = ?;
+
+countSuspectedFacts:
+SELECT COUNT(*) FROM memory_facts
+WHERE ownerType = ? AND ownerId = ? AND conflictStatus = 'suspected';
+
+resolveFactConflict:
+UPDATE memory_facts SET conflictStatus = 'confirmed', updatedAt = ? WHERE memoryId = ?;
+
+supersedeFact:
+UPDATE memory_facts SET conflictStatus = 'superseded', validTo = ?, updatedAt = ? WHERE memoryId = ?;
+
+listSuspectedFacts:
+SELECT memoryId FROM memory_facts
+WHERE ownerType = ? AND ownerId = ? AND conflictStatus = 'suspected'
+ORDER BY updatedAt DESC, memoryId DESC
+LIMIT ?;

@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT="$ROOT/ios/RhodesLink.xcodeproj"
+PROJECT="$ROOT/ios/KnockKnock.xcodeproj"
 DERIVED="${DERIVED_DIR:-$ROOT/.build-sim}"
 BUNDLE_ID="com.xsbcjx.knockknock"
 OUT="${1:-$ROOT/screenshots/ui-shot.png}"
@@ -58,14 +58,14 @@ echo "== 1/4 构建（模拟器） =="
 if [[ "$DO_BUILD" == "1" ]]; then
   xcodebuild build \
     -project "$PROJECT" \
-    -scheme RhodesLink \
+    -scheme KnockKnock \
     -configuration Debug \
     -sdk iphonesimulator \
     -destination 'generic/platform=iOS Simulator' \
     -derivedDataPath "$DERIVED" \
     | tail -5
 fi
-APP_PATH="$DERIVED/Build/Products/Debug-iphonesimulator/RhodesLink.app"
+APP_PATH="$DERIVED/Build/Products/Debug-iphonesimulator/KnockKnock.app"
 if [[ ! -d "$APP_PATH" ]]; then
   echo "❌ 构建产物不存在: $APP_PATH"
   exit 1
