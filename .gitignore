@@ -1,0 +1,30 @@
+# 构建产物
+build/
+*/build/
+.gradle/
+**/.gradle/
+**/DerivedData*/
+DerivedData/
+*.ipa
+*.xcarchive
+*.app
+Pods/
+# 工具链（体积大，按 README 本地安装）
+toolchain/
+# Xcode 用户数据
+xcuserdata/
+*.xcuserstate
+# 系统/编辑器
+.DS_Store
+.idea/
+*.iml
+*.log
+# 临时与本地环境
+/tmp/
+*.swiftpm
+# 本地构建缓存（不上传）
+.build-device/
+.build-device-sign/
+
+# 发行产物例外：保留最新未签名 IPA
+!artifacts/knock-unsigned-20261126.ipa

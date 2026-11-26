@@ -1,0 +1,27 @@
+package com.rhodes.privatechat.shared.model
+
+import kotlinx.serialization.Serializable
+
+@Serializable
+enum class MemoryType { SHORT_TERM, DAILY, LONG_TERM }
+
+@Serializable
+enum class AnchorType { PLAN, PREFERENCE, TABOO, EVENT, EMOTION, RELATION }
+
+@Serializable
+enum class MemoryLevel { L1, L2, L3 }
+
+@Serializable
+enum class MemorySourceKind { PRIVATE_CHAT, GROUP_CHAT, MOMENT, MOMENT_COMMENT, DIARY, MANUAL_MEMORY }
+
+@Serializable
+enum class RelationshipType {
+    BIG_SISTER, LITTLE_SISTER, BIG_BROTHER, LITTLE_BROTHER,
+    MOTHER, FATHER, DAUGHTER, SON,
+    GUARDIAN,
+    BOSS, SUBORDINATE, CAPTAIN, MEMBER,
+    MENTOR, STUDENT,
+    CLOSE_FRIEND, FRIEND, COMRADE, TEAMMATE, RIVAL, LOVE_RIVAL,
+    CRUSH, LOVER,
+    FAMILY
+}

@@ -1,0 +1,80 @@
+CREATE TABLE IF NOT EXISTS moment_comments (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    momentId INTEGER NOT NULL,
+    operatorId TEXT NOT NULL,
+    operatorName TEXT NOT NULL,
+    content TEXT NOT NULL,
+    parentCommentId INTEGER NOT NULL DEFAULT 0,
+    replyToName TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    isRead INTEGER NOT NULL DEFAULT 0
+);
+
+
+getComments:
+SELECT * FROM moment_comments WHERE momentId = ? ORDER BY createdAt ASC;
+
+getAllCommentsForBackup:
+SELECT * FROM moment_comments ORDER BY createdAt ASC;
+
+getInboxComments:
+SELECT * FROM moment_comments WHERE operatorId != 'user' AND createdAt > ? AND (momentId IN (SELECT id FROM moments WHERE operatorId = 'user') OR replyToName = ?) ORDER BY createdAt DESC;
+
+getUnreadCommentCount:
+SELECT COUNT(*) FROM moment_comments WHERE operatorId != 'user' AND isRead = 0 AND createdAt > ? AND (momentId IN (SELECT id FROM moments WHERE operatorId = 'user') OR replyToName = ?);
+
+getMaxCommentId:
+SELECT MAX(id) FROM moment_comments;
+
+insertComment:
+INSERT OR REPLACE INTO moment_comments(momentId, operatorId, operatorName, content, parentCommentId, replyToName, createdAt, isRead)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+markCommentRead:
+UPDATE moment_comments SET isRead = 1 WHERE id = ?;
+
+markAllCommentsRead:
+UPDATE moment_comments SET isRead = 1 WHERE id > 0 AND (momentId IN (SELECT id FROM moments WHERE operatorId = 'user') OR replyToName = ?);
+
+markMomentCommentsReadForUser:
+UPDATE moment_comments SET isRead = 1
+WHERE momentId = ?
+AND operatorId != 'user'
+AND (momentId IN (SELECT id FROM moments WHERE operatorId = 'user') OR replyToName = ?);
+
+getCommentCount:
+SELECT COUNT(*) FROM moment_comments WHERE momentId = ?;
+
+deleteOldUserComments:
+WITH RECURSIVE targets(id) AS (
+    SELECT id FROM moment_comments
+    WHERE createdAt < ? AND (replyToName = ? OR momentId IN (SELECT id FROM moments WHERE operatorId = 'user'))
+    UNION ALL
+    SELECT child.id FROM moment_comments child JOIN targets parent ON child.parentCommentId = parent.id
+)
+DELETE FROM moment_comments WHERE id IN (SELECT id FROM targets);
+
+getOldUserCommentIds:
+SELECT id FROM moment_comments
+WHERE createdAt < ? AND (replyToName = ? OR momentId IN (SELECT id FROM moments WHERE operatorId = 'user'));
+
+getCommentsByOperator:
+SELECT * FROM moment_comments WHERE operatorId = ?;
+
+deleteCommentsByOperator:
+DELETE FROM moment_comments WHERE operatorId = ?;
+
+deleteCommentsByMoment:
+DELETE FROM moment_comments WHERE momentId = ?;
+
+deleteAllComments:
+DELETE FROM moment_comments;
+
+getCommentById:
+SELECT * FROM moment_comments WHERE id = ?;
+
+getCommentIdsByMoment:
+SELECT id FROM moment_comments WHERE momentId = ?;
+
+getLastInsertRowId:
+SELECT last_insert_rowid();

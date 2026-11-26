@@ -1,0 +1,31 @@
+# libs.versions.toml — 【本地 iOS 构建脚手架】
+# 版本来源：handoffs/p0-toolchain.md（上游 Phase 0 工具链交接文档）实测最终版本链：
+#   Kotlin 2.3.21 / SQLDelight 2.2.1 / kotlinx-datetime 0.7.1-0.6.x-compat / Ktor 3.0.3 / Koin 4.0.2 / multiplatform-settings 1.2.0
+#   Compose Multiplatform 1.11.1 与 Android 目标已移除（shared 源码 0 处 androidx.compose import）。
+[versions]
+kotlin = "2.3.21"
+sqldelight = "2.2.1"
+ktor = "3.0.3"
+datetime = "0.7.1-0.6.x-compat"
+serialization = "1.7.3"
+multiplatformSettings = "1.2.0"
+koin = "4.0.2"
+
+[libraries]
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "ktor" }
+sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "sqldelight" }
+sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqldelight" }
+sqldelight-native = { module = "app.cash.sqldelight:native-driver", version.ref = "sqldelight" }
+multiplatform-settings = { module = "com.russhwolf:multiplatform-settings", version.ref = "multiplatformSettings" }
+multiplatform-settings-coroutines = { module = "com.russhwolf:multiplatform-settings-coroutines", version.ref = "multiplatformSettings" }
+koin-core = { module = "io.insert-koin:koin-core", version.ref = "koin" }
+
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }

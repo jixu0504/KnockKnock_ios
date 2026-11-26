@@ -1,0 +1,70 @@
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT NOT NULL PRIMARY KEY,
+    operatorId TEXT NOT NULL,
+    operatorName TEXT NOT NULL,
+    lastMessage TEXT NOT NULL DEFAULT '',
+    lastTime INTEGER NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'online',
+    isPinned INTEGER NOT NULL DEFAULT 0,
+    unreadCount INTEGER NOT NULL DEFAULT 0,
+    members TEXT NOT NULL DEFAULT '',
+    rules TEXT NOT NULL DEFAULT '',
+    avatarUri TEXT NOT NULL DEFAULT '',
+    mutedMembers TEXT NOT NULL DEFAULT ''
+);
+
+getAllSessions:
+SELECT * FROM chat_sessions ORDER BY isPinned DESC, lastTime DESC;
+
+getSessionByOperator:
+-- Prefer the stable session_<operatorId> row. Historical upgrades can leave duplicate rows,
+-- but selecting by message count first can open an unrelated legacy conversation.
+SELECT * FROM chat_sessions WHERE operatorId = ?
+ORDER BY CASE WHEN id = 'session_' || ? THEN 0 ELSE 1 END ASC,
+         (SELECT COUNT(*) FROM chat_messages WHERE chat_messages.sessionId = chat_sessions.id) DESC,
+         lastTime DESC,
+         id DESC
+LIMIT 1;
+
+getSession:
+SELECT * FROM chat_sessions WHERE id = ?;
+
+getGroupCount:
+SELECT COUNT(*) FROM chat_sessions WHERE operatorId LIKE 'group_%';
+
+getSessionCount:
+SELECT COUNT(*) FROM chat_sessions;
+
+insertSession:
+INSERT OR REPLACE INTO chat_sessions(id, operatorId, operatorName, lastMessage, lastTime, mode, isPinned, unreadCount, members, rules, avatarUri, mutedMembers)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateLastMessage:
+UPDATE chat_sessions SET lastMessage = ?, lastTime = ? WHERE id = ?;
+
+updateLastMessageIfNotNewer:
+UPDATE chat_sessions SET lastMessage = ?, lastTime = ? WHERE id = ? AND lastTime <= ?;
+
+updateMode:
+UPDATE chat_sessions SET mode = ? WHERE id = ?;
+
+updatePinned:
+UPDATE chat_sessions SET isPinned = ? WHERE id = ?;
+
+incrementUnread:
+UPDATE chat_sessions SET unreadCount = unreadCount + ? WHERE id = ?;
+
+markSessionRead:
+UPDATE chat_sessions SET unreadCount = 0 WHERE id = ?;
+
+markAllRead:
+UPDATE chat_sessions SET unreadCount = 0;
+
+deleteSession:
+DELETE FROM chat_sessions WHERE id = ?;
+
+deleteAllSessions:
+DELETE FROM chat_sessions WHERE operatorId NOT LIKE 'group_%';
+
+deleteAllGroups:
+DELETE FROM chat_sessions WHERE operatorId LIKE 'group_%';
