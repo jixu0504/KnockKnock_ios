@@ -1,83 +1,100 @@
 //
 //  GlassTokens.swift
-//  RhodesLink 正式壳设计 token（T33，自 T8/T12 Demo 迁移）。
+//  「敲敲」旧 token 兼容层（文件名保留，内部全部映射到 `KnockTokens`）。
 //
-//  与 Demo 的差异（Phase 3）：
-//  - 颜色全部改为 **深浅色自适应**（`Color.rhodesHex(light:dark:)`），App 跟随系统外观；
-//  - `glassTint` 不再默认套在所有面板上（Demo 全橙 tint 在真实页面上过重）；
-//  - 新增内容层 surface / stroke / 气泡 system 色，供「非玻璃」内容层使用。
+//  背景：本文件原为 T33「玻璃壳」设计 token；敲敲改版（计划书 2.2 节）要求
+//  「保留旧名做映射」以降低 30 个页面的调用面改动，同时**彻底移除玻璃材质语义**：
+//  - `brandOrange` / `accent` → 电光黄 `#F2FF00`（品牌 / 选中 / 主 CTA）；
+//  - `bubbleIncoming` → 白 `#FFFFFF`、`bubbleOutgoing` → 聊天蓝 `#3364E7`；
+//  - `ambient*` / `vignette` → 黑 / 暖白纯色底（渐变、光斑、暗角全部退化为透明，不再绘制）；
+//  - `surface*` / `glassStroke*` → 实色面板 / 实色描边；
+//  - `glassRegular` / `glassClear` / `glassTint`（Material、玻璃着色）**已删除** ——
+//    代码内不再有任何毛玻璃引用，新代码请直接使用 `KnockTokens`。
 //
-//  纪律：页面层只引用 token，iOS 26 玻璃 API 只在 DesignSystem 内部出现。
+//  新代码纪律：只引用 `KnockTokens` / `KnockTypography`；本文件的旧名只为兼容存量页面，
+//  随各 Feature 批次迁移完成后逐步下线（见计划书 P1–P5）。
 //
 
 import SwiftUI
 import UIKit
 
 enum GlassTokens {
-    // MARK: - 玻璃材质（iOS 18 兜底值；iOS 26 真玻璃分支见 GlassPanel）
-    /// glassRegular —— 标准玻璃：iOS 26 `Glass.regular`，iOS 18 `.ultraThinMaterial`
-    static let glassRegular: Material = .ultraThinMaterial
-    /// glassClear —— 轻玻璃：iOS 26 `Glass.clear`，iOS 18 `.thinMaterial`
-    static let glassClear: Material = .thinMaterial
+    // MARK: - 品牌强调（旧名 → 电光黄；黄 = App 交互语言）
 
-    // MARK: - 玻璃着色 / 描边 / 圆角 / 阴影
-    /// 品牌橙，玻璃折射色调（仅用于主操作玻璃，不默认套全局面板）
-    static let glassTint = Color(hex: 0xFF9420)
-    /// 玻璃边缘 1px 高光描边（浅色加深、深色提亮，保证两种外观都可辨识）
-    static let glassStroke = Color.rhodesHex(0x1D2A44, 0xFFFFFF, lightAlpha: 0.20, darkAlpha: 0.18)
-    /// 增强对比度模式下的描边（更实）
-    static let glassStrokeStrong = Color.rhodesHex(0x1D2A44, 0xFFFFFF, lightAlpha: 0.40, darkAlpha: 0.34)
-    /// 圆角：默认 24；允许 20 / 24 / 28 三档
-    static let glassRadius: CGFloat = 24
-    static let glassRadiusSmall: CGFloat = 20
-    static let glassRadiusLarge: CGFloat = 28
-    /// 玻璃投影（「降低透明度」模式下禁用）
-    static let glassShadow = Color.rhodesHex(0x0B1020, 0x000000, lightAlpha: 0.10, darkAlpha: 0.30)
-
-    // MARK: - 主强调色（Telegram 风格蓝；旧命名保留以兼容现有引用）
-    static let brandOrange = Color.rhodesHex(0x007AFF, 0x0A84FF)
-    static let brandOrangeDeep = Color.rhodesHex(0x0063CC, 0x0B6FD6)
-    /// 语义别名（新代码建议使用）
+    /// 旧「品牌橙」→ 电光黄 `#F2FF00`（仅选中 / 主 CTA / 品牌 / Tab 选中，面积 ≤5%）。
+    static let brandOrange = KnockTokens.electric
+    /// 旧「品牌橙深色」→ 黄按压/暗部 `#D8E600`。
+    static let brandOrangeDeep = KnockTokens.electricPressed
+    /// 语义别名（旧代码常用）：同 `brandOrange`。
     static let accent = brandOrange
     static let accentDeep = brandOrangeDeep
 
-    // MARK: - 环境背景（参考 Telegram/微信：浅色中性灰、深色近黑，不再是橙黑/白橙）
-    static let ambientTop = Color.rhodesHex(0xF7F7F7, 0x0E1621)
-    static let ambientBottom = Color.rhodesHex(0xEDEDED, 0x17212B)
-    static let ambientGlowOrange = Color.rhodesHex(0x007AFF, 0x0A84FF, lightAlpha: 0.05, darkAlpha: 0.08)
-    static let ambientGlowBlue = Color.rhodesHex(0x007AFF, 0x0A84FF, lightAlpha: 0.03, darkAlpha: 0.06)
-    /// 暗角（浅色很轻，深色加深）
-    static let vignette = Color.rhodesHex(0x000000, 0x000000, lightAlpha: 0.02, darkAlpha: 0.16)
+    // MARK: - 环境背景（旧名 → 纯色底；渐变/光斑/暗角已删除）
 
-    // MARK: - 非玻璃内容层表面（卡片 / 行）
-    static let surface = Color.rhodesHex(0xFFFFFF, 0xFFFFFF, lightAlpha: 0.88, darkAlpha: 0.08)
-    static let surfaceStrong = Color.rhodesHex(0xFFFFFF, 0xFFFFFF, lightAlpha: 0.97, darkAlpha: 0.14)
-    static let strokeSubtle = Color.rhodesHex(0x000000, 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.10)
+    /// 页面底（浅 `#F4F4F2` / 深 `#000000`）。旧渐变顶色 → 单色底。
+    static let ambientTop = KnockTokens.canvas
+    /// 页面底（同 `ambientTop`；保留旧名只为兼容）。
+    static let ambientBottom = KnockTokens.canvas
+    /// 旧光斑 —— 计划书禁止渐变光斑，恒为透明。
+    static let ambientGlowOrange = Color.clear
+    /// 旧光斑 —— 恒为透明。
+    static let ambientGlowBlue = Color.clear
+    /// 旧暗角 —— 恒为透明（黑白层次交给纹理与描边）。
+    static let vignette = Color.clear
 
-    // MARK: - 消息气泡（微信配色逻辑：接收白/深灰，发送微信绿；浅色黑字、深色白字）
-    static let bubbleIncoming = Color.rhodesHex(0xFFFFFF, 0x2C2C2E)
-    static let bubbleIncomingText = Color.rhodesHex(0x111111, 0xF2F2F7)
-    static let bubbleOutgoing = Color.rhodesHex(0x95EC69, 0x3EB575)
-    static let bubbleOutgoingText = Color.rhodesHex(0x111111, 0xFFFFFF)
-    static let bubbleSystem = Color.rhodesHex(0x000000, 0xFFFFFF, lightAlpha: 0.05, darkAlpha: 0.08)
+    // MARK: - 内容表面（旧半透明 → 实色）
 
-    // MARK: - 聊天页/列表页常用语义色
-    /// 聊天页背景（T53：由外观设置「聊天背景」选择决定；默认经典灰 #EDEDED / 深色 #111）。
-    /// ChatView 渲染 body 时读取 `ChatBackgroundStyle.stored()`，改设置后重新进入聊天页即生效。
+    /// 内容卡片底 → 面板实色（浅 `#FFFFFF` / 深 `#0A0A0A`）。
+    static let surface = KnockTokens.panel
+    /// 强调卡片底 → 面板实色（不再有半透明白）。
+    static let surfaceStrong = KnockTokens.panel
+    /// 细描边 → 主描边 1.5pt（浅 `#E2E2DD` / 深 `#2A2A2E`）。
+    static let strokeSubtle = KnockTokens.stroke
+
+    // MARK: - 消息气泡（黄蓝分工：接收白 / 发送聊天蓝）
+
+    /// 接收气泡：白 `#FFFFFF`（深浅一致）。
+    static let bubbleIncoming = KnockTokens.bubbleIncoming
+    /// 接收气泡文字：`#0B0B0C`。
+    static let bubbleIncomingText = KnockTokens.bubbleIncomingText
+    /// 发送气泡：聊天蓝 `#3364E7`（仅聊天语义）。
+    static let bubbleOutgoing = KnockTokens.chatBlue
+    /// 发送气泡文字：白。
+    static let bubbleOutgoingText = KnockTokens.bubbleOutgoingText
+    /// 系统/时间胶囊底：实色灰阶（浅 `#ECECE9` / 深 `#1A1A1A`）。
+    static let bubbleSystem = KnockTokens.bubbleSystem
+
+    // MARK: - 聊天页 / 列表页常用语义色
+
+    /// 聊天页背景：固定敲敲底（纯色 + 斜切迷彩）。
+    /// 计划书决策 6：删除 6 档聊天背景，改为固定风格；`ChatAppearance.swift` 暂留供设置页回滚。
     static var chatBackground: some View {
-        ChatBackgroundView(style: ChatBackgroundStyle.stored())
+        KnockCamoBackground()
     }
-    /// 未读角标（微信红）
-    static let unreadBadge = Color(hex: 0xFA5151)
-    /// 在线状态点（微信绿）
-    static let onlineDot = Color(hex: 0x07C160)
+    /// 未读角标：危险红 `#BF2207`（红 <1% 面积）。
+    static let unreadBadge = KnockTokens.danger
+    /// 在线状态点：品牌黄（不再用微信绿）。
+    static let onlineDot = KnockTokens.electric
 
-    // MARK: - 版式 / 布局 / 设计原则常量
-    /// 玻璃卡片间距：12pt（避免玻璃叠玻璃）
+    // MARK: - 旧玻璃参数（语义移除，保留常量名兼容）
+
+    /// 面板描边（旧玻璃边缘高光）→ 主描边实色。
+    static let glassStroke = KnockTokens.stroke
+    /// 增强对比度描边（旧）→ 对比度描边实色。
+    static let glassStrokeStrong = KnockTokens.strokeContrast
+    /// 面板圆角 20pt（计划书 1.2）。
+    static let glassRadius: CGFloat = KnockTokens.panelRadius
+    /// 小圆角 16pt（行内块）。
+    static let glassRadiusSmall: CGFloat = 16
+    /// 大圆角 24pt（弹窗 / 大容器）。
+    static let glassRadiusLarge: CGFloat = 24
+    /// 旧玻璃投影 → 透明（实色面板不投影）。
+    static let glassShadow = Color.clear
+    /// 卡片间距 12pt（沿用）。
     static let glassCardSpacing: CGFloat = 12
-    /// 一屏玻璃元素上限（设计原则 2）
+    /// 旧「一屏玻璃元素上限」——玻璃已移除，保留常量仅为兼容旧自检引用。
     static let maxGlassPerScreen = 5
-    /// 玻璃上文字最小字号（设计原则 3，.body = 17pt）
+    /// 旧「玻璃上文字最小字号」——面板已实色，保留常量仅为兼容旧自检引用。
     static let textOnGlassMinPointSize: CGFloat = 17
 }
 

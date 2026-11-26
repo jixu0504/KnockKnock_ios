@@ -152,7 +152,7 @@ class SessionListBridge internal constructor(
         chatRepo.sessions.getAllSessionsSync().firstOrNull()?.let { return it }
         chatRepo.operators.ensurePresetOperators()
         val operators = chatRepo.operators.getAllOperatorsSync()
-        val operator = operators.firstOrNull { it.id == "amiya" } ?: operators.firstOrNull() ?: return null
+        val operator = operators.firstOrNull() ?: return null
         return chatRepo.getOrCreateSession(operator.id, operator.name, operator.avatarUri)
     }
 }
@@ -166,6 +166,7 @@ internal fun ChatSession.toDto(): SessionDto = SessionDto(
     lastTime = lastTime,
     mode = mode,
     isPinned = isPinned,
+    operatorId = operatorId,
 )
 
 /** T55：私聊三模式（与 Android `ChatViewModel.setMode` / `PromptTemplates` 口径一致）。 */

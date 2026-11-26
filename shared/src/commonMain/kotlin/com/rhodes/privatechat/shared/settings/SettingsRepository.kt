@@ -834,7 +834,7 @@ class SettingsRepository(private val settings: ObservableSettings) {
 
     // === 用户资料 ===
     var userName: String
-        get() = settings.getString("user_name", "博士")
+        get() = settings.getString("user_name", "绳匠")
         set(value) = settings.putString("user_name", value)
 
     var userGender: String

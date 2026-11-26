@@ -232,7 +232,7 @@ object PromptRender {
             map["DAILY_SUMMARY"]?.let { "昨日摘要：$it" },
             map["SHORT_TERM_SUMMARY"]?.let { "近期摘要：$it" },
             map["GROUP_CONTEXT"]?.let { "群聊回顾：\n$it" },
-            map["NEARBY_OPERATORS"]?.let { "附近干员：\n$it" }
+            map["NEARBY_OPERATORS"]?.let { "附近代理人：\n$it" }
         ).filterNotNull().filter { it.isNotBlank() && !it.endsWith("：无") && !it.endsWith("：暂无") }.joinToString("\n")
         val groupInjection = listOf(
             map["RELATION_HINTS"], map["GROUP_RELATION_HINTS"], map["MEMBER_PRIVATE_CONTEXT"],

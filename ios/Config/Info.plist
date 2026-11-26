@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>RhodesLink</string>
+	<string>敲敲</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,10 +24,10 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.rhodeslink.app.deeplink</string>
+			<string>com.xsbcjx.knockknock.deeplink</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>rhodes</string>
+				<string>knock</string>
 			</array>
 		</dict>
 	</array>
@@ -35,7 +35,7 @@
 	<true/>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.rhodeslink.app.a7.refresh</string>
+		<string>com.xsbcjx.knockknock.a7.refresh</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

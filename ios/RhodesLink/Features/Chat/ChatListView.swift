@@ -1,26 +1,20 @@
 //
 //  ChatListView.swift
-//  聊天列表（Tab 根，A1 入口）：会话来自 shared `SessionListBridge`（真实 SQLite）。
-//  导航：点击会话 → Route.chat(sessionId:)（NavigationStack push）；
-//  头像：chat_sessions.avatarUri 的内置数字串经 RoleAvatar 解析 Bundle 资源。
+//  聊天列表（Tab 根，A1 入口；P1 视觉重写，业务逻辑零改动）。
 //
-//  T40「会话列表操作对齐 Android 原版」（原版 SessionListScreen.kt:68-130）：
-//  - 工具栏右上角只有「⋮」溢出菜单：移除主页所有会话（有确认）、全部标记已读（直接执行）；
-//    原「新建聊天」铅笔按钮已移除——新建聊天入口在「联系人」Tab（对齐 Android ContactsScreen）；
-//    原「刷新」按钮已移除——保留下拉刷新 `.refreshable` 作为刷新手段；
-//  - 会话行长按 `.contextMenu`：置顶/取消置顶、标记已读、从主页移除（确认弹窗，文案对齐原版）；
-//  - 数据语义：pin/read → shared SessionRepository；移除 → settings.hiddenIds（不删库/不删消息，
-//    收到新消息后由 shared 引擎事件自动恢复）；列表顺序由 SQL `isPinned DESC, lastTime DESC` 保证。
+//  设计依据：docs/敲敲UI改版计划书-v1.1.md
+//  - 第 1.2 节条形栏规格：品牌顶栏（黄手绘 logo + 白色 heavy 品牌字）+ 大标题 + 搜索条
+//    （胶囊 + 1.5pt 描边 + 右侧竖分隔线 + 放大镜）+ **胶囊会话行**（底 `#171717`、1.5pt 描边、
+//    左 44pt 圆形头像、主标题 15pt heavy、副标题 13pt 灰）；
+//  - 顶栏溢出菜单换敲敲弹层（面板 + 胶囊行），二次确认用 `KnockConfirmDialog`；
+//  - 会话行尾：未读 `KnockBadge`（聊天蓝，聊天语义）+ 置顶标记 + 时间；
+//  - 第 7.1-9 / 第五章：隐藏系统导航栏与 TabBar，iOS 26+ 关闭滚动边缘玻璃效果。
 //
-//  T44 未读链路：
-//  - 未读角标（`session.unreadCount > 0`）本页已渲染；shared 消费 `EngineEvent.UnreadHint` 自增未读后，
-//    本页在「从聊天页返回」时 reload 拿最新未读数（`.onChange(of: router.chatPath.count)`）；
-//  - 返回列表 = 离开会话页 → `ChatEngineBridge.setActiveSession("")` 清除「当前查看会话」标记，
-//    之后到达的 AI 回复才会计未读（ChatView.swift 不在 T44 写域，故清理由本页 chatPath 观察完成）；
-//  - 自检钩子 `--unread-selftest`：预置未读 → 列表角标 → 打开会话清零 → 当前会话回复不增 →
-//    非当前会话回复 +1 → 桥直接 incrementUnread 再 +1（见文件末尾 runUnreadSelftestIfNeeded）。
-//
-//  玻璃元素计数：头部卡片 1（设计原则一屏 ≤5）。
+//  数据与操作（T40/T44 语义完全保留）：
+//  - 会话来自 shared `SessionListBridge`（真实 SQLite）；下拉刷新 `.refreshable`；
+//  - 溢出菜单：移除主页所有会话（有确认）、全部标记已读（直接执行）；
+//  - 会话行长按：置顶/取消置顶、标记已读、从主页移除（确认弹窗，文案对齐原版）；
+//  - `--unread-selftest` 自检链路与网络/桥调用逻辑原样保留。
 //
 
 import SwiftUI
@@ -34,101 +28,70 @@ struct ChatListView: View {
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var actionError: String?
-    @State private var scrollOffset: CGFloat = 0
     /// 二次确认弹窗（从主页移除单个 / 移除主页所有会话）
     @State private var confirmAction: ConfirmAction?
     /// T44 自检只跑一次（视图重建不重复跑）
     @State private var unreadSelftestDidStart = false
+    /// 搜索（本地过滤会话标题 / 最近消息）
+    @State private var searchText = ""
+    /// 顶栏「⋮」溢出菜单（敲敲弹层）
+    @State private var isOverflowPresented = false
+
+    // MARK: 派生
+
+    private var filteredSessions: [SessionItem] {
+        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return sessions }
+        return sessions.filter {
+            $0.title.localizedCaseInsensitiveContains(keyword)
+                || $0.lastMessage.localizedCaseInsensitiveContains(keyword)
+        }
+    }
+
+    private var unreadTotal: Int {
+        sessions.reduce(0) { $0 + $1.unreadCount }
+    }
+
+    /// 头部汇总：会话数 + 未读（产品化文案，不暴露桥/任务号）
+    private var headerSummary: String {
+        sessions.isEmpty ? "还没有开始对话" : "\(sessions.count) 个会话 · 最近消息优先"
+    }
 
     var body: some View {
         ZStack {
-            AmbientBackground(parallax: scrollOffset, showsStandee: false)
+            KnockCamoBackground()
 
             ScrollView {
-                LazyVStack(spacing: 10) {
-                    headerCard
-                        .padding(.horizontal, 14)
+                LazyVStack(spacing: KnockTokens.spacingM) {
+                    topBar
+                    titleBlock
+                    KnockSearchBar(placeholder: "搜索会话", text: $searchText)
 
                     if let actionError {
-                        Label(actionError, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .cardSurface(cornerRadius: 14)
+                        errorRow(actionError)
                     }
 
-                    if let errorText {
-                        EmptyStateView(
-                            title: "会话读取失败",
-                            message: errorText,
-                            systemImage: "exclamationmark.triangle"
-                        )
-                    } else if isLoading && sessions.isEmpty {
-                        ProgressView("读取 shared 会话…")
-                            .padding(40)
-                    } else if sessions.isEmpty {
-                        // 与原版一致：聊天主页空态只有「暂无聊天记录」；新建入口在联系人 Tab。
-                        EmptyStateView(
-                            title: "暂无聊天记录",
-                            message: "所有会话可能都已被移除主页，或尚未创建会话。新建聊天请到「联系人」Tab。",
-                            systemImage: "bubble.left.and.bubble.right"
-                        )
-                    } else {
-                        ForEach(sessions) { session in
-                            sessionRow(session)
-                        }
-                    }
+                    contentRows
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.top, KnockTokens.spacingS)
+                .padding(.bottom, KnockTokens.spacingL)
             }
             .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
-            }
+            .knockScrollEdgeEffectHidden()
             .refreshable { await reload() }
         }
-        .navigationTitle("聊天")
-        .toolbar {
-            // 原版聊天列表右上角唯一的「⋮」溢出菜单（移除主页所有会话 / 全部标记已读）
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button(role: .destructive) {
-                        confirmAction = .hideAll
-                    } label: {
-                        Label("移除主页所有会话", systemImage: "trash")
-                    }
-                    Button {
-                        Task { await markAllRead() }
-                    } label: {
-                        Label("全部标记已读", systemImage: "envelope.open")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .accessibilityLabel("会话菜单")
-                .accessibilityHint("移除主页所有会话 / 全部标记已读")
+        // 计划书 2.3 / 7.1-9：隐藏系统导航栏（TabBar 由 RootTabView 统一隐藏）
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay {
+            if isOverflowPresented {
+                overflowOverlay
             }
         }
-        .alert(
-            confirmAction?.title ?? "",
-            isPresented: Binding(
-                get: { confirmAction != nil },
-                set: { if !$0 { confirmAction = nil } }
-            ),
-            presenting: confirmAction
-        ) { action in
-            Button("取消", role: .cancel) { confirmAction = nil }
-            Button("确认移除", role: .destructive) {
-                confirmAction = nil
-                Task { await perform(action) }
+        .overlay {
+            if let action = confirmAction {
+                confirmOverlay(action)
             }
-        } message: { action in
-            Text(action.message)
         }
         .task {
             await reload()
@@ -145,125 +108,271 @@ struct ChatListView: View {
             // 从聊天页返回列表时刷新（新消息可能已解除隐藏 / 更新未读与顺序）
             Task { await reload() }
         }
-    }
-
-    // MARK: 头部（玻璃 1）
-
-    private var headerCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("全部会话")
-                        .font(.subheadline.weight(.semibold))
-                    Text(headerSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if unreadTotal > 0 {
-                    Text("\(unreadTotal) 条未读")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(GlassTokens.unreadBadge))
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+        // 外部数据变更（设置页导入聊天记录 / 备份恢复）：列表预览/时间/顺序同步刷新，
+        // 不依赖 Tab 切换或下拉刷新（导入后导入的会话可能新建、最后消息可能变化）。
+        .onReceive(NotificationCenter.default.publisher(for: .chatDataDidChangeExternally)) { note in
+            let changed = note.userInfo?[ChatExternalChangeKey.sessionId] as? String ?? ""
+            SelfTestLog.add("chat list reload external change session=\(changed.isEmpty ? "-" : changed)")
+            Task { await reload() }
         }
     }
 
-    /// 头部汇总：会话数 + 未读（产品化文案，不暴露桥/任务号）
-    private var headerSummary: String {
-        sessions.isEmpty ? "还没有开始对话" : "\(sessions.count) 个会话 · 最近消息优先"
+    // MARK: - 顶部（品牌顶栏 + 大标题 + 搜索）
+
+    private var topBar: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            KnockBrandMark()
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockCapsuleIconButton(
+                systemImage: "ellipsis",
+                variant: .neutral,
+                accessibilityLabel: "会话菜单"
+            ) {
+                isOverflowPresented = true
+            }
+        }
+        .padding(.top, KnockTokens.spacingXS)
     }
 
-    private var unreadTotal: Int {
-        sessions.reduce(0) { $0 + $1.unreadCount }
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+            HStack(alignment: .firstTextBaseline, spacing: KnockTokens.spacingS) {
+                KnockText("聊天", role: .display, lineLimit: 1)
+                Spacer(minLength: KnockTokens.spacingS)
+                if unreadTotal > 0 {
+                    KnockBadge(text: "\(unreadTotal) 未读", variant: .chat)
+                }
+            }
+            KnockText(headerSummary, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+        }
     }
 
-    // MARK: 会话行（非玻璃）
+    // MARK: - 内容区（加载 / 错误 / 空态 / 会话行）
+
+    @ViewBuilder
+    private var contentRows: some View {
+        if let errorText {
+            KnockEmptyState(
+                title: "会话读取失败",
+                message: errorText,
+                systemImage: "exclamationmark.triangle",
+                actionTitle: "重试",
+                action: { Task { await reload() } }
+            )
+        } else if isLoading && sessions.isEmpty {
+            loadingRow
+        } else if sessions.isEmpty {
+            // 与原版一致：聊天主页空态只有「暂无聊天记录」；新建入口在联系人 Tab。
+            KnockEmptyState(
+                title: "暂无聊天记录",
+                message: "所有会话可能都已被移除主页，或尚未创建会话。新建聊天请到「联系人」Tab。",
+                systemImage: "bubble.left.and.bubble.right"
+            )
+        } else if filteredSessions.isEmpty {
+            KnockEmptyState(
+                title: "没有匹配的会话",
+                message: "没有标题或最近消息匹配「\(searchText)」的会话。",
+                systemImage: "magnifyingglass"
+            )
+        } else {
+            ForEach(filteredSessions) { session in
+                sessionRow(session)
+            }
+        }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(KnockTokens.electric)
+            KnockText("读取 shared 会话…", role: .caption, color: KnockTokens.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, KnockTokens.spacingL)
+        .frame(minHeight: 56)
+        .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+        }
+    }
+
+    /// 操作错误条：实色面板 + 危险红图标（无毛玻璃）。
+    private func errorRow(_ text: String) -> some View {
+        HStack(spacing: KnockTokens.spacingS) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(KnockTokens.dangerBright)
+            KnockText(text, role: .caption, color: KnockTokens.textPrimary, lineLimit: 2)
+            Spacer(minLength: 0)
+            KnockCloseButton(label: "关闭提示") { actionError = nil }
+        }
+        .padding(.horizontal, KnockTokens.spacingM)
+        .padding(.vertical, KnockTokens.spacingS)
+        .background(RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous).fill(KnockTokens.panel))
+        .overlay {
+            RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+        }
+    }
+
+    // MARK: - 会话行（胶囊行：头像 / 未读 / 置顶 / 时间）
 
     private func sessionRow(_ session: SessionItem) -> some View {
-        Button {
-            if session.id.hasPrefix("group_") {
-                router.chatPath.append(Route.groupChat(sessionId: session.id))
-            } else {
-                router.chatPath.append(Route.chat(sessionId: session.id))
-            }
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                RoleAvatar(avatarId: session.avatarId, name: session.title, size: 48)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        if session.isPinned {
-                            Image(systemName: "pin.fill")
-                                .font(.caption2)
-                                .foregroundStyle(GlassTokens.brandOrange)
-                                .accessibilityLabel("已置顶")
-                        }
-                        Text(session.title)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(session.modeText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(GlassTokens.bubbleSystem, in: Capsule())
-                        Spacer(minLength: 0)
-                        Text(session.lastTimeText)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+        KnockListRow(
+            title: session.title,
+            subtitle: rowSubtitle(session),
+            action: { open(session) }
+        ) {
+            KnockAvatar(
+                avatarId: session.avatarId,
+                name: session.title,
+                size: KnockTokens.rowIconSize
+            )
+            .accessibilityHidden(true)
+        } trailing: {
+            VStack(alignment: .trailing, spacing: 6) {
+                KnockText(session.lastTimeText, role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                HStack(spacing: 4) {
+                    if session.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textTertiary)
+                            .accessibilityHidden(true)
                     }
-                    Text(session.lastMessage.isEmpty ? "（暂无消息，点击开始对话）" : session.lastMessage)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-
-                if session.unreadCount > 0 {
-                    Text("\(session.unreadCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(GlassTokens.brandOrange))
+                    if session.unreadCount > 0 {
+                        KnockBadge(text: "\(session.unreadCount)", variant: .chat)
+                    }
                 }
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 20)
+        }
+        // 原版：长按会话行弹出「置顶/取消置顶、标记已读、从主页移除」
+        // 敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）；动作集合 / 顺序 / 条件不变
+        .knockContextMenu(actions: sessionMenuActions(session))
+        .accessibilityLabel("\(session.title)，\(session.lastMessage)\(session.isPinned ? "，已置顶" : "")")
+        .accessibilityHint("打开与 \(session.title) 的聊天；长按可置顶、标记已读或从主页移除")
+    }
+
+    /// 会话行长按菜单动作：置顶 / 取消置顶 → 标记已读 → 从主页移除（destructive）。
+    /// 与系统 `.contextMenu` 版的文案 / 图标 / 顺序 / destructive 标记逐一对应。
+    private func sessionMenuActions(_ session: SessionItem) -> [KnockMenuAction] {
+        [
+            KnockMenuAction(
+                session.isPinned ? "取消置顶" : "置顶",
+                systemImage: session.isPinned ? "pin.slash" : "pin"
+            ) {
+                Task { await togglePin(session) }
+            },
+            KnockMenuAction("标记已读", systemImage: "envelope.open") {
+                Task { await markRead(session) }
+            },
+            KnockMenuAction("从主页移除", systemImage: "trash", role: .destructive) {
+                confirmAction = .hide(session)
+            }
+        ]
+    }
+
+    /// 行副标题：最近消息；非线上模式前缀模式名（保留原模式信息，不额外增加行内控件）。
+    private func rowSubtitle(_ session: SessionItem) -> String {
+        // 最近消息可能含显式换行：行副标题压成单段（多行交给 KnockListRow 的 lineLimit）。
+        let raw = session.lastMessage.replacingOccurrences(of: "\n", with: " ")
+        let message = raw.isEmpty ? "（暂无消息，点击开始对话）" : raw
+        let mode = session.modeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mode.isEmpty, mode != "线上" else { return message }
+        return "\(mode) · \(message)"
+    }
+
+    private func open(_ session: SessionItem) {
+        if session.id.hasPrefix("group_") {
+            router.chatPath.append(Route.groupChat(sessionId: session.id))
+        } else {
+            router.chatPath.append(Route.chat(sessionId: session.id))
+        }
+    }
+
+    // MARK: - 顶栏溢出菜单（敲敲弹层）
+
+    private var overflowOverlay: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .onTapGesture { isOverflowPresented = false }
+
+            KnockDialogPanel(showsChecker: true) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                    overflowRow("移除主页所有会话", systemImage: "trash", destructive: true) {
+                        isOverflowPresented = false
+                        confirmAction = .hideAll
+                    }
+                    overflowRow("全部标记已读", systemImage: "envelope.open") {
+                        isOverflowPresented = false
+                        Task { await markAllRead() }
+                    }
+                    Button("取消") { isOverflowPresented = false }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .padding(.top, KnockTokens.spacingXS)
+                }
+            }
+            .frame(width: 268)
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.top, 52)
+        }
+        .transition(.opacity)
+    }
+
+    private func overflowRow(
+        _ title: String,
+        systemImage: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: KnockTokens.spacingS) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .heavy))
+                    .foregroundStyle(destructive ? KnockTokens.dangerBright : KnockTokens.textPrimary)
+                KnockText(
+                    title,
+                    role: .rowTitle,
+                    color: destructive ? KnockTokens.dangerBright : KnockTokens.textPrimary,
+                    lineLimit: 1
+                )
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(Capsule(style: .continuous).fill(KnockTokens.row))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
-        // 原版：长按会话行弹出「置顶/取消置顶、标记已读、从主页移除」
-        .contextMenu {
-            Button {
-                Task { await togglePin(session) }
-            } label: {
-                Label(session.isPinned ? "取消置顶" : "置顶",
-                      systemImage: session.isPinned ? "pin.slash" : "pin")
-            }
-            Button {
-                Task { await markRead(session) }
-            } label: {
-                Label("标记已读", systemImage: "envelope.open")
-            }
-            Button(role: .destructive) {
-                confirmAction = .hide(session)
-            } label: {
-                Label("从主页移除", systemImage: "trash")
-            }
+        .accessibilityLabel(title)
+    }
+
+    private func confirmOverlay(_ action: ConfirmAction) -> some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture { confirmAction = nil }
+
+            KnockConfirmDialog(
+                title: action.title,
+                message: action.message,
+                confirmTitle: "确认移除",
+                isDestructive: true,
+                onConfirm: {
+                    confirmAction = nil
+                    Task { await perform(action) }
+                },
+                onCancel: { confirmAction = nil }
+            )
+            .padding(.horizontal, 28)
         }
-        .accessibilityLabel("\(session.title)，\(session.lastMessage)")
-        .accessibilityHint("打开与 \(session.title) 的聊天；长按可置顶、标记已读或从主页移除")
+        .transition(.opacity)
     }
 
     // MARK: - 操作（T40）

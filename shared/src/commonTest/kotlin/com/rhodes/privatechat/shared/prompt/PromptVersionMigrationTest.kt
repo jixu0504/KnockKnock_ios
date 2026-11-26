@@ -81,7 +81,7 @@ class PromptVersionMigrationTest {
         assertEquals("离线模板", store.getString("prompt_private_offline", ""))
         assertTrue(store.getBoolean("prompt_private_offline_custom", false))
         assertEquals(PromptTemplates.VERSION, store.getInt("prompt_private_offline_version", 0))
-        assertEquals(39, PromptTemplates.VERSION)
+        assertEquals(40, PromptTemplates.VERSION)
     }
 
     @Test

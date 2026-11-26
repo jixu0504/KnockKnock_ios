@@ -1,12 +1,17 @@
 //
 //  SettingsView.swift
-//  设置主页（Tab 根）：
-//  - 数据状态卡：本地数据就绪状态 + 会话/记忆计数；
-//  - 外观：跟随系统 / 浅色 / 深色（实时生效）；
-//  - 字体与可访问性：Dynamic Type 实时状态 + 降低透明度 / 增强对比度 / 减弱动态效果；
-//  - 二级路由：外观 / 通知 / 调试日志 / 数据备份 / 模型供应商 / 提示词编辑器等。
+//  设置主页（Tab 根，敲敲视觉 P4）：
+//  - 页面大标题 + 分组标题（KnockGroupTitle）+ 胶囊行（KnockListRow）导航；
+//  - 本机数据状态面板：本地数据就绪状态 + 会话/记忆计数；
+//  - 外观与可访问性：跟随系统 / 浅色 / 深色（KnockSegmentedBar，实时生效）+
+//    Dynamic Type / 降低透明度 / 增强对比度 / 减弱动态效果状态 chip + 大字号预览；
+//  - 二级路由：外观 / 通知 / 调试日志 / 数据备份 / 模型供应商 / 聊天表现 / 提示词编辑器等；
+//  - 关于：App / 版本 / 兼容。
 //
-//  玻璃元素计数：执行环境卡 1 + 外观卡 1 = 2（设计原则一屏 ≤5）。
+//  视觉纪律（计划书 1.2 / 2.1）：系统导航栏隐藏，页面底 = 纯色 + 斜切纹理；
+//  黄色只做「选中 / 主操作 / 品牌」，本页黄色仅出现在 Tab 选中、主 CTA 与状态图标。
+//
+//  保留钩子：`--settings-route-rows`（滚动到二级路由区）、`--identity-demo`（打开我的身份）。
 //
 
 import SwiftUI
@@ -33,34 +38,40 @@ struct SettingsView: View {
             AmbientBackground(parallax: scrollOffset, showsStandee: false)
 
             ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 14) {
-                    environmentCard
-                    appearanceCard
-                    dynamicTypeCard
-                    routeRowsCard
-                        .id(Self.routeRowsAnchor)
-                    aboutCard
+                ScrollView {
+                    VStack(spacing: KnockTokens.spacingXL) {
+                        SettingsKnockPageTitle(
+                            title: "设置",
+                            subtitle: "敲敲 · 本机离线可用 · 当前\(colorScheme == .dark ? "深色" : "浅色")"
+                        )
+                        .padding(.horizontal, KnockTokens.spacingXS)
+
+                        environmentGroup
+                        appearanceGroup
+                        navigationGroup
+                            .id(Self.routeRowsAnchor)
+                        aboutGroup
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingM)
+                    .padding(.bottom, KnockTokens.spacingXXL)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .scrollIndicators(.hidden)
-            .task {
-                // 截图证据钩子：`--settings-route-rows` 滚动到二级路由卡（含「数据与备份」行）
-                guard ProcessInfo.processInfo.arguments.contains("--settings-route-rows") else { return }
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                withAnimation(.none) { proxy.scrollTo(Self.routeRowsAnchor, anchor: .top) }
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
-            }
+                .scrollIndicators(.hidden)
+                .task {
+                    // 截图证据钩子：`--settings-route-rows` 滚动到二级路由区（含「数据与备份」行）
+                    guard ProcessInfo.processInfo.arguments.contains("--settings-route-rows") else { return }
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    withAnimation(.none) { proxy.scrollTo(Self.routeRowsAnchor, anchor: .top) }
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, newValue in
+                    scrollOffset = newValue
+                }
             }
         }
         .navigationTitle("设置")
+        .settingsKnockNavigationChrome()
         .navigationDestination(isPresented: $showProfile) {
             UserProfileView()
         }
@@ -74,123 +85,148 @@ struct SettingsView: View {
             try? await Task.sleep(nanoseconds: 700_000_000)
             showProfile = true
         }
+        .task {
+            // 截图/自动化钩子：`--settings-route <section>` 在设置 Tab 就绪后稳定推入二级页
+            // （深链 `rhodes://settings/*` 在冷启动瞬间可能早于 NavigationStack 绑定而丢失，
+            //   截图脚本改用本钩子；仅模拟器自动化使用，对用户路径零影响）。
+            await pushLaunchRouteIfNeeded()
+        }
+    }
+
+    /// `--settings-route` 支持的分段（与 AppRouter 深链名对齐）。
+    private static let launchRouteNames: [String: Route] = [
+        "appearance": .settingsAppearance,
+        "accessibility": .settingsAccessibility,
+        "providers": .settingsProviders,
+        "provider": .settingsProviders,
+        "backup": .settingsBackup,
+        "backups": .settingsBackup,
+        "chat-performance": .settingsChatPerformance,
+        "performance": .settingsChatPerformance,
+        "prompt": .settingsPromptEditor,
+        "prompts": .settingsPromptEditor,
+        "prompt-editor": .settingsPromptEditor,
+        "notifications": .settingsNotifications,
+        "notification": .settingsNotifications,
+        "debug-logs": .settingsDebugLogs,
+        "logs": .settingsDebugLogs,
+    ]
+
+    private func pushLaunchRouteIfNeeded() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--settings-route"), index + 1 < arguments.count else { return }
+        let raw = arguments[index + 1].lowercased()
+        guard let route = Self.launchRouteNames[raw] else { return }
+        // 等设置根页 / NavigationStack 绑定就绪后再推入，避免冷启动瞬间的路径丢失。
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        guard router.settingsPath.isEmpty else { return }
+        router.settingsPath.append(route)
     }
 
     /// 设置页二级路由行锚点（`SettingsView.routeRows` 截图钩子用）
     static let routeRowsAnchor = "settings-route-rows"
 
-    // MARK: 执行环境（玻璃 1）
+    // MARK: 本机数据
 
-    private var environmentCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 22) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
-                    Text("本地数据已就绪")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("\(environment.sessionCount) 个会话 · \(environment.memoryCount) 条记忆")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text("会话、记忆与设置均保存在本机，离线可用。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(16)
-        }
-    }
-
-    private func infoLine(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(monospaced ? .caption.monospaced() : .caption)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: 外观（玻璃 2）
-
-    private var appearanceCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 22) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "circle.lefthalf.filled")
-                        .foregroundStyle(GlassTokens.brandOrange)
-                    Text("外观")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("当前：\(colorScheme == .dark ? "深色" : "浅色")")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker("外观模式", selection: Binding(
-                    get: { settings.appearance },
-                    set: { settings.setAppearance($0) }
-                )) {
-                    ForEach(SettingsStore.Appearance.allCases) { mode in
-                        Text(mode.label).tag(mode)
+    private var environmentGroup: some View {
+        SettingsKnockGroup("本机数据", systemImage: "internaldrive") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                    HStack(spacing: KnockTokens.spacingM) {
+                        KnockRowGlyph(systemImage: "checkmark.seal.fill", tint: KnockTokens.electric, size: 36)
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                            KnockText("本地数据已就绪", role: .rowTitle, lineLimit: 1)
+                            KnockText(
+                                "\(environment.sessionCount) 个会话 · \(environment.memoryCount) 条记忆",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineLimit: 1
+                            )
+                        }
+                        Spacer(minLength: KnockTokens.spacingS)
+                        KnockBadge(text: "离线", variant: .neutral)
                     }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel("外观模式")
 
-                Text("浅色 / 深色立即生效；选择「跟随系统」时随系统外观自动切换。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    KnockDivider()
+
+                    KnockText(
+                        "会话、记忆与设置均保存在本机，离线可用；导入的备份在重启后换入。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
+                }
             }
-            .padding(16)
         }
     }
 
-    // MARK: Dynamic Type / 可访问性
+    // MARK: 外观与可访问性
 
-    private var dynamicTypeCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(text: "字体与可访问性", systemImage: "textformat.size")
+    private var appearanceGroup: some View {
+        SettingsKnockGroup("外观与可访问性", systemImage: "circle.lefthalf.filled") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        KnockText("外观模式", role: .captionStrong)
+                        Spacer(minLength: KnockTokens.spacingS)
+                        KnockText("当前：\(settings.appearance.label)", role: .caption, color: KnockTokens.textSecondary)
+                    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("大字号预览：博士，今晚的巡逻记录已经整理好了。ABC abc 123")
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    KnockSegmentedBar(
+                        items: appearanceItems,
+                        selection: Binding(
+                            get: { settings.appearance },
+                            set: { settings.setAppearance($0) }
+                        ),
+                        height: KnockTokens.segmentedSmallHeight,
+                        showsIcons: false
+                    )
+                    .accessibilityLabel("外观模式")
 
-                HStack(spacing: 8) {
-                    stateChip("Dynamic Type", dynamicTypeText)
-                    stateChip("降低透明度", reduceTransparency ? "开" : "关")
-                    stateChip("增强对比度", colorSchemeContrast == .increased ? "开" : "关")
-                    stateChip("减弱动态", reduceMotion ? "开" : "关")
+                    Text("大字号预览：绳匠，今晚的巡逻记录已经整理好了。ABC abc 123")
+                        .font(.body)
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 108), spacing: KnockTokens.spacingS)],
+                        alignment: .leading,
+                        spacing: KnockTokens.spacingS
+                    ) {
+                        stateChip("Dynamic Type", dynamicTypeText)
+                        stateChip("降低透明度", reduceTransparency ? "开" : "关")
+                        stateChip("增强对比度", colorSchemeContrast == .increased ? "开" : "关")
+                        stateChip("减弱动态", reduceMotion ? "开" : "关")
+                    }
+
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    } label: {
+                        HStack(spacing: KnockTokens.spacingS) {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 13, weight: .heavy))
+                            KnockText("打开系统设置（字号 / 对比度）", role: .captionStrong, lineLimit: 1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .buttonStyle(KnockSecondaryButtonStyle())
+
+                    KnockText(
+                        "浅色 / 深色立即生效；「跟随系统」随系统外观自动切换。字体大小档位在「外观设置」中调整。",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineSpacing: 2
+                    )
                 }
-
-                Text("字体大小与对比度会随系统辅助功能设置自动适配。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
+        }
+    }
 
-            Button {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    openURL(url)
-                }
-            } label: {
-                Label("打开系统设置（可调整字号 / 对比度）", systemImage: "arrow.up.forward.app")
-                    .font(.footnote)
-            }
-            .buttonStyle(.bordered)
-            .tint(GlassTokens.brandOrange)
+    private var appearanceItems: [KnockSegmentItem<SettingsStore.Appearance>] {
+        SettingsStore.Appearance.allCases.map {
+            KnockSegmentItem(value: $0, title: $0.label, systemImage: nil)
         }
     }
 
@@ -213,96 +249,120 @@ struct SettingsView: View {
     }
 
     private func stateChip(_ title: String, _ value: String) -> some View {
-        VStack(spacing: 1) {
-            Text(title)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(GlassTokens.brandOrange)
+        HStack(spacing: KnockTokens.spacingXS) {
+            KnockText(title, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+            KnockText(value, role: .badge, color: KnockTokens.textPrimary, lineLimit: 1)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 5)
-        .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, KnockTokens.spacingM)
+        .frame(minHeight: KnockTokens.chipHeight)
+        .background(Capsule(style: .continuous).fill(KnockTokens.row))
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) \(value)")
     }
 
-    // MARK: 二级路由
+    // MARK: 二级路由（胶囊行）
 
-    private var routeRowsCard: some View {
-        VStack(spacing: 0) {
-            routeRow("我的身份", systemImage: "person.crop.circle") {
-                showProfile = true
+    private var navigationGroup: some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingXL) {
+            SettingsKnockGroup("个性化", systemImage: "person.crop.circle") {
+                VStack(spacing: KnockTokens.spacingS) {
+                    KnockListRow(
+                        title: "我的身份",
+                        subtitle: "昵称与角色卡对外展示",
+                        systemImage: "person.crop.circle"
+                    ) {
+                        showProfile = true
+                    }
+                    KnockListRow(
+                        title: "外观设置",
+                        subtitle: "主题 · 字体大小 · 落盘读回",
+                        systemImage: "paintpalette"
+                    ) {
+                        router.settingsPath.append(Route.settingsAppearance)
+                    }
+                    KnockListRow(
+                        title: "通知设置",
+                        subtitle: "授权状态 · 4 类提醒开关",
+                        systemImage: "bell.badge"
+                    ) {
+                        router.settingsPath.append(Route.settingsNotifications)
+                    }
+                    KnockListRow(
+                        title: "可访问性子页",
+                        subtitle: "降低透明度 / 增强对比度 / 减弱动态",
+                        systemImage: "figure.arms.open"
+                    ) {
+                        router.settingsPath.append(Route.settingsAccessibility)
+                    }
+                }
             }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("外观设置", systemImage: "paintpalette") {
-                router.settingsPath.append(Route.settingsAppearance)
+
+            SettingsKnockGroup("模型与提示词", systemImage: "server.rack") {
+                VStack(spacing: KnockTokens.spacingS) {
+                    KnockListRow(
+                        title: "模型供应商",
+                        subtitle: "11 家供应商 · 自定义端点 · 连接测试",
+                        systemImage: "server.rack"
+                    ) {
+                        router.settingsPath.append(Route.settingsProviders)
+                    }
+                    KnockListRow(
+                        title: "聊天表现",
+                        subtitle: "温度 · 深度思考 · 上下文 · 输出预算",
+                        systemImage: "slider.horizontal.3"
+                    ) {
+                        router.settingsPath.append(Route.settingsChatPerformance)
+                    }
+                    KnockListRow(
+                        title: "提示词编辑器",
+                        subtitle: "模板目录 · 保存 / 恢复默认 / 禁用",
+                        systemImage: "text.book.closed"
+                    ) {
+                        router.settingsPath.append(Route.settingsPromptEditor)
+                    }
+                }
             }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("通知设置", systemImage: "bell.badge") {
-                router.settingsPath.append(Route.settingsNotifications)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("调试日志", systemImage: "doc.text.magnifyingglass") {
-                router.settingsPath.append(Route.settingsDebugLogs)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("可访问性子页", systemImage: "figure.arms.open") {
-                router.settingsPath.append(Route.settingsAccessibility)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("模型供应商", systemImage: "server.rack") {
-                router.settingsPath.append(Route.settingsProviders)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("聊天表现", systemImage: "slider.horizontal.3") {
-                router.settingsPath.append(Route.settingsChatPerformance)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("提示词编辑器", systemImage: "text.book.closed") {
-                router.settingsPath.append(Route.settingsPromptEditor)
-            }
-            Divider().padding(.leading, 44).opacity(0.4)
-            routeRow("数据与备份", systemImage: "externaldrive") {
-                router.settingsPath.append(Route.settingsBackup)
+
+            SettingsKnockGroup("数据与诊断", systemImage: "externaldrive") {
+                VStack(spacing: KnockTokens.spacingS) {
+                    KnockListRow(
+                        title: "数据与备份",
+                        subtitle: "完整备份 · 角色卡 · 聊天记录导入导出",
+                        systemImage: "externaldrive"
+                    ) {
+                        router.settingsPath.append(Route.settingsBackup)
+                    }
+                    KnockListRow(
+                        title: "调试日志",
+                        subtitle: "shared IosDebugLogger 文件日志",
+                        systemImage: "doc.text.magnifyingglass"
+                    ) {
+                        router.settingsPath.append(Route.settingsDebugLogs)
+                    }
+                }
             }
         }
-        .cardSurface(cornerRadius: 20)
-    }
-
-    private func routeRow(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .frame(width: 24)
-                    .foregroundStyle(.secondary)
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: 关于
 
-    private var aboutCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: "关于", systemImage: "info.circle")
-            VStack(alignment: .leading, spacing: 6) {
-                infoLine("App", "RhodesLink iOS")
-                infoLine("版本", "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"))")
-                infoLine("兼容", "iPhone · iOS 18.0 及以上")
+    private var aboutGroup: some View {
+        SettingsKnockGroup("关于", systemImage: "info.circle") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    SettingsKnockInfoLine("App", "RhodesLink iOS")
+                    SettingsKnockInfoLine(
+                        "版本",
+                        "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"))"
+                    )
+                    SettingsKnockInfoLine("兼容", "iPhone · iOS 18.0 及以上")
+                    SettingsKnockInfoLine("界面风格", "敲敲 · 深色 / 浅色 / 跟随系统")
+                }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 }

@@ -589,7 +589,7 @@ class ChatEngineBridge internal constructor(
                 check("prompt.contains.user_message_block", promptText.contains("【用户本轮消息】"))
                 check("prompt.contains.output_requirement", promptText.contains("【输出要求】"))
                 check("prompt.contains.operator_name", promptText.contains(operatorName))
-                check("prompt.contains.user_profile_name", promptText.contains(settingsRepo.userName.ifBlank { "博士" }))
+                check("prompt.contains.user_profile_name", promptText.contains(settingsRepo.userName.ifBlank { "绳匠" }))
                 // 记忆 provider 确实执行（在线模式模板不内联 LONG_TERM_IMPRESSION，但自然运行时上下文含个人记忆块）
                 check("prompt.memory_provider_ran", promptText.contains("与当前话题有关的过去经历"))
                 lines += "PROMPT_HEAD=" + promptText.take(500).replace("\n", " ⏎ ")

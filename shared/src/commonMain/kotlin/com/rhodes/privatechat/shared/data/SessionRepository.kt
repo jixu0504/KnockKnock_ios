@@ -98,11 +98,7 @@ class SessionRepository(private val wrapper: DatabaseWrapper) {
     // --- Preset groups ---
     suspend fun initPresetGroups() = withContext(Dispatchers.Default) {
         val now = Clock.System.now().toEpochMilliseconds()
-        val groups = listOf(
-            ChatSession(id = "group_elite", operatorId = "group_elite", operatorName = "精英干员茶水间",
-                members = "blaze,rosmontis,logos,misery,ascalon,arc",
-                rules = "精英干员的非正式聊天群，出任务之余闲聊放松。", lastTime = now)
-        )
+        val groups = ZzzPresets.groups.map { it.copy(lastTime = now) }
         groups.forEach { group ->
             val exists = db.chatSessionsQueries.getSession(group.id).executeAsOneOrNull() != null
             if (!exists) {

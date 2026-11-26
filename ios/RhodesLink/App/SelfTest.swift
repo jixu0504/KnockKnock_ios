@@ -77,7 +77,7 @@ enum SelfTestDriver {
     static let isEnabled = ProcessInfo.processInfo.arguments.contains("--selftest")
     private static var didRun = false
 
-    /// 启动参数深链钩子：`--open-url rhodes://chat/session_amiya`
+    /// 启动参数深链钩子：`--open-url rhodes://chat/session_zzz008`
     /// 与 `.onOpenURL` 走同一 `AppRouter.handle(url:)` 路径；仅用于无 GUI 自动化验证
     /// （iOS 26 对 simctl 打开自定义 scheme 会弹系统确认框，模拟器命令行无法点击）。
     @discardableResult
@@ -111,7 +111,7 @@ enum SelfTestDriver {
         var firstSessionId: String?
         switch await environment.bridge.loadSessions() {
         case .success(let items):
-            firstSessionId = items.first?.id
+            firstSessionId = items.first(where: { !$0.id.hasPrefix("group_") })?.id ?? items.first?.id
             SelfTestLog.add("sessions count=\(items.count) first=\(items.first?.id ?? "-") title=\(items.first?.title ?? "-") lastMessage=\(items.first?.lastMessage ?? "-")")
         case .failure(let error):
             SelfTestLog.add("sessions FAILED error=\(error.message)")
@@ -166,7 +166,7 @@ enum SelfTestDriver {
 
         // 6. 等聊天页出现后触发一次真实发送（ChatEngineBridge → 打字机 → 落库）
         try? await Task.sleep(nanoseconds: 1_500_000_000)
-        NotificationCenter.default.post(name: .shellSelfTestSendMessage, object: "自检：你好，阿米娅。这是来自 iOS 真壳的消息。")
+        NotificationCenter.default.post(name: .shellSelfTestSendMessage, object: "自检：你好，新艾利都。这是来自 iOS 真壳的消息。")
         SelfTestLog.add("chat send posted")
 
         // 7. 等引擎回包（fake AI 约 120ms + 打字机 2 字/20ms）

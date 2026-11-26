@@ -518,7 +518,7 @@ private val PROMPT_ENTRIES: List<PromptEntrySpec> = buildList {
     }
     add(PromptEntrySpec("moment", "", "", "内容生成", "动态"))
     add(PromptEntrySpec("moment_comment", "", "", "内容生成", "动态评论"))
-    add(PromptEntrySpec("diary", "", "", "内容生成", "干员日记"))
+    add(PromptEntrySpec("diary", "", "", "内容生成", "代理人日记"))
     listOf(
         Triple("start", "派遣开局", "start"),
         Triple("progress", "派遣过程", "progress"),

@@ -202,7 +202,7 @@ internal class A7RealSummaryGenerator(
                 ?.takeIf { restartAt <= 0L || it.createdAt >= restartAt }
                 ?.content?.takeIf { it.isNotBlank() } ?: "无"
             val text = older.joinToString("\n") { message ->
-                val who = if (message.isMe) settings.userName.ifBlank { "博士" } else message.senderName
+                val who = if (message.isMe) settings.userName.ifBlank { "绳匠" } else message.senderName
                 val raw = "$who：${message.content.take(if (message.isMe) 380 else 220)}"
                 val important = listOf("不要", "别", "喜欢", "讨厌", "答应", "约定", "明天", "记得", "秘密", "害怕", "难受", "以后")
                 if (message.isMe && important.any { message.content.contains(it) }) raw.take(500) else raw
@@ -380,7 +380,7 @@ internal class A7MemoryWiring(
         settings = settings,
         aiService = aiService,
         memoryVectorService = vectorService,
-        userNicknameProvider = { settings.userName.ifBlank { "博士" } },
+        userNicknameProvider = { settings.userName.ifBlank { "绳匠" } },
     )
     private val knowledgeIndexService = KnowledgeBaseIndexService(repo.knowledgeBases, vectorService, settings)
     val knowledgeBase = KnowledgeBaseService(

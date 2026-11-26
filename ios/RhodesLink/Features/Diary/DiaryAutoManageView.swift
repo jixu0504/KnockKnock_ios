@@ -9,6 +9,10 @@
 //  - `--diary-auto-selftest`：自动打开本页并跑 UI 链路自检（列表/开关/生成后），写
 //    Documents/diary-auto-selftest.log，页面顶部展示结论。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 刷新胶囊）；
+//  搜索 = 胶囊搜索条；开关 = 黄色 tint 的系统 Toggle（选中态语义）；
+//  干员行 = 胶囊卡片（头像 + 名称 + 今日角标 + 开关 + 立即生成）；主操作「补齐今日」= 黄胶囊。
+//
 
 import SwiftUI
 
@@ -31,99 +35,110 @@ struct DiaryAutoManageView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    headerCard
-                    shortcutCard
-                    if DiaryAutoAutomation.isEnabled {
-                        automationCard
+            VStack(spacing: 0) {
+                KnockHeader(title: "日记生成管理", showsBack: true, onBack: { dismiss() }, trailing: {
+                    KnockCapsuleIconButton(
+                        systemImage: "arrow.clockwise",
+                        variant: .neutral,
+                        accessibilityLabel: "刷新日记生成状态"
+                    ) {
+                        Task { await loadStatus() }
                     }
-                    if let errorText {
-                        errorCard(errorText)
-                    }
-                    if !banner.isEmpty {
-                        bannerCard(banner)
-                    }
-                    if isLoading && status == nil {
-                        loadingCard
-                    } else if let status, status.entries.isEmpty {
-                        emptyCard
-                    } else if let status {
-                        ForEach(filteredEntries(status)) { entry in
-                            operatorRow(entry)
+                })
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        searchBar
+                        headerPanel
+                        shortcutPanel
+                        if DiaryAutoAutomation.isEnabled {
+                            automationPanel
+                        }
+                        if let errorText {
+                            KnockErrorPanel(title: "读取失败", message: errorText) {
+                                Task { await loadStatus() }
+                            }
+                        }
+                        if !banner.isEmpty {
+                            bannerPanel(banner)
+                        }
+                        if isLoading && status == nil {
+                            KnockLoadingPanel("正在读取代理人日记生成状态…")
+                        } else if let status, status.entries.isEmpty {
+                            emptyPanel
+                        } else if let status {
+                            ForEach(filteredEntries(status)) { entry in
+                                operatorRow(entry)
+                            }
                         }
                     }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 24)
-            }
-            .refreshable { await loadStatus() }
-        }
-        .navigationTitle("日记生成管理")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "搜索干员")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await loadStatus() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("刷新日记生成状态")
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
+                .refreshable { await loadStatus() }
             }
         }
+        .knockHiddenNavigationBar()
         .task {
             await loadStatus()
             await runAutomationIfNeeded()
         }
     }
 
+    private var searchBar: some View {
+        KnockSearchBar(placeholder: "搜索代理人", text: $searchText)
+    }
+
     // MARK: 头部 / 快捷操作
 
-    private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "sparkles.rectangle.stack.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(GlassTokens.brandOrange))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("干员日记自动生成")
-                        .font(.headline)
-                    Text(subtitleText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var headerPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockRowGlyph(systemImage: "sparkles.rectangle.stack.fill")
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("代理人日记自动生成", role: .rowTitle, lineLimit: 1)
+                        KnockText(subtitleText, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
+                    }
+                    Spacer(minLength: KnockTokens.spacingS)
                 }
-                Spacer(minLength: 8)
-            }
 
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("总开关")
-                        .font(.subheadline.weight(.semibold))
-                    Text("关闭后所有干员都不会自动写日记")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                KnockDivider()
+
+                HStack(spacing: KnockTokens.spacingM) {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("总开关", role: .rowTitle, lineLimit: 1)
+                        KnockText("关闭后所有代理人都不会自动写日记", role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
+                    }
+                    Spacer(minLength: KnockTokens.spacingS)
+                    Toggle("", isOn: Binding(
+                        get: { status?.masterEnabled ?? false },
+                        set: { newValue in Task { await setMaster(newValue) } }
+                    ))
+                    .labelsHidden()
+                    .tint(KnockTokens.electric)
+                    .accessibilityLabel("日记自动生成总开关")
                 }
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { status?.masterEnabled ?? false },
-                    set: { newValue in Task { await setMaster(newValue) } }
-                ))
-                .labelsHidden()
-                .tint(GlassTokens.brandOrange)
-            }
 
-            if status?.demoMode == true {
-                Label("当前未配置模型供应商：生成内容为本地演示内容，配置后自动使用真实模型。", systemImage: "info.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                if status?.demoMode == true {
+                    HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textSecondary)
+                            .accessibilityHidden(true)
+                        KnockText(
+                            "当前未配置模型供应商：生成内容为本地演示内容，配置后自动使用真实模型。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                    }
+                }
             }
         }
-        .padding(14)
-        .cardSurface(cornerRadius: 20, strong: true)
     }
 
     private var subtitleText: String {
@@ -131,115 +146,80 @@ struct DiaryAutoManageView: View {
         return "已开启 \(status.enabledCount)/\(status.totalCount) 位 · 今日已生成 \(status.todayGeneratedCount) 位 · 每轮最多补齐 \(status.dailyLimit) 位"
     }
 
-    private var shortcutCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Button {
-                    Task { await setAll(true) }
-                } label: {
-                    Label("全部开启", systemImage: "checkmark.circle")
-                        .font(.footnote.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(GlassTokens.brandOrange)
-
-                Button {
-                    Task { await setAll(false) }
-                } label: {
-                    Label("全部关闭", systemImage: "xmark.circle")
-                        .font(.footnote.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(.gray)
-            }
-
-            Button {
-                Task { await tickNow() }
-            } label: {
-                HStack(spacing: 6) {
-                    if isTicking {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "wand.and.stars")
+    private var shortcutPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Button {
+                        Task { await setAll(true) }
+                    } label: {
+                        Label("全部开启", systemImage: "checkmark.circle")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    Text(isTicking ? "正在补齐今日日记…" : "补齐今日日记（本轮最多 \(status?.dailyLimit ?? 3) 位）")
-                        .font(.footnote.weight(.semibold))
+                    .buttonStyle(KnockSecondaryButtonStyle())
+
+                    Button {
+                        Task { await setAll(false) }
+                    } label: {
+                        Label("全部关闭", systemImage: "xmark.circle")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(KnockSecondaryButtonStyle())
                 }
-                .frame(maxWidth: .infinity)
+
+                Button {
+                    Task { await tickNow() }
+                } label: {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        if isTicking {
+                            ProgressView().controlSize(.small).tint(KnockTokens.onElectric)
+                        } else {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 13, weight: .heavy))
+                        }
+                        Text(isTicking ? "正在补齐今日日记…" : "补齐今日日记（本轮最多 \(status?.dailyLimit ?? 3) 位）")
+                    }
+                }
+                .buttonStyle(KnockPrimaryButtonStyle())
+                .disabled(isTicking || status == nil)
+                .opacity(isTicking || status == nil ? 0.35 : 1)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(GlassTokens.brandOrange)
-            .disabled(isTicking || status == nil)
         }
-        .padding(12)
-        .cardSurface(cornerRadius: 16)
     }
 
-    private var automationCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("T61 自检")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(GlassTokens.brandOrange)
-            Text(automationResult.isEmpty
-                 ? (DiaryAutoAutomation.resultText.isEmpty ? "等待自检…" : DiaryAutoAutomation.resultText)
-                 : automationResult)
-                .font(.footnote)
+    private var automationPanel: some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                KnockText("T61 自检", role: .captionStrong, lineLimit: 1)
+                KnockText(
+                    automationResult.isEmpty
+                        ? (DiaryAutoAutomation.resultText.isEmpty ? "等待自检…" : DiaryAutoAutomation.resultText)
+                        : automationResult,
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .cardSurface(cornerRadius: 16)
     }
 
-    private func bannerCard(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "text.bubble.fill")
-                .foregroundStyle(GlassTokens.brandOrange)
-            Text(message)
-                .font(.footnote)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func bannerPanel(_ message: String) -> some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                Image(systemName: "text.bubble.fill")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(KnockTokens.textSecondary)
+                    .accessibilityHidden(true)
+                KnockText(message, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 3)
+            }
         }
-        .padding(12)
-        .cardSurface(cornerRadius: 16)
     }
 
-    private func errorCard(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("读取失败", systemImage: "exclamationmark.triangle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("重试") { Task { await loadStatus() } }
-                .buttonStyle(.bordered)
-                .tint(GlassTokens.brandOrange)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private var loadingCard: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text("正在读取干员日记生成状态…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(20)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private var emptyCard: some View {
-        EmptyStateView(
-            title: "还没有干员",
-            message: "干员列表为空，先到「角色」页添加干员后再开启日记自动生成。",
-            systemImage: "person.2"
+    private var emptyPanel: some View {
+        KnockEmptyState(
+            title: "还没有代理人",
+            message: "代理人列表为空，先到「联系人」页添加代理人后再开启日记自动生成。"
         )
-        .padding(.horizontal, 2)
     }
 
     // MARK: 干员行
@@ -252,66 +232,61 @@ struct DiaryAutoManageView: View {
 
     private func operatorRow(_ entry: DiaryOperatorAutoItem) -> some View {
         let isGenerating = generatingIds.contains(entry.operatorId)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                RoleAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 42)
+        return KnockCapsuleCard {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 42)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(entry.operatorName)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        if entry.todayGenerated {
-                            Text("今日已生成")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.green.opacity(0.82)))
-                        }
-                    }
-                    Text("最近日记：\(entry.lastDiaryText)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 4)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Toggle("", isOn: Binding(
-                        get: { entry.autoEnabled },
-                        set: { newValue in Task { await toggle(entry, newValue) } }
-                    ))
-                    .labelsHidden()
-                    .tint(GlassTokens.brandOrange)
-
-                    Button {
-                        Task { await generate(entry) }
-                    } label: {
-                        HStack(spacing: 4) {
-                            if isGenerating {
-                                ProgressView().controlSize(.mini)
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            KnockText(entry.operatorName, role: .rowTitle, lineLimit: 1)
+                            if entry.todayGenerated {
+                                KnockBadge(text: "今日已生成", variant: .neutral)
                             }
-                            Text(isGenerating ? "生成中…" : "立即生成")
-                                .font(.caption2.weight(.semibold))
                         }
+                        KnockText("最近日记：\(entry.lastDiaryText)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(isGenerating)
-                }
-            }
 
-            if let error = rowErrors[entry.operatorId] {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
+                    Spacer(minLength: KnockTokens.spacingXS)
+
+                    VStack(alignment: .trailing, spacing: KnockTokens.spacingXS) {
+                        Toggle("", isOn: Binding(
+                            get: { entry.autoEnabled },
+                            set: { newValue in Task { await toggle(entry, newValue) } }
+                        ))
+                        .labelsHidden()
+                        .tint(KnockTokens.electric)
+                        .accessibilityLabel("\(entry.operatorName) 自动生成")
+
+                        Button {
+                            Task { await generate(entry) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isGenerating {
+                                    ProgressView().controlSize(.mini)
+                                }
+                                Text(isGenerating ? "生成中…" : "立即生成")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 28))
+                        .disabled(isGenerating)
+                        .opacity(isGenerating ? 0.35 : 1)
+                        .accessibilityLabel("立即生成 \(entry.operatorName) 的日记")
+                    }
+                }
+
+                if let error = rowErrors[entry.operatorId] {
+                    HStack(alignment: .top, spacing: KnockTokens.spacingXS) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundStyle(KnockTokens.dangerBright)
+                            .accessibilityHidden(true)
+                        KnockText(error, role: .caption, color: KnockTokens.dangerBright, lineSpacing: 2, lineLimit: 2)
+                    }
+                }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     // MARK: 数据操作
@@ -334,7 +309,7 @@ struct DiaryAutoManageView: View {
         let result = await environment.bridge.setDiaryAutoMaster(enabled: enabled)
         switch result {
         case .success(let count):
-            banner = enabled ? "总开关已开启（\(count) 位干员开启自动生成）" : "总开关已关闭，所有干员都不会自动写日记"
+            banner = enabled ? "总开关已开启（\(count) 位代理人开启自动生成）" : "总开关已关闭，所有代理人都不会自动写日记"
             DiaryAutoAutomation.add("ui.master.enabled=\(enabled) count=\(count)")
         case .failure(let error):
             banner = "总开关保存失败：\(error.message)"
@@ -362,7 +337,7 @@ struct DiaryAutoManageView: View {
         let result = await environment.bridge.setAllDiaryAuto(enabled: enabled)
         switch result {
         case .success(let count):
-            banner = enabled ? "已全部开启（\(count) 位干员）" : "已全部关闭"
+            banner = enabled ? "已全部开启（\(count) 位代理人）" : "已全部关闭"
         case .failure(let error):
             banner = "批量开关失败：\(error.message)"
         }

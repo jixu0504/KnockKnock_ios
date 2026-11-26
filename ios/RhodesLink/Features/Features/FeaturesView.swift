@@ -11,8 +11,11 @@
 //  T52 修复：`momentBadge` / `diaryBadge` 原先写死 0 → 现接入 shared 真实计数：
 //  - 动态角标 = `MomentsBridge.badges()`.unreadMoments（新动态）+ unreadComments（未读评论）；
 //  - 日记角标 = `DiaryBridge.unreadCount()`（未读干员数，与 Android `getUnreadDiaryCount` 同源）；
-//  - 刷新时机：onAppear（Task 首次）+ 每 10 秒轮询（对齐 Android FeaturesScreen 的 LaunchedEffect 周期）；
-//  - 样式：未读红 #FA5151（GlassTokens.unreadBadge），复用行尾胶囊 badge。
+//  - 刷新时机：onAppear（Task 首次）+ 每 10 秒轮询（对齐 Android FeaturesScreen 的 LaunchedEffect 周期）。
+//
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（黄色品牌标 + 左对齐 heavy 标题）；
+//  每条功能入口 = `KnockPanel` 面板 + 44pt 圆形图标位 + 15pt heavy 标题 + 13pt 灰说明 + 未读红角标；
+//  页面底 = 纯黑 + 斜切迷彩纹理（`AmbientBackground`），无毛玻璃/渐变。
 //
 //  说明：泰拉见闻报（报纸）按 v1.1 范围裁决属二期候选，首版不移植（入口保留注释）。
 //
@@ -31,72 +34,72 @@ struct FeaturesView: View {
     @State private var showKnowledgeSelfTest = false
 
     var body: some View {
-        List {
-            Section {
-                featureRow(
-                    title: "动态广场",
-                    subtitle: "查看所有干员发布的动态",
-                    systemImage: "bubble.left.and.text.bubble.right.fill",
-                    tint: Color(hexIfPossible: 0x07C160),
-                    badge: momentBadge
-                ) {
-                    router.openFeature(.moments)
-                }
+        ZStack {
+            AmbientBackground(parallax: 0, showsStandee: false)
 
-                featureRow(
-                    title: "干员日记",
-                    subtitle: "查看干员们的内心独白",
-                    systemImage: "book.closed.fill",
-                    tint: Color(hexIfPossible: 0x1989FA),
-                    badge: diaryBadge
-                ) {
-                    router.openFeature(.diary)
-                }
+            VStack(spacing: 0) {
+                KnockHeader(title: "功能", subtitle: "广场与数据", showsBrand: true)
 
-                featureRow(
-                    title: "大家的印象",
-                    subtitle: "干员对你的长期印象总结",
-                    systemImage: "person.crop.circle.badge.questionmark.fill",
-                    tint: Color(hexIfPossible: 0xFF9500)
-                ) {
-                    router.openFeature(.impressions)
-                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        KnockGroupTitle(title: "互动", systemImage: "bubble.left.and.text.bubble.right")
+                        featureCard(
+                            title: "动态广场",
+                            subtitle: "查看所有代理人发布的动态",
+                            systemImage: "bubble.left.and.text.bubble.right.fill",
+                            badge: momentBadge
+                        ) {
+                            router.openFeature(.moments)
+                        }
+                        featureCard(
+                            title: "代理人日记",
+                            subtitle: "查看代理人们的内心独白",
+                            systemImage: "book.closed.fill",
+                            badge: diaryBadge
+                        ) {
+                            router.openFeature(.diary)
+                        }
+                        featureCard(
+                            title: "大家的印象",
+                            subtitle: "代理人对你的长期印象总结",
+                            systemImage: "person.crop.circle.badge.questionmark.fill"
+                        ) {
+                            router.openFeature(.impressions)
+                        }
+                        featureCard(
+                            title: "聊天排行榜",
+                            subtitle: "昨日聊天数据排名",
+                            systemImage: "chart.bar.fill"
+                        ) {
+                            router.openFeature(.ranking)
+                        }
 
-                featureRow(
-                    title: "聊天排行榜",
-                    subtitle: "昨日聊天数据排名",
-                    systemImage: "chart.bar.fill",
-                    tint: Color(hexIfPossible: 0xFFB300)
-                ) {
-                    router.openFeature(.ranking)
+                        KnockGroupTitle(title: "数据", systemImage: "tray.full")
+                            .padding(.top, KnockTokens.spacingS)
+                        featureCard(
+                            title: "记忆管理",
+                            subtitle: "三层记忆 · 锚点 · 隐私与删除",
+                            systemImage: "brain.head.profile.fill"
+                        ) {
+                            router.openFeature(.memoryList)
+                        }
+                        navigationCard(
+                            title: "知识库",
+                            subtitle: "导入资料 · 切块索引 · 召回测试",
+                            systemImage: "books.vertical.fill"
+                        ) {
+                            KnowledgeListView()
+                        }
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-            }
-
-            Section {
-                featureRow(
-                    title: "记忆管理",
-                    subtitle: "三层记忆 · 锚点 · 隐私与删除",
-                    systemImage: "brain.head.profile.fill",
-                    tint: GlassTokens.brandOrange
-                ) {
-                    router.openFeature(.memoryList)
-                }
-
-                navigationRow(
-                    title: "知识库",
-                    subtitle: "导入资料 · 切块索引 · 召回测试",
-                    systemImage: "books.vertical.fill",
-                    tint: Color(hexIfPossible: 0x5856D6)
-                ) {
-                    KnowledgeListView()
-                }
-            } header: {
-                Text("数据")
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("功能")
+        .knockHiddenNavigationBar()
         .task {
             // T52 自检夹具：`--features-badge-selftest` 时确保日记未读夹具存在（幂等）
             await FeaturesBadgeAutomation.prepareFixtureIfNeeded(environment: environment)
@@ -144,21 +147,21 @@ struct FeaturesView: View {
         )
     }
 
-    @ViewBuilder
-    private func featureRow(
+    // MARK: - 入口卡片
+
+    /// 路由型入口（`AppRouter.openFeature`）：敲敲面板卡片。
+    private func featureCard(
         title: String,
         subtitle: String,
         systemImage: String,
-        tint: Color,
         badge: Int = 0,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            featureRowLabel(
+            featureCardLabel(
                 title: title,
                 subtitle: subtitle,
                 systemImage: systemImage,
-                tint: tint,
                 badge: badge
             )
         }
@@ -166,84 +169,49 @@ struct FeaturesView: View {
         .accessibilityLabel("\(title)，\(subtitle)")
     }
 
-    /// 直接入栈的行（不走 AppRouter 路由表，避免与其他并行批次改 AppRouter 冲突）
-    @ViewBuilder
-    private func navigationRow<Destination: View>(
+    /// 直接入栈的入口（不走 AppRouter 路由表，避免与其他并行批次改 AppRouter 冲突）。
+    private func navigationCard<Destination: View>(
         title: String,
         subtitle: String,
         systemImage: String,
-        tint: Color,
         badge: Int = 0,
         @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
         NavigationLink {
             destination()
         } label: {
-            featureRowLabel(
+            featureCardLabel(
                 title: title,
                 subtitle: subtitle,
                 systemImage: systemImage,
-                tint: tint,
-                badge: badge,
-                showsChevron: false
+                badge: badge
             )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title)，\(subtitle)")
     }
 
-    @ViewBuilder
-    private func featureRowLabel(
+    /// 卡片内容：KnockPanel + 44pt 圆形图标 + 标题/说明 + 未读角标 + chevron。
+    private func featureCardLabel(
         title: String,
         subtitle: String,
         systemImage: String,
-        tint: Color,
-        badge: Int,
-        showsChevron: Bool = true
+        badge: Int
     ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(tint))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            if badge > 0 {
-                // T52：复用未读红（#FA5151）；99+ 截断避免撑破行
-                Text(badge > 99 ? "99+" : "\(badge)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(GlassTokens.unreadBadge))
-            }
-
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(spacing: KnockTokens.spacingM) {
+                KnockRowGlyph(systemImage: systemImage)
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockText(title, role: .rowTitle, lineLimit: 1)
+                    KnockText(subtitle, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                }
+                Spacer(minLength: KnockTokens.spacingS)
+                if badge > 0 {
+                    // 未读红角标（99+ 截断避免撑破行）
+                    KnockBadge(text: badge > 99 ? "99+" : "\(badge)", variant: .danger)
+                }
+                KnockChevron()
             }
         }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-    }
-}
-
-private extension Color {
-    /// 0xRRGGBB → Color；非法值回退品牌橙
-    init(hexIfPossible: UInt32) {
-        self.init(hex: hexIfPossible)
     }
 }

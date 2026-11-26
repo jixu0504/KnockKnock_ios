@@ -193,7 +193,7 @@ class IdentityBridge internal constructor(
     // ------------------------------------------------------------------
 
     private suspend fun loadProfile(): IdentityProfileDto = IdentityProfileDto(
-        nickname = settingsRepo.userName.ifBlank { "博士" },
+        nickname = settingsRepo.userName.ifBlank { "绳匠" },
         gender = settingsRepo.userGender,
         signature = settingsRepo.userSignature,
         avatarId = settingsRepo.userAvatarUri,

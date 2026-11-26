@@ -1,59 +1,87 @@
 //
 //  CardSurface.swift
-//  非玻璃内容层容器：卡片 / 行 / 分组标题。
-//  说明：正式壳「一屏 ≤5 玻璃元素」，大列表与设置行一律使用非玻璃 surface，
-//  只有关键 1~2 个区域使用 GlassPanel。所有文本用语义字号（Dynamic Type）。
+//  「敲敲」非玻璃内容层：面板卡片 / 分组标题 / E M P T Y 空态（文件名保留，内部重写）。
+//
+//  背景：T33 时期本文件是「半透明白卡 + SectionTitle + EmptyStateView」；敲敲改版
+//  （计划书 1.2 / 2.2 / 7.2-6）要求：
+//  - 卡片 → 面板实色（浅 `#FFFFFF` / 深 `#0A0A0A`）+ 1.5pt 描边 + 圆角 20pt + 极淡棋盘格；
+//  - `SectionTitle` → 分组标题 14pt heavy（白/黑自适应），不再小写灰字；
+//  - `EmptyStateView` → E M P T Y 宽字距 pill + NoData 行（不是系统大图标空态）。
+//
+//  调用面兼容：`cardSurface(cornerRadius:strong:)` / `SectionTitle(text:systemImage:)` /
+//  `EmptyStateView(title:message:systemImage:actionTitle:action:)` 签名保持不变，
+//  因此 30 个存量页面无需改动即可获得敲敲视觉。
+//
+//  可访问性：增强对比度 → 描边加深；Dynamic Type → 全部经 `KnockText` 语义字号；
+//  空态操作按钮 46pt 高、黄底黑字（对比度 > 15:1）。
 //
 
 import SwiftUI
 
-/// 非玻璃卡片背景
+// MARK: - 实色面板卡片
+
+/// 非玻璃卡片背景（旧 API）：敲敲面板 = 实色底 + 1.5pt 描边 + 棋盘格。
 struct CardSurface: ViewModifier {
-    var cornerRadius: CGFloat = 18
+    var cornerRadius: CGFloat = KnockTokens.panelRadius
+    /// 旧「强调卡」：描边改为次描边（深一档），不再改变透明度。
     var strong: Bool = false
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    private var strokeColor: Color {
+        if colorSchemeContrast == .increased { return KnockTokens.strokeContrast }
+        return strong ? KnockTokens.strokeSecondary : KnockTokens.stroke
+    }
 
     func body(content: Content) -> some View {
         content
-            .background(
-                strong ? GlassTokens.surfaceStrong : GlassTokens.surface,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .overlay(
+            .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(GlassTokens.strokeSubtle, lineWidth: 0.5)
-            )
+                    .fill(KnockTokens.panel)
+                    .overlay {
+                        KnockCheckerOverlay(cornerRadius: cornerRadius)
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(strokeColor, lineWidth: KnockTokens.strokeWidth)
+            }
     }
 }
 
 extension View {
-    /// 非玻璃卡片（内容层默认风格）
-    func cardSurface(cornerRadius: CGFloat = 18, strong: Bool = false) -> some View {
+    /// 非玻璃卡片（内容层默认风格）：敲敲面板视觉。
+    func cardSurface(cornerRadius: CGFloat = KnockTokens.panelRadius, strong: Bool = false) -> some View {
         modifier(CardSurface(cornerRadius: cornerRadius, strong: strong))
     }
 }
 
-/// 分组标题（列表页 / 设置页共用）
+// MARK: - 分组标题
+
+/// 分组标题（旧 API）：14pt heavy 主文字 + 可选 SF Symbol；左侧留给列表对齐。
 struct SectionTitle: View {
     var text: String
     var systemImage: String?
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: KnockTokens.spacingS) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(KnockTokens.textSecondary)
+                    .accessibilityHidden(true)
             }
-            Text(text)
-                .font(.caption.weight(.semibold))
-                .textCase(.uppercase)
+            KnockText(text, role: .sectionTitle, lineLimit: 1)
+            Spacer(minLength: 0)
         }
-        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// 空状态占位（列表无数据时）
+// MARK: - 空态
+
+/// 空状态占位（旧 API）：E M P T Y 宽字距 pill + NoData 行 + 标题/说明/操作。
 struct EmptyStateView: View {
     var title: String
     var message: String
@@ -62,26 +90,12 @@ struct EmptyStateView: View {
     var action: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 42, weight: .light))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
-                    .padding(.top, 4)
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity)
-        .cardSurface(cornerRadius: 22)
+        KnockEmptyState(
+            title: title,
+            message: message,
+            systemImage: systemImage,
+            actionTitle: actionTitle,
+            action: action
+        )
     }
 }

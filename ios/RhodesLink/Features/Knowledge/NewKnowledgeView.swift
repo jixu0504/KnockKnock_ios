@@ -6,6 +6,10 @@
 //  - 文件导入：DocumentPicker（TXT / MD，UTF-8）→ 桥 importFileFromPath → importFile(bytes)
 //  两条路径都走真实 shared KnowledgeBaseService，与 Android 导入语义一致。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 关闭胶囊）；
+//  方式 = 黄选中胶囊分段栏；名称/正文 = 面板 + 胶囊输入框；主操作「创建知识库」= 黄胶囊；
+//  文件导入 = 虚线胶囊按钮；错误改页面内危险色文字（不再用系统 alert）。
+//
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -30,88 +34,151 @@ struct NewKnowledgeView: View {
         var id: String { rawValue }
     }
 
+    private var canCreate: Bool {
+        mode == .text
+            && !isWorking
+            && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("方式") {
-                    Picker("方式", selection: $mode) {
-                        ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                }
+        ZStack {
+            AmbientBackground(parallax: 0, showsStandee: false)
 
-                Section("名称") {
-                    TextField("知识库名称", text: $name)
-                        .textInputAutocapitalization(.never)
-                }
+            VStack(spacing: 0) {
+                KnockHeader(title: "新建知识库", showsBack: false, trailing: {
+                    KnockCloseButton(label: "取消") { dismiss() }
+                })
 
-                if mode == .text {
-                    Section {
-                        TextEditor(text: $content)
-                            .frame(minHeight: 220)
-                            .font(.callout)
-                    } header: {
-                        Text("正文")
-                    } footer: {
-                        Text("支持 TXT / Markdown 文本；会自动按章节与段落切块（最多 1,800 块）。local 向量模式下导入后自动后台索引。")
-                    }
-                } else {
-                    Section {
-                        Button {
-                            showFileImporter = true
-                        } label: {
-                            Label("选择 TXT / MD 文件", systemImage: "doc.badge.plus")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        KnockPanel {
+                            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                                KnockGroupTitle(title: "方式", systemImage: "square.grid.2x2.fill")
+                                KnockSegmentedBar(
+                                    items: Mode.allCases.map {
+                                        KnockSegmentItem(value: $0, title: $0.rawValue)
+                                    },
+                                    selection: $mode,
+                                    height: KnockTokens.segmentedSmallHeight,
+                                    showsIcons: false
+                                )
+                            }
                         }
-                        .disabled(isWorking)
-                    } footer: {
-                        Text("文件需为 UTF-8 文本（≤ 5 MB / 60 万字）。导入后名称默认取文件名，可稍后重命名。")
-                    }
-                }
 
-                if let errorText {
-                    Section {
-                        Text(errorText)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                Section {
-                    if isWorking {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("处理中…（切块/入库）")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                        KnockPanel {
+                            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                                KnockGroupTitle(title: "名称", systemImage: "textformat")
+                                KnockInputField(
+                                    placeholder: "知识库名称",
+                                    text: $name
+                                )
+                                .textInputAutocapitalization(.never)
+                            }
                         }
-                    } else if mode == .text {
-                        Button("创建知识库") { Task { await createFromText() } }
-                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                      || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if mode == .text {
+                            KnockPanel {
+                                VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                                    KnockGroupTitle(title: "正文", systemImage: "doc.text")
+                                    textEditor
+                                    KnockText(
+                                        "支持 TXT / Markdown 文本；会自动按章节与段落切块（最多 1,800 块）。local 向量模式下导入后自动后台索引。",
+                                        role: .caption,
+                                        color: KnockTokens.textSecondary,
+                                        lineSpacing: 3
+                                    )
+                                }
+                            }
+                        } else {
+                            KnockPanel {
+                                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                                    KnockGroupTitle(title: "文件", systemImage: "doc.badge.plus")
+                                    KnockDashedButton(
+                                        title: "选择 TXT / MD 文件",
+                                        systemImage: "doc.badge.plus",
+                                        emphasized: true
+                                    ) {
+                                        showFileImporter = true
+                                    }
+                                    .disabled(isWorking)
+                                    KnockText(
+                                        "文件需为 UTF-8 文本（≤ 5 MB / 60 万字）。导入后名称默认取文件名，可稍后重命名。",
+                                        role: .caption,
+                                        color: KnockTokens.textSecondary,
+                                        lineSpacing: 3
+                                    )
+                                }
+                            }
+                        }
+
+                        if let errorText {
+                            KnockErrorPanel(title: "创建失败", message: errorText, retryTitle: nil)
+                        }
+
+                        if isWorking {
+                            KnockLoadingPanel("处理中…（切块/入库）")
+                        } else if mode == .text {
+                            Button {
+                                Task { await createFromText() }
+                            } label: {
+                                Text("创建知识库")
+                            }
+                            .buttonStyle(KnockPrimaryButtonStyle())
+                            .disabled(!canCreate)
+                            .opacity(canCreate ? 1 : 0.35)
+                        }
                     }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-            }
-            .navigationTitle("新建知识库")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-            }
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: Self.allowedTypes,
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    Task { await importFile(url: url) }
-                case .failure(let error):
-                    errorText = "选择文件失败：\(error.localizedDescription)"
-                }
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
             }
         }
+        .knockHiddenNavigationBar()
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: Self.allowedTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await importFile(url: url) }
+            case .failure(let error):
+                errorText = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// 正文编辑区：实色行底 + 描边圆角 + 正文排版（KnockTypography body）。
+    private var textEditor: some View {
+        TextEditor(text: $content)
+            .knockFont(.body)
+            .scrollContentBackground(.hidden)
+            .foregroundStyle(KnockTokens.textPrimary)
+            .tint(KnockTokens.electric)
+            .frame(minHeight: 220)
+            .padding(KnockTokens.spacingS)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(KnockTokens.row)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .overlay(alignment: .topLeading) {
+                if content.isEmpty {
+                    KnockText("粘贴设定集、世界观或资料正文…", role: .body, color: KnockTokens.textTertiary)
+                        .padding(.horizontal, KnockTokens.spacingM)
+                        .padding(.vertical, KnockTokens.spacingM)
+                        .allowsHitTesting(false)
+                }
+            }
+            .accessibilityLabel("知识库正文")
     }
 
     // MARK: - 动作

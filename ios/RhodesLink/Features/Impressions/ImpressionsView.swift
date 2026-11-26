@@ -7,12 +7,18 @@
 //  - 数据全部来自 shared `ImpressionsBridge`（memory_items L1/L2/L3 + 旧版 memories 只读兜底），无 mock；
 //  - `--impressions-selftest`：自动跑桥层自检 + UI 链路自检并写 Documents/t54-impressions-selftest.log。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 刷新胶囊）；
+//  概览 = 面板 + 灰阶计数胶囊；每条印象 = 胶囊卡片（头像 + 名称 + 级别/日期 + 正文）；
+//  标签（类型 / 来源 / 重要度）用 `KnockChip` + 流式布局自动换行；
+//  空态 = E M P T Y 宽字距 pill（`KnockEmptyState`）。
+//
 
 import SwiftUI
 
 @MainActor
 struct ImpressionsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     @State private var snapshot: ImpressionsSnapshotItem?
     @State private var isLoading = false
@@ -24,41 +30,47 @@ struct ImpressionsView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    headerCard
-
-                    if ImpressionsAutomation.isEnabled {
-                        automationCard
+            VStack(spacing: 0) {
+                KnockHeader(title: "大家的印象", showsBack: true, onBack: { dismiss() }, trailing: {
+                    KnockCapsuleIconButton(
+                        systemImage: "arrow.clockwise",
+                        variant: .neutral,
+                        accessibilityLabel: "刷新印象"
+                    ) {
+                        Task { await reload() }
                     }
+                })
 
-                    if let errorText {
-                        errorCard(errorText)
-                    } else if isLoading && snapshot == nil {
-                        loadingCard
-                    } else if let snapshot, snapshot.entries.isEmpty {
-                        emptyCard
-                    } else if let snapshot {
-                        sections(snapshot)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        headerPanel
+
+                        if ImpressionsAutomation.isEnabled {
+                            automationPanel
+                        }
+
+                        if let errorText {
+                            KnockErrorPanel(title: "印象读取失败", message: errorText) {
+                                Task { await reload() }
+                            }
+                        } else if isLoading && snapshot == nil {
+                            KnockLoadingPanel("正在读取印象…")
+                        } else if let snapshot, snapshot.entries.isEmpty {
+                            emptyCard
+                        } else if let snapshot {
+                            sections(snapshot)
+                        }
                     }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 24)
-            }
-            .refreshable { await reload() }
-        }
-        .navigationTitle("大家的印象")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await reload() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("刷新印象")
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
+                .refreshable { await reload() }
             }
         }
+        .knockHiddenNavigationBar()
         .task {
             await startIfNeeded()
         }
@@ -66,62 +78,47 @@ struct ImpressionsView: View {
 
     // MARK: - 头部
 
-    private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "person.crop.circle.badge.questionmark.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(hex: 0xFF9500)))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("大家对你们的印象")
-                        .font(.headline)
-                    Text("共 \(snapshot?.totalCount ?? 0) 条 · 长期印象 \(snapshot?.longTermCount ?? 0) · 持续了解 \(snapshot?.sustainedCount ?? 0) · 互动印象 \(snapshot?.interactionCount ?? 0)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var headerPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockRowGlyph(systemImage: "person.crop.circle.badge.questionmark.fill")
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("大家对你们的印象", role: .rowTitle, lineLimit: 1)
+                        KnockText(
+                            "共 \(snapshot?.totalCount ?? 0) 条 · 长期印象 \(snapshot?.longTermCount ?? 0) · 持续了解 \(snapshot?.sustainedCount ?? 0) · 互动印象 \(snapshot?.interactionCount ?? 0)",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineLimit: 2
+                        )
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
-            }
 
-            HStack(spacing: 6) {
-                countPill(title: "长期印象", value: snapshot?.longTermCount ?? 0, tint: Color(hex: 0x07C160))
-                countPill(title: "持续了解", value: snapshot?.sustainedCount ?? 0, tint: Color(hex: 0x1989FA))
-                countPill(title: "互动印象", value: snapshot?.interactionCount ?? 0, tint: Color(hex: 0xFF9500))
-                Spacer(minLength: 0)
-            }
+                KnockFlowLayout(spacing: KnockTokens.spacingS) {
+                    KnockCountPill(title: "长期印象", value: "\(snapshot?.longTermCount ?? 0)")
+                    KnockCountPill(title: "持续了解", value: "\(snapshot?.sustainedCount ?? 0)")
+                    KnockCountPill(title: "互动印象", value: "\(snapshot?.interactionCount ?? 0)")
+                }
 
-            if let snapshot {
-                Text(snapshot.note)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if snapshot.legacyCount > 0 {
-                    Text("含 \(snapshot.legacyCount) 条旧版 memories 长期印象（只读兜底，未与记忆管线 L3 重复）")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                if let snapshot {
+                    KnockText(
+                        snapshot.note,
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineSpacing: 3
+                    )
+                    if snapshot.legacyCount > 0 {
+                        KnockText(
+                            "含 \(snapshot.legacyCount) 条旧版 memories 长期印象（只读兜底，未与记忆管线 L3 重复）",
+                            role: .caption,
+                            color: KnockTokens.textTertiary,
+                            lineSpacing: 3
+                        )
+                    }
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
-    }
-
-    private func countPill(title: String, value: Int, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(tint).frame(width: 6, height: 6)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text("\(value)")
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(GlassTokens.bubbleSystem))
     }
 
     // MARK: - 三段分组
@@ -129,162 +126,93 @@ struct ImpressionsView: View {
     @ViewBuilder
     private func sections(_ snapshot: ImpressionsSnapshotItem) -> some View {
         ForEach(snapshot.sections, id: \.level) { section in
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(section.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(section.subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockGroupTitle(title: section.title)
+                    KnockText(section.subtitle, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, KnockTokens.spacingXS)
 
-                ForEach(Array(section.entries.enumerated()), id: \.element.id) { index, entry in
+                ForEach(section.entries) { entry in
                     NavigationLink(value: Route.roleDetail(roleId: entry.operatorId)) {
-                        impressionRow(entry)
+                        impressionCard(entry)
                     }
                     .buttonStyle(.plain)
-                    if index < section.entries.count - 1 {
-                        Divider()
-                            .background(GlassTokens.glassStroke)
-                            .padding(.leading, 14)
-                    }
                 }
             }
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     @ViewBuilder
-    private func impressionRow(_ entry: ImpressionEntryItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                RoleAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(entry.operatorName)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        if entry.isLegacy {
-                            Text("旧版")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color(hex: 0x8E8E93)))
+    private func impressionCard(_ entry: ImpressionEntryItem) -> some View {
+        KnockCapsuleCard {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 40)
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            KnockText(entry.operatorName, role: .rowTitle, lineLimit: 1)
+                            if entry.isLegacy {
+                                KnockBadge(text: "旧版", variant: .neutral)
+                            }
                         }
+                        KnockText(
+                            "\(entry.levelLabel) · \(entry.dateText)",
+                            role: .caption,
+                            color: KnockTokens.textTertiary,
+                            lineLimit: 1
+                        )
                     }
-                    Text("\(entry.levelLabel) · \(entry.dateText)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: KnockTokens.spacingS)
+                    if entry.importance > 0 {
+                        KnockText("重要度 \(entry.importance)", role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                            .monospacedDigit()
+                    }
                 }
-                Spacer(minLength: 0)
-            }
 
-            Text(entry.content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+                KnockText(entry.content, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 3)
+                    .font(.system(size: 15, weight: .medium))
 
-            HStack(spacing: 6) {
-                tag(entry.memoryTypeLabel, tint: Color(hex: 0xFF9500))
-                tag(entry.sourceLabel, tint: Color(hex: 0x1989FA))
-                Spacer(minLength: 0)
-                if entry.importance > 0 {
-                    Text("重要度 \(entry.importance)")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                // 印象标签：类型 / 来源（Chip 流式布局，自动换行）
+                KnockFlowLayout(spacing: KnockTokens.spacingXS) {
+                    KnockChip(title: entry.memoryTypeLabel, isSelected: false)
+                    KnockChip(title: entry.sourceLabel, isSelected: false)
                 }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(entry.operatorName) \(entry.levelLabel) \(entry.content)")
     }
 
-    private func tag(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.12)))
-    }
-
     // MARK: - 状态卡
 
-    private var loadingCard: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text("正在读取印象…")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(18)
-        .cardSurface(cornerRadius: 18)
-    }
-
     private var emptyCard: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "person.crop.circle.badge.questionmark")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("暂无印象数据")
-                .font(.subheadline.weight(.semibold))
-            Text("多聊几次后，干员会逐渐形成对你的近期了解和长期印象")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(24)
-        .cardSurface(cornerRadius: 18)
+        KnockEmptyState(
+            title: "暂无印象数据",
+            message: "多聊几次后，代理人会逐渐形成对你的近期了解和长期印象"
+        )
     }
 
-    private func errorCard(_ text: String) -> some View {
-        VStack(spacing: 10) {
-            Label("印象读取失败", systemImage: "exclamationmark.triangle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("重试") {
-                Task { await reload() }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(GlassTokens.brandOrange)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(20)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private var automationCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: ImpressionsAutomation.passed == true ? "checkmark.seal.fill" : "hourglass")
-                    .foregroundStyle(ImpressionsAutomation.passed == true ? Color(hex: 0x07C160) : Color(hex: 0xFF9500))
-                Text("T54 自检 · \(ImpressionsAutomation.resultText)")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-            }
-            if !automationReport.isEmpty {
-                Text(automationReport)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(12)
+    private var automationPanel: some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                HStack(spacing: KnockTokens.spacingXS) {
+                    Image(systemName: ImpressionsAutomation.passed == true ? "checkmark.seal.fill" : "hourglass")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(ImpressionsAutomation.passed == true ? KnockTokens.textPrimary : KnockTokens.textSecondary)
+                        .accessibilityHidden(true)
+                    KnockText("T54 自检 · \(ImpressionsAutomation.resultText)", role: .captionStrong, lineLimit: 1)
+                    Spacer(minLength: 0)
+                }
+                if !automationReport.isEmpty {
+                    Text(automationReport)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(KnockTokens.textSecondary)
+                        .lineLimit(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 16)
     }
 
     // MARK: - 数据加载

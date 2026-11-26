@@ -1,18 +1,23 @@
 //
 //  GlassPanel.swift
-//  统一玻璃表面组件（T33 正式壳）：iOS 26 用 .glassEffect，iOS 18 用 Material 兜底。
-//  所有玻璃 UI 一律经由此组件，保证 token 一致 + 可访问性响应一致：
-//  - 降低透明度：退为近实色材质/底色；
-//  - 增强对比度：描边加强；
-//  - 粗体文字：描边加粗（1 → 1.5pt）；
-//  - 玻璃只做背景层：内容（文字等）由调用方负责，不参与玻璃采样。
+//  「敲敲」面板兼容组件：原 iOS 26 `.glassEffect` 玻璃分支已删除，退化为 `KnockPanel` 实色面板。
 //
-//  与 Demo 差异：tint 变为可选（默认 nil = 系统玻璃原色），避免全屏橙色玻璃。
+//  背景：T33 时期本组件是统一玻璃表面；敲敲改版（计划书 1.2 / 2.2）要求
+//  **禁止毛玻璃 / 模糊 / 半透明白**，所有面板 = 黑（浅色为白）实色底 + 1.5pt 描边 + 圆角 20pt
+//  + 极淡棋盘格。因此本文件内部改为 `KnockTokens` 实色渲染，但**保留对外的
+//  `GlassPanel(style:cornerRadius:tint:interactive:)` 初始化签名**，30 个存量页面无需改动。
+//
+//  - `style`：旧 `.regular` / `.clear` 两档语义已合并（同一种实色面板），仅为调用面兼容；
+//  - `tint` / `interactive`：旧玻璃着色与交互高光，实色面板下不再生效（参数保留，不 crash）；
+//  - 可访问性：增强对比度 → 描边加深；降低透明度 → 本来就全是实色，无需降级；
+//    粗体文字（legibilityWeight）→ 描边加粗到 2pt。
+//
+//  新代码请直接使用 `KnockPanel { ... }`（KnockSurfaces.swift）。
 //
 
 import SwiftUI
 
-/// 玻璃面板样式
+/// 面板样式（旧玻璃两档，语义已合并为同一种实色面板）。
 enum GlassStyle {
     case regular
     case clear
@@ -24,7 +29,6 @@ struct GlassPanel<Content: View>: View {
     var tint: Color?
     var interactive: Bool
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.legibilityWeight) private var legibilityWeight
 
@@ -44,78 +48,31 @@ struct GlassPanel<Content: View>: View {
         self.content = content
     }
 
-    var body: some View {
-        if #available(iOS 26.0, *) {
-            panel26
-        } else {
-            panel18
-        }
-    }
-
-    // MARK: iOS 26：真玻璃
-    @available(iOS 26.0, *)
-    private var panel26: some View {
-        Group {
-            if reduceTransparency {
-                // 降低透明度：退为系统实色材质（系统也会自动处理，这里显式兜底）
-                content()
-                    .background(.regularMaterial, in: roundedRect)
-            } else {
-                content()
-                    .glassEffect(effectiveGlass, in: .rect(cornerRadius: cornerRadius))
-            }
-        }
-        .overlay(strokeOverlay)
-        .shadow(color: shadowColor, radius: 12, y: 6)
-    }
-
-    // MARK: iOS 18：Material 兜底
-    private var panel18: some View {
-        Group {
-            if reduceTransparency {
-                content()
-                    .background(GlassTokens.surfaceStrong, in: roundedRect)
-            } else {
-                content()
-                    .background(material18, in: roundedRect)
-            }
-        }
-        .overlay(strokeOverlay)
-        .shadow(color: shadowColor, radius: 12, y: 6)
-    }
-
-    // MARK: 派生值
     private var roundedRect: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var material18: Material {
-        style == .regular ? GlassTokens.glassRegular : GlassTokens.glassClear
-    }
-
-    @available(iOS 26.0, *)
-    private var effectiveGlass: Glass {
-        let base: Glass = (style == .regular) ? .regular : .clear
-        var glass = base
-        if let tint {
-            glass = glass.tint(tint)
-        }
-        if interactive {
-            glass = glass.interactive()
-        }
-        return glass
-    }
-
-    private var shadowColor: Color {
-        reduceTransparency ? .clear : GlassTokens.glassShadow
-    }
-
-    private var strokeOverlay: some View {
-        roundedRect
-            .strokeBorder(strokeColor, lineWidth: legibilityWeight == .bold ? 1.5 : 1)
-    }
-
     private var strokeColor: Color {
-        contrast == .increased ? GlassTokens.glassStrokeStrong : GlassTokens.glassStroke
+        contrast == .increased ? KnockTokens.strokeContrast : KnockTokens.stroke
+    }
+
+    /// 粗体文字模式 → 描边加粗（保留 T33 的可访问性约定）。
+    private var strokeWidth: CGFloat {
+        legibilityWeight == .bold ? KnockTokens.strokeWidthStrong : KnockTokens.strokeWidth
+    }
+
+    var body: some View {
+        content()
+            .background {
+                roundedRect
+                    .fill(KnockTokens.panel)
+                    .overlay {
+                        // 面板内极淡 2pt 棋盘格（降低透明度时内部自动关闭）
+                        KnockCheckerOverlay(cornerRadius: cornerRadius)
+                    }
+            }
+            .overlay {
+                roundedRect.strokeBorder(strokeColor, lineWidth: strokeWidth)
+            }
     }
 }

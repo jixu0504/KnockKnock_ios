@@ -7,7 +7,8 @@
 //  3) 断言渲染链路（与 RoleAvatar View 同一解析器）：媒体 ID → 本机绝对路径（文件存在、字节数>0）→
 //     `UIImage` 非空（尺寸 256×256）→ `RoleAvatarProbe.description` = `media:<id>`；
 //  4) 断言上传后角色列表/详情/会话数据均取到媒体 ID（详情页由同一 RoleAvatar 渲染）；
-//     fallback：不存在的媒体 ID / 空 avatarId → nil（回退首字占位），内置 Bundle 头像 147 个仍在；
+//     fallback：不存在的媒体 ID / 空 avatarId → nil（回退首字占位）；knock:<id> 真实素材可渲染；
+//     旧内置数字（1..147）资源已删除 → 无位图、描述 builtin-missing:N（渲染走首字占位）；
 //  5) UI 证据：切到联系人 Tab 停留 6s（截图列表真实图片）→ 进角色详情停留 7s（截图详情大头像）
 //     → 恢复原头像（避免污染后续验证）；
 //  6) 结束落盘 Documents/t52-avatar-selftest.log。
@@ -35,7 +36,7 @@ enum AvatarRenderAutomation {
 
         let bridge = environment.bridge
         PolishSelfTestLog.add("=== avatar render selftest start ===")
-        PolishSelfTestLog.add("bundledAvatars=\(RoleAvatarProbe.bundledAvatarCount())/147")
+        PolishSelfTestLog.add("bundledAvatars=\(RoleAvatarProbe.bundledAvatarCount())/0 legacyAvatarsRemoved=true")
 
         // 1. 目标角色：列表首行（bridge 返回顺序 = RolesView 渲染顺序，截图必可见）
         var roles: [RoleItem] = []
@@ -129,7 +130,7 @@ enum AvatarRenderAutomation {
             PolishSelfTestLog.add("session.avatarSync SKIPPED (role has no session)")
         }
 
-        // 6. 回退语义：不存在的媒体 ID / 空值 → 无位图（首字占位），且内置头像不受影响
+        // 6. 回退语义：不存在的媒体 ID / 空值 → 无位图（首字占位）；knock: 素材可渲染；旧内置数字资源已删除 → 回退占位
         check(
             "fallback.missingMedia",
             RoleAvatarResolver.image(for: "media/t52-missing-\(stamp).jpg") == nil
@@ -143,9 +144,15 @@ enum AvatarRenderAutomation {
             RoleAvatarProbe.description(avatarId: "")
         )
         check(
-            "builtin.unaffected",
-            RoleAvatarResolver.image(for: "1") != nil
-                && RoleAvatarProbe.description(avatarId: "1") == "builtin:1",
+            "knock.render",
+            RoleAvatarResolver.image(for: "knock:001") != nil
+                && RoleAvatarProbe.description(avatarId: "knock:001") == "knock:001",
+            RoleAvatarProbe.description(avatarId: "knock:001")
+        )
+        check(
+            "builtin.fallbackPlaceholder",
+            RoleAvatarResolver.image(for: "1") == nil
+                && RoleAvatarProbe.description(avatarId: "1") == "builtin-missing:1",
             RoleAvatarProbe.description(avatarId: "1")
         )
         check("avatar.listRow", updatedRole != nil, "role=\(updatedRole?.name ?? "-") avatar=\(updatedRole?.avatarId ?? "-")")

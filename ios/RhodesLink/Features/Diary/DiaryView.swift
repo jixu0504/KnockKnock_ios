@@ -8,12 +8,17 @@
 //  - 数据全部来自 shared `DiaryBridge` 真实 SQLite + settings，无 mock
 //  - `--diary-selftest`：自动跑桥层自检 + UI 链路自检并写 Documents/diary-selftest.log（截图证据）
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 管理/刷新胶囊）；
+//  筛选 = 黄选中胶囊分段栏；日记行 = 胶囊行（头像 + 标题 + 摘要 + 未读红角标）；
+//  空态 = E M P T Y 宽字距 pill。
+//
 
 import SwiftUI
 
 @MainActor
 struct DiaryView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     enum DiaryFilter: String, CaseIterable, Identifiable {
         case all = "全部"
@@ -39,65 +44,73 @@ struct DiaryView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    headerCard
-
-                    if DiaryAutomation.isEnabled {
-                        automationCard
+            VStack(spacing: 0) {
+                KnockHeader(title: "代理人日记", showsBack: true, onBack: { dismiss() }, trailing: {
+                    KnockCapsuleIconButton(
+                        systemImage: "slider.horizontal.3",
+                        variant: .neutral,
+                        accessibilityLabel: "日记生成管理"
+                    ) {
+                        showAutoManage = true
                     }
-
-                    if let errorText {
-                        errorCard(errorText)
+                    KnockCapsuleIconButton(
+                        systemImage: "arrow.clockwise",
+                        variant: .neutral,
+                        accessibilityLabel: "刷新日记"
+                    ) {
+                        Task { await reload(initial: false) }
                     }
+                })
 
-                    if isLoading && entries.isEmpty {
-                        loadingCard
-                    } else if entries.isEmpty && !isLoading {
-                        emptyCard
-                    } else {
-                        ForEach(entries) { entry in
-                            Button {
-                                selectedEntry = entry
-                            } label: {
-                                diaryRow(entry)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        headerPanel
+
+                        if DiaryAutomation.isEnabled {
+                            automationPanel
+                        }
+
+                        if let errorText {
+                            KnockErrorPanel(title: "日记读取失败", message: errorText) {
+                                Task { await reload(initial: false) }
                             }
-                            .buttonStyle(.plain)
                         }
 
-                        if filter == .unread && !isLoading {
-                            Text("未读日记已全部读完")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .padding(.vertical, 8)
+                        if isLoading && entries.isEmpty {
+                            KnockLoadingPanel("正在读取日记…")
+                        } else if entries.isEmpty && !isLoading {
+                            emptyPanel
+                        } else {
+                            ForEach(entries) { entry in
+                                Button {
+                                    selectedEntry = entry
+                                } label: {
+                                    diaryRow(entry)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            if filter == .unread && !isLoading {
+                                KnockText(
+                                    "未读日记已全部读完",
+                                    role: .caption,
+                                    color: KnockTokens.textTertiary
+                                )
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, KnockTokens.spacingS)
+                            }
                         }
                     }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 24)
-            }
-            .refreshable { await reload(initial: false) }
-        }
-        .navigationTitle("干员日记")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showAutoManage = true
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                }
-                .accessibilityLabel("日记生成管理")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await reload(initial: false) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("刷新日记")
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
+                .refreshable { await reload(initial: false) }
             }
         }
+        .knockHiddenNavigationBar()
         .navigationDestination(item: $selectedEntry) { entry in
             DiaryDetailView(entry: entry) {
                 Task { await reload(initial: false) }
@@ -112,8 +125,14 @@ struct DiaryView: View {
             // 从「日记生成管理」返回时刷新列表（可能刚补齐/生成过日记）。
             if !shown { Task { await reload(initial: false) } }
         }
+        .onChange(of: filter) { _, _ in
+            Task { await reload(initial: false) }
+        }
         .task {
             await reload(initial: true)
+            // 截图/演示钩子（仅启动参数，对用户路径零影响）：
+            // `--knock-diary-detail` 打开第一篇日记；`--knock-diary-auto` 打开日记生成管理。
+            applyScreenshotHooksIfNeeded()
             if DiaryAutoAutomation.isEnabled {
                 // `--diary-auto-selftest`：自动进入管理页跑 UI 链路自检（对用户路径零影响）。
                 showAutoManage = true
@@ -130,161 +149,98 @@ struct DiaryView: View {
 
     // MARK: 头部 / 状态卡
 
-    private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "book.closed.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(GlassTokens.brandOrange))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("干员们的内心独白")
-                        .font(.headline)
-                    Text("共 \(totalCount) 篇 · 未读干员 \(unreadCount) 位")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var headerPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockRowGlyph(systemImage: "book.closed.fill")
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("代理人们的内心独白", role: .rowTitle, lineLimit: 1)
+                        KnockText(
+                            "共 \(totalCount) 篇 · 未读代理人 \(unreadCount) 位",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineLimit: 1
+                        )
+                    }
+                    Spacer(minLength: KnockTokens.spacingS)
+                    if unreadCount > 0 {
+                        KnockBadge(text: "\(unreadCount) 未读", variant: .danger)
+                    }
                 }
 
-                Spacer(minLength: 8)
+                KnockSegmentedBar(
+                    items: DiaryFilter.allCases.map {
+                        KnockSegmentItem(value: $0, title: $0.rawValue)
+                    },
+                    selection: $filter,
+                    height: KnockTokens.segmentedSmallHeight,
+                    showsIcons: false
+                )
+            }
+        }
+    }
 
-                if unreadCount > 0 {
-                    Text("\(unreadCount) 未读")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.red.opacity(0.82)))
+    private var automationPanel: some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                KnockText("T51 自检", role: .captionStrong, lineLimit: 1)
+                KnockText(
+                    automationResult.isEmpty
+                        ? (DiaryAutomation.resultText.isEmpty ? "等待自检…" : DiaryAutomation.resultText)
+                        : automationResult,
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                if !fixtureLine.isEmpty {
+                    KnockText(fixtureLine, role: .caption, color: KnockTokens.textTertiary, lineLimit: 2)
                 }
             }
-
-            Picker("筛选", selection: $filter) {
-                ForEach(DiaryFilter.allCases) { option in
-                    Text(option.rawValue).tag(option)
-                }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: filter) { _, _ in
-                Task { await reload(initial: false) }
-            }
         }
-        .padding(14)
-        .cardSurface(cornerRadius: 20, strong: true)
     }
 
-    private var automationCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("T51 自检")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(GlassTokens.brandOrange)
-            Text(automationResult.isEmpty ? (DiaryAutomation.resultText.isEmpty ? "等待自检…" : DiaryAutomation.resultText) : automationResult)
-                .font(.footnote)
-            if !fixtureLine.isEmpty {
-                Text(fixtureLine)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .cardSurface(cornerRadius: 16)
-    }
-
-    private var loadingCard: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text("正在读取日记…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(20)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private func errorCard(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("日记读取失败", systemImage: "exclamationmark.triangle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("重试") {
-                Task { await reload(initial: false) }
-            }
-            .buttonStyle(.bordered)
-            .tint(GlassTokens.brandOrange)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private var emptyCard: some View {
-        EmptyStateView(
-            title: filter == .unread ? "没有未读日记" : "还没有干员日记",
+    private var emptyPanel: some View {
+        KnockEmptyState(
+            title: filter == .unread ? "没有未读日记" : "还没有代理人日记",
             message: filter == .unread
-                ? "所有干员日记都已读完。切换到「全部」可以回看历史独白。"
-                : "干员们还没有写下日记。日记由私聊/动态/关系事件后自动生成，或经备份恢复导入。",
-            systemImage: filter == .unread ? "checkmark.circle" : "book.closed"
+                ? "所有代理人日记都已读完。切换到「全部」可以回看历史独白。"
+                : "代理人们还没有写下日记。日记由私聊/动态/关系事件后自动生成，或经备份恢复导入。"
         )
-        .padding(.horizontal, 2)
     }
 
     // MARK: 列表行
 
     private func diaryRow(_ entry: DiaryEntryItem) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack(alignment: .topTrailing) {
-                RoleAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 46)
+        KnockListRow(
+            title: entry.title,
+            subtitle: "第 \(entry.version) 篇 · \(entry.summary)",
+            height: 96
+        ) {
+            KnockRowAvatar(avatarId: entry.avatarId, name: entry.operatorName, size: 46)
+        } trailing: {
+            VStack(alignment: .trailing, spacing: KnockTokens.spacingXS) {
+                KnockText(entry.timeText, role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
                 if entry.isUnread {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 10, height: 10)
-                        .overlay(Circle().strokeBorder(GlassTokens.surface, lineWidth: 1.5))
-                        .offset(x: 2, y: -2)
+                    KnockBadge(text: "未读", variant: .danger)
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(entry.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    if entry.isUnread {
-                        Text("未读")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.red.opacity(0.82)))
-                    }
-                    Spacer(minLength: 4)
-                    Text(entry.timeText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Text(entry.summary)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Text("第 \(entry.version) 篇 · \(entry.date)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                KnockChevron()
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
-        .contentShape(Rectangle())
+        .accessibilityLabel("\(entry.operatorName) 日记：\(entry.title)，\(entry.isUnread ? "未读" : "已读")")
     }
 
     // MARK: 数据加载
+
+    /// 截图钩子：`--knock-diary-detail` / `--knock-diary-auto`（仅模拟器自动化使用）。
+    private func applyScreenshotHooksIfNeeded() {
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("--knock-diary-auto") {
+            showAutoManage = true
+        } else if args.contains("--knock-diary-detail"), let first = entries.first {
+            selectedEntry = first
+        }
+    }
 
     private func reload(initial: Bool) async {
         if initial { isLoading = true }

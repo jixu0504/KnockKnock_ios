@@ -15,7 +15,7 @@ import Foundation
 
 enum A7BackgroundRefresh {
     /// Info.plist `BGTaskSchedulerPermittedIdentifiers` 必须包含该标识符。
-    static let taskIdentifier = "com.rhodeslink.app.a7.refresh"
+    static let taskIdentifier = "com.xsbcjx.knockknock.a7.refresh"
 
     /// App 启动时调用（必须在 `applicationDidFinishLaunching` 前/早期注册）。
     static func register() {

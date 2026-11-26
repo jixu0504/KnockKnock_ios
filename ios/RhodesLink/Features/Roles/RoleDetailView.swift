@@ -5,7 +5,13 @@
 //  关系网：`RoleBridge.relations(operatorId:)`（relationships 表双向）。
 //  「开始聊天」：无会话 → RoleBridge.startChat 创建/复用 `session_<operatorId>` → 打开聊天页；
 //  有会话 → 直接打开聊天页（AppRouter.openChat，跨 Tab 导航）。
-//  玻璃元素计数：资料卡 1（一屏 ≤5 原则）。
+//
+//  P2「敲敲」改版（docs/敲敲UI改版计划书-v1.1.md）：
+//  - 自绘 44pt 顶栏（返回胶囊 + 左对齐 heavy 标题 + 编辑胶囊），隐藏系统导航栏；
+//  - 头部资料大卡片 `KnockPanel`；标签用 `KnockChip`（未选中 = 行底 + 描边）；
+//  - 关系网入口行（分组标题 + 黄色「管理」链接 + 胶囊行）；
+//  - 操作按钮：主 = `KnockPrimaryButtonStyle`（黄胶囊黑字）/ 次 = `KnockSecondaryButtonStyle`（描边）；
+//  - 只改视觉层：加载 / 保存 / 开始聊天 / 自检日志 / 关系网跳转全部保留。
 //
 
 import SwiftUI
@@ -36,63 +42,55 @@ struct RoleDetailView: View {
         ZStack {
             AmbientBackground(parallax: 0)
 
-            ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 14) {
-                    if isLoading && role == nil {
-                        ProgressView("读取角色资料…").padding(40)
-                    } else if let errorText {
-                        EmptyStateView(
-                            title: "角色读取失败",
-                            message: errorText,
-                            systemImage: "exclamationmark.triangle",
-                            actionTitle: "重试",
-                            action: { Task { await load() } }
-                        )
-                    } else if let role {
-                        profileCard(role)
-                        if !role.hasSession {
-                            emptySessionCard(role)
+            VStack(spacing: 0) {
+                header
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: KnockTokens.spacingM) {
+                            if isLoading && role == nil {
+                                loadingCard
+                            } else if let errorText {
+                                KnockEmptyState(
+                                    title: "角色读取失败",
+                                    message: errorText,
+                                    systemImage: "exclamationmark.triangle",
+                                    actionTitle: "重试",
+                                    action: { Task { await load() } }
+                                )
+                            } else if let role {
+                                profileCard(role)
+                                if !role.hasSession {
+                                    emptySessionCard(role)
+                                }
+                                levelCard(role)
+                                impressionCard(role)
+                                descriptionCard(role)
+                                relationsCard(role).id(Self.relationsAnchor)
+                                chatActionSection(role)
+                            } else {
+                                KnockEmptyState(
+                                    title: "角色不存在",
+                                    message: "shared operators 表中未找到角色 \(roleId)。",
+                                    systemImage: "person.crop.circle.badge.questionmark"
+                                )
+                            }
                         }
-                        levelCard(role)
-                        impressionCard(role)
-                        descriptionCard(role)
-                        relationsCard(role).id(Self.relationsAnchor)
-                        chatActionCard(role)
-                    } else {
-                        EmptyStateView(
-                            title: "角色不存在",
-                            message: "shared operators 表中未找到角色 \(roleId)。",
-                            systemImage: "person.crop.circle.badge.questionmark"
-                        )
+                        .padding(.horizontal, KnockTokens.screenPadding)
+                        .padding(.top, KnockTokens.spacingS)
+                        .padding(.bottom, KnockTokens.spacingXXL)
+                    }
+                    .scrollIndicators(.hidden)
+                    .task {
+                        // T57 截图钩子：`--t57-role-detail-scroll` 滚到关系网卡（管理入口可见）
+                        guard ProcessInfo.processInfo.arguments.contains("--t57-role-detail-scroll") else { return }
+                        try? await Task.sleep(nanoseconds: 900_000_000)
+                        withAnimation(.none) { proxy.scrollTo(Self.relationsAnchor, anchor: .top) }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .scrollIndicators(.hidden)
-            .task {
-                // T57 截图钩子：`--t57-role-detail-scroll` 滚到关系网卡（管理入口可见）
-                guard ProcessInfo.processInfo.arguments.contains("--t57-role-detail-scroll") else { return }
-                try? await Task.sleep(nanoseconds: 900_000_000)
-                withAnimation(.none) { proxy.scrollTo(Self.relationsAnchor, anchor: .top) }
-            }
             }
         }
-        .navigationTitle(role?.name ?? "角色详情")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // T49：角色详情「编辑」入口 → RoleEditView（保存后刷新详情）
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showRoleEditor = true
-                } label: {
-                    Label("编辑", systemImage: "square.and.pencil")
-                }
-                .accessibilityLabel("编辑角色")
-            }
-        }
+        .knockHideSystemChrome()
         .sheet(isPresented: $showRoleEditor) {
             RoleEditView(
                 roleId: role?.id ?? roleId,
@@ -116,281 +114,342 @@ struct RoleDetailView: View {
             // T57 截图钩子：关系网演示（演示夹具由 shared `--relations-demo` 启动钩子写入）
             let args = ProcessInfo.processInfo.arguments
             guard args.contains("--relations-demo") || args.contains("--relations-demo-add") else { return }
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            if role != nil { showRelations = true }
+            // 轮询等待角色数据加载完成（冷启动 bridge 初始化可能 > 1.2s），再打开关系网
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if role != nil {
+                    showRelations = true
+                    SelfTestLog.add("role detail relations demo open role=\(roleId) name=\(role?.name ?? "-")")
+                    return
+                }
+            }
         }
     }
 
-    // MARK: 资料卡（玻璃 1）
+    // MARK: - 顶栏（隐藏系统导航栏后的自绘 44pt 顶栏）
+
+    private var header: some View {
+        KnockRoleHeader(
+            title: role?.name ?? "角色详情",
+            subtitle: role?.title,
+            showsBack: true,
+            onBack: { dismiss() }
+        ) {
+            // T49：角色详情「编辑」入口 → RoleEditView（保存后刷新详情）
+            KnockCapsuleIconButton(
+                systemImage: "square.and.pencil",
+                variant: .neutral,
+                accessibilityLabel: "编辑角色"
+            ) {
+                showRoleEditor = true
+            }
+        }
+    }
+
+    private var loadingCard: some View {
+        KnockPanel {
+            HStack(spacing: KnockTokens.spacingM) {
+                ProgressView()
+                    .tint(KnockTokens.electric)
+                KnockText("读取角色资料…", role: .caption, color: KnockTokens.textSecondary)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // MARK: - 资料大卡片
 
     private func profileCard(_ role: RoleItem) -> some View {
-        GlassPanel(style: .regular, cornerRadius: 24) {
-            VStack(spacing: 10) {
-                RoleAvatar(avatarId: role.avatarId, name: role.name, size: 92)
-                Text(role.name)
-                    .font(.title2.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                if !role.title.isEmpty {
-                    Text(role.title)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingL) {
+                HStack(alignment: .center, spacing: KnockTokens.spacingL) {
+                    RoleAvatar(avatarId: role.avatarId, name: role.name, size: 92)
+
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                        KnockText(role.name, role: .brand, lineLimit: 2)
+                        if !role.title.isEmpty {
+                            KnockText(role.title, role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
 
-                HStack(spacing: 6) {
-                    infoChip(role.relationLabel, systemImage: "link")
-                    if !role.gender.isEmpty { infoChip(role.gender, systemImage: "person.fill") }
-                    infoChip(role.levelText, systemImage: "heart.fill")
-                }
+                // 标签 Chips 独占一行（避免被头像列宽挤压截断）
+                infoChipRow(role)
 
                 if !role.subtitle.isEmpty {
-                    Text(role.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
+                    KnockText(role.subtitle, role: .caption, color: KnockTokens.textTertiary, lineLimit: 2)
                 }
 
-                HStack(spacing: 8) {
-                    stateChip("位置", role.location)
-                    stateChip("状态", role.activity)
-                    stateChip("心情", role.emotion)
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockInfoCell(title: "位置", value: role.location)
+                    KnockInfoCell(title: "状态", value: role.activity)
+                    KnockInfoCell(title: "心情", value: role.emotion)
                 }
             }
-            .padding(18)
         }
     }
 
-    private func infoChip(_ text: String, systemImage: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(GlassTokens.brandOrange)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(GlassTokens.bubbleSystem, in: Capsule())
-    }
-
-    private func stateChip(_ title: String, _ value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            Text(value.isEmpty ? "—" : value)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    /// 标签 Chips：关系 / 性别 / 等级（未选中 = 行底 + 次描边 + 主文字）。
+    /// 用横向滚动兜底：Dynamic Type 大字号 / 长关系名不会把 Chip 压成省略号。
+    private func infoChipRow(_ role: RoleItem) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: KnockTokens.spacingXS) {
+                KnockChip(title: role.relationLabel, systemImage: "link")
+                if !role.gender.isEmpty {
+                    KnockChip(title: role.gender, systemImage: "person.fill")
+                }
+                KnockChip(title: role.levelText, systemImage: "heart.fill")
+            }
+            .padding(.vertical, 1)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("关系 \(role.relationLabel)，\(role.gender.isEmpty ? "性别未设定" : role.gender)，\(role.levelText)")
     }
 
-    // MARK: 等级 / 关系
+    // MARK: - 等级 / 关系
 
     private func levelCard(_ role: RoleItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("等级与关系", systemImage: "chart.line.uptrend.xyaxis")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(role.levelText) · 亲密 \(role.level)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ProgressView(value: min(max(Double(role.level), 0), 100), total: 100)
-                .tint(GlassTokens.brandOrange)
-            HStack {
-                Text("与你的关系：\(role.relationLabel)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(role.hasSession ? "已有会话 · \(role.modeText)" : "尚未开始对话")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockGroupTitle(title: "等级与关系", systemImage: "chart.line.uptrend.xyaxis")
+                    KnockText("\(role.levelText) · 亲密 \(role.level)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                }
+
+                KnockProgressBar(progress: Double(role.level) / 100, height: 6)
+
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockText("与你的关系：\(role.relationLabel)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                    Spacer(minLength: KnockTokens.spacingS)
+                    KnockText(
+                        role.hasSession ? "已有会话 · \(role.modeText)" : "尚未开始对话",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineLimit: 1
+                    )
+                }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
-    // MARK: 印象（长期印象 L3；无记忆时回退人设简介）
+    // MARK: - 印象（长期印象 L3；无记忆时回退人设简介）
 
     private func impressionCard(_ role: RoleItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("长期印象", systemImage: "brain.head.profile")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(role.impressionText.isEmpty ? "暂无印象记忆" : "来自 memories · L3")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Text(role.impressionText.isEmpty
-                 ? "还没有与 \(role.name) 的长期印象。持续对话后，记忆管线会把长期印象写入 memories（L3），并在此展示。"
-                 : role.impressionText)
-                .font(.body)
-                .foregroundStyle(role.impressionText.isEmpty ? .secondary : .primary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockGroupTitle(title: "长期印象", systemImage: "brain.head.profile")
+                    KnockText(
+                        role.impressionText.isEmpty ? "暂无印象记忆" : "来自 memories · L3",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineLimit: 1
+                    )
+                }
+
+                KnockText(
+                    role.impressionText.isEmpty
+                        ? "还没有与 \(role.name) 的长期印象。持续对话后，记忆管线会把长期印象写入 memories（L3），并在此展示。"
+                        : role.impressionText,
+                    role: .body,
+                    color: role.impressionText.isEmpty ? KnockTokens.textSecondary : KnockTokens.textPrimary,
+                    lineSpacing: 3
+                )
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                if role.impressionText.isEmpty {
+                    KnockEmptyPill()
+                }
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     private func descriptionCard(_ role: RoleItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("角色资料", systemImage: "text.book.closed")
-                .font(.subheadline.weight(.semibold))
-            Text(role.intro.isEmpty ? "暂无角色简介。" : role.intro)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "角色资料", systemImage: "text.book.closed")
+                KnockText(
+                    role.intro.isEmpty ? "暂无角色简介。" : role.intro,
+                    role: .body,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 3
+                )
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
-    // MARK: 关系网（relationships 表双向）
+    // MARK: - 关系网（relationships 表双向）
 
     private func relationsCard(_ role: RoleItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("关系网", systemImage: "person.3.sequence.fill")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(relations.count) 条")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                // T57：关系网编辑入口（添加/删除/双向互补关系）
-                Button {
-                    showRelations = true
-                } label: {
-                    HStack(spacing: 2) {
-                        Text("管理")
-                            .font(.caption.weight(.semibold))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .foregroundStyle(GlassTokens.brandOrange)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("管理\(role.name)的关系网")
-            }
-
-            if relations.isEmpty {
-                Text("暂无关系网。建立关系后，亲密度越高越容易传递公开印象。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(relations) { relation in
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                // 关系网入口行：分组标题 + 条数角标 + 黄色「管理」链接
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "person.3.sequence.fill")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textSecondary)
+                        .accessibilityHidden(true)
+                    KnockText("关系网", role: .sectionTitle, lineLimit: 1)
+                    KnockBadge(text: "\(relations.count) 条", variant: .neutral)
+                    Spacer(minLength: KnockTokens.spacingS)
                     Button {
-                        router.contactsPath.append(Route.roleDetail(roleId: relation.direction == "out"
-                                                                 ? relation.relatedOperatorId
-                                                                 : relation.operatorId))
+                        showRelations = true
                     } label: {
-                        HStack(spacing: 10) {
-                            RoleAvatar(avatarId: "", name: relation.relatedOperatorName, size: 34)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(relation.relatedOperatorName)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.primary)
-                                Text(relation.note.isEmpty ? relation.directionText : relation.note)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Text(relation.typeText)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(GlassTokens.brandOrange)
-                            Text("\(relation.intimacy)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                        HStack(spacing: 2) {
+                            KnockText("管理", role: .sectionTitle, color: KnockTokens.textPrimary, lineLimit: 1)
                             Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                                .font(.system(size: 10, weight: .heavy))
+                                .foregroundStyle(KnockTokens.textPrimary)
                         }
-                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(relation.relatedOperatorName)，\(relation.typeText)，亲密度 \(relation.intimacy)")
+                    .accessibilityLabel("管理\(role.name)的关系网")
+                }
+                .accessibilityAddTraits(.isHeader)
+
+                if relations.isEmpty {
+                    KnockText(
+                        "暂无关系网。建立关系后，亲密度越高越容易传递公开印象。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    KnockDashedButton(
+                        title: "添加关系",
+                        systemImage: "person.badge.plus"
+                    ) {
+                        showRelations = true
+                    }
+                } else {
+                    VStack(spacing: KnockTokens.spacingS) {
+                        ForEach(relations) { relation in
+                            relationRow(relation)
+                        }
+                    }
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
-    // MARK: 会话状态 + 进入聊天
+    private func relationRow(_ relation: RelationItem) -> some View {
+        Button {
+            router.contactsPath.append(Route.roleDetail(roleId: relation.direction == "out"
+                                                       ? relation.relatedOperatorId
+                                                       : relation.operatorId))
+        } label: {
+            HStack(spacing: KnockTokens.spacingM) {
+                RoleAvatar(avatarId: "", name: relation.relatedOperatorName, size: 34)
+
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockText(relation.relatedOperatorName, role: .rowTitle, lineLimit: 1)
+                    KnockText(
+                        relation.note.isEmpty ? relation.directionText : relation.note,
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineLimit: 1
+                    )
+                }
+
+                Spacer(minLength: KnockTokens.spacingS)
+
+                KnockBadge(text: relation.typeText, variant: .neutral)
+                KnockText("\(relation.intimacy)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                KnockChevron()
+            }
+            .padding(.horizontal, KnockTokens.rowPaddingLeading)
+            .frame(minHeight: KnockTokens.rowMinHeight)
+            .background(Capsule(style: .continuous).fill(KnockTokens.row))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(relation.relatedOperatorName)，\(relation.typeText)，亲密度 \(relation.intimacy)")
+    }
+
+    // MARK: - 会话状态 + 进入聊天
 
     private func emptySessionCard(_ role: RoleItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("尚无会话", systemImage: "bubble.left.and.bubble.right")
-                .font(.subheadline.weight(.semibold))
-            Text("与 \(role.name) 还没有会话。点下方「开始聊天」会创建 stable 会话 session_\(role.id) 并打开聊天页。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                KnockGroupTitle(title: "尚无会话", systemImage: "bubble.left.and.bubble.right")
+                KnockText(
+                    "与 \(role.name) 还没有会话。点下方「开始聊天」会创建 stable 会话 session_\(role.id) 并打开聊天页。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
                 .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
-    private func chatActionCard(_ role: RoleItem) -> some View {
-        VStack(spacing: 0) {
+    private func chatActionSection(_ role: RoleItem) -> some View {
+        VStack(spacing: KnockTokens.spacingM) {
+            // 主 CTA：黄胶囊黑字（一屏最多一个黄主按钮）
             Button {
                 Task { await startChat(role) }
             } label: {
-                HStack {
+                HStack(spacing: KnockTokens.spacingS) {
                     Image(systemName: isStartingChat ? "hourglass" : "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 15, weight: .heavy))
                     Text(isStartingChat ? "正在准备会话…" : (role.hasSession ? "进入聊天" : "开始聊天"))
-                        .font(.body.weight(.semibold))
-                    Spacer()
-                    Image(systemName: "arrow.turn.down.right")
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(KnockPrimaryButtonStyle())
             .disabled(isStartingChat)
             .accessibilityLabel(role.hasSession ? "进入与 \(role.name) 的聊天" : "开始与 \(role.name) 聊天")
 
+            // 次按钮：描边（编辑人设）
+            Button {
+                showRoleEditor = true
+            } label: {
+                Text("编辑角色人设")
+            }
+            .buttonStyle(KnockSecondaryButtonStyle())
+            .accessibilityLabel("编辑角色人设")
+
             if role.hasSession, !role.lastMessage.isEmpty {
-                Divider().padding(.leading, 14).opacity(0.4)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("最近对话 · \(role.lastTimeText)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(role.lastMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                lastMessageCard(role)
             }
 
             if let chatError {
-                Divider().padding(.leading, 14).opacity(0.4)
-                Label(chatError, systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                errorCard(chatError)
             }
         }
-        .cardSurface(cornerRadius: 20)
     }
 
-    // MARK: 数据
+    private func lastMessageCard(_ role: RoleItem) -> some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                KnockText("最近对话 · \(role.lastTimeText)", role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                KnockText(role.lastMessage, role: .caption, color: KnockTokens.textSecondary, lineLimit: 3)
+            }
+        }
+    }
+
+    private func errorCard(_ text: String) -> some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(KnockTokens.dangerBright)
+                    .accessibilityHidden(true)
+                KnockText(text, role: .caption, color: KnockTokens.dangerBright, lineLimit: 4)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // MARK: - 数据
 
     private func load() async {
         isLoading = true

@@ -50,7 +50,7 @@ enum MemoryAutomation {
         switch await bridge.createMemory(
             ownerType: "operator",
             ownerId: operatorId,
-            content: "\(marker)：博士答应周末一起去训练场。",
+            content: "\(marker)：绳匠答应周末一起去训练场。",
             level: "L2",
             importance: 42,
             explicitPrivate: false,

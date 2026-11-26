@@ -23,6 +23,8 @@ struct SessionItem: Identifiable, Hashable {
     let mode: String
     /// T40：置顶（列表顺序已由 shared SQL `ORDER BY isPinned DESC, lastTime DESC` 保证）
     let isPinned: Bool
+    /// 会话所属角色 id（私聊点对方头像 → 角色简介页）
+    let operatorId: String
 
     init(dto: SessionDto) {
         id = dto.id
@@ -33,6 +35,7 @@ struct SessionItem: Identifiable, Hashable {
         lastTime = dto.lastTime
         mode = dto.mode
         isPinned = dto.isPinned
+        operatorId = dto.operatorId
     }
 
     /// 最近一条消息时间（Int64 秒/毫秒自适应格式化）
@@ -399,7 +402,7 @@ final class AppGraphClient {
         }
     }
 
-    /// roleId 兼容 T33 旧深链：既可以是 operatorId（如 `amiya`），也可以是 sessionId（如 `session_amiya`）。
+    /// roleId 兼容 T33 旧深链：既可以是 operatorId（如 `zzz008`），也可以是 sessionId（如 `session_zzz008`）。
     func loadRole(id: String) async -> Result<RoleItem?, BridgeError> {
         await withCheckedContinuation { continuation in
             graph.roles().find(roleId: id) { dto, error in

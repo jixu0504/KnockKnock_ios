@@ -30,6 +30,10 @@ struct RouteView: View {
             MemoryListView()
                 .navigationTitle("记忆管理")
 
+        case .knowledgeList:
+            // T48 知识库（P5 收口补路由：`rhodes://features/knowledge`，截图/回归稳定复现）
+            KnowledgeListView()
+
         case .moments:
             // T50：动态广场真实页面（时间线 / 发布 / 点赞 / 评论 / 删除；真实 SQLite）
             MomentsView()
@@ -83,40 +87,40 @@ struct RouteView: View {
     }
 }
 
-/// 占位页：路由已注册、页面待实现（Phase 3 路由表覆盖 A1/A2 主要路由，其余占位）
+/// 占位页：路由已注册、页面待实现（Phase 3 路由表覆盖 A1/A2 主要路由，其余占位）。
+///
+/// P5 收口：旧实现走玻璃时代视觉（`GlassTokens.brandOrange` + `cardSurface` + 系统
+/// `navigationTitle`），是全仓最后一处未改版页面 → 统一到敲敲视觉：
+/// 自绘 `KnockHeader`（返回胶囊 + 标题）+ 纯色斜切纹理底 + `KnockEmptyState`
+/// （NoData 行 + E M P T Y pill + 说明），与全站空态/二级页顶栏一致；系统导航栏隐藏。
 struct PlaceholderView: View {
     var title: String
     var detail: String
     var systemImage: String = "hammer"
 
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            VStack(spacing: 16) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 44, weight: .light))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                Text(detail)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("更多内容即将上线")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
+            VStack(spacing: 0) {
+                KnockHeader(title: title, showsBack: true, onBack: { dismiss() })
+
+                ScrollView {
+                    KnockEmptyState(
+                        title: "敬请期待",
+                        message: detail,
+                        systemImage: systemImage
+                    )
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingM)
+                    .padding(.bottom, KnockTokens.spacingXXL)
+                }
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
             }
-            .padding(24)
-            .cardSurface(cornerRadius: 24)
-            .padding(.horizontal, 24)
         }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .knockHideSystemChrome()
     }
 }

@@ -496,7 +496,7 @@ class DefaultGroupPromptAssembler(
         )
         if (!isAuto) {
             val userMsg = when {
-                request.autoSpeak -> "（群聊已空闲一段时间，干员们自然地闲聊起来，无需等待用户发言。）"
+                request.autoSpeak -> "（群聊已空闲一段时间，代理人自然地闲聊起来，无需等待用户发言。）"
                 request.userMessageAlreadyStored || request.retryMessageId != null -> userMessage
                 else -> requestText
             }

@@ -1,6 +1,7 @@
 //
 //  BackupSettingsView.swift
-//  T38 设置 →「数据与备份」子页（「可用软件」里程碑 2）
+//  T38 设置 →「数据与备份」子页（「可用软件」里程碑 2），P4 敲敲视觉改造：
+//  面板分组 / 胶囊行 / 黄色进度条 / 危险操作红色按钮 / 自绘 KncokDialog 确认。
 //
 //  四块能力（全部接真实 shared 域层，不 mock）：
 //  1. 完整备份：导出 rhodes.db 快照 → fileExporter 存到「文件」App；导入 → 先确认覆盖风险 →
@@ -11,7 +12,7 @@
 //  5. Markdown 聊天记录（T58）：选 .md/.markdown/.txt → 解析预览（标题/角色/条数/首尾样例）→
 //     选择目标角色（147 位）→ 导入真实 DB（新增/去重条数 + 跳转会话）；重复导入零新增给警告。
 //
-//  错误路径（坏包 / 格式不符 / 文件不存在 / 磁盘或权限失败）统一以红色提示条展示，不崩溃。
+//  错误路径（坏包 / 格式不符 / 文件不存在 / 磁盘或权限失败）统一以红色描边提示条展示，不崩溃。
 //  自动化验证：`--backup-selftest`（见 BackupAutomation.swift），本页展示自检矩阵结果。
 //
 
@@ -53,6 +54,7 @@ struct BackupSettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @ObservedObject private var automation = BackupAutomationState.shared
+    @Environment(\.dismiss) private var dismiss
 
     @State private var sessions: [SessionItem] = []
     @State private var roles: [RoleItem] = []
@@ -95,25 +97,30 @@ struct BackupSettingsView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                VStack(spacing: 14) {
-                    headerCard
-                    markdownChatSection
-                    fullBackupCard
-                    restoreCheckCard
-                    roleCardSection
-                    chatSection
-                    if selftestEnabled { automationCard }
-                    if !errorText.isEmpty { errorCard }
+            VStack(spacing: 0) {
+                KnockHeader(title: "数据与备份", showsBack: true, onBack: { dismiss() })
+
+                ScrollView {
+                    VStack(spacing: KnockTokens.spacingXL) {
+                        headerGroup
+                        markdownChatSection
+                        fullBackupSection
+                        restoreCheckSection
+                        roleCardSection
+                        chatSection
+                        if selftestEnabled { automationCard }
+                        if !errorText.isEmpty { errorCard }
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingM)
+                    .padding(.bottom, KnockTokens.spacingXXL)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 28)
+                .scrollIndicators(.hidden)
+                .settingsKnockScrollEdgeHidden()
             }
-            .scrollIndicators(.hidden)
         }
         .navigationTitle("数据与备份")
-        .navigationBarTitleDisplayMode(.inline)
+        .settingsKnockNavigationChrome()
         .task {
             await loadPickers()
             // 先跑自动化（--backup-selftest 时：第二轮会自行消费 staging 标记并产出报告），
@@ -150,23 +157,8 @@ struct BackupSettingsView: View {
         .sheet(isPresented: $showMarkdownRoleSheet) {
             markdownRoleSheet
         }
-        .alert(item: Binding(
-            get: { pendingImport.map(ImportPrompt.init) },
-            set: { if $0 == nil { pendingImport = nil } }
-        )) { prompt in
-            Alert(
-                title: Text(prompt.title),
-                message: Text(prompt.message),
-                primaryButton: .destructive(Text(prompt.confirmTitle)) {
-                    if let pending = pendingImport {
-                        pendingImport = nil
-                        Task { await confirmImport(pending) }
-                    }
-                },
-                secondaryButton: .cancel(Text("取消")) {
-                    pendingImport = nil
-                }
-            )
+        .overlay {
+            importConfirmOverlay
         }
     }
 
@@ -195,330 +187,399 @@ struct BackupSettingsView: View {
         }
     }
 
+    /// 自绘确认弹窗（替代系统 `.alert`，避开 iOS 26 玻璃背景；恢复完整备份为危险确认）。
+    @ViewBuilder
+    private var importConfirmOverlay: some View {
+        if let pending = pendingImport {
+            let prompt = ImportPrompt(pending)
+            ZStack {
+                Color.black.opacity(0.62)
+                    .ignoresSafeArea()
+                    .onTapGesture { pendingImport = nil }
+                    .accessibilityHidden(true)
+
+                KnockConfirmDialog(
+                    title: prompt.title,
+                    message: prompt.message,
+                    confirmTitle: prompt.confirmTitle,
+                    cancelTitle: "取消",
+                    isDestructive: isFullBackup(pending),
+                    onConfirm: {
+                        pendingImport = nil
+                        Task { await confirmImport(pending) }
+                    },
+                    onCancel: { pendingImport = nil }
+                )
+                .padding(.horizontal, KnockTokens.spacingXXL)
+                .accessibilityAddTraits(.isModal)
+            }
+        }
+    }
+
+    private func isFullBackup(_ pending: PendingImport) -> Bool {
+        if case .fullBackup = pending { return true }
+        return false
+    }
+
     // MARK: 头部
 
-    private var headerCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 22) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "externaldrive.badge.checkmark")
-                        .foregroundStyle(GlassTokens.brandOrange)
-                    Text("数据与备份")
-                        .font(.headline.weight(.semibold))
-                    Spacer()
-                    if bridge.hasPendingRestore {
-                        Text("待恢复")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.orange.opacity(0.25), in: Capsule())
+    private var headerGroup: some View {
+        SettingsKnockGroup("本地数据", systemImage: "externaldrive.badge.checkmark") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    HStack(spacing: KnockTokens.spacingM) {
+                        KnockRowGlyph(systemImage: "externaldrive.badge.checkmark", tint: KnockTokens.electric, size: 36)
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                            KnockText("数据与备份", role: .rowTitle, lineLimit: 1)
+                            KnockText(
+                                "导出/导入覆盖完整备份（数据库快照）、角色卡（rhodes-operator v1）与单会话聊天记录（rhodes-chat v1）。",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineSpacing: 2
+                            )
+                        }
+                        Spacer(minLength: KnockTokens.spacingS)
+                        if bridge.hasPendingRestore {
+                            KnockBadge(text: "待恢复", variant: .accent)
+                        }
                     }
-                }
-                Text("导出/导入覆盖完整备份（数据库快照）、角色卡（rhodes-operator v1）与单会话聊天记录（rhodes-chat v1）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                infoLine("数据库", bridge.databasePath, monospaced: true)
-                infoLine("导出目录", "Documents/BackupExports")
-                if !statusText.isEmpty { infoLine("状态", statusText) }
-                if busy {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(importProgressText.isEmpty ? "处理中…" : importProgressText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+
+                    SettingsKnockInfoLine("数据库", bridge.databasePath, monospaced: true)
+                    SettingsKnockInfoLine("导出目录", "Documents/BackupExports")
+                    if !statusText.isEmpty {
+                        SettingsKnockInfoLine("状态", statusText)
+                    }
+
+                    if busy {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                            SettingsKnockProgressBar()
+                            KnockText(
+                                importProgressText.isEmpty ? "处理中…" : importProgressText,
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineLimit: 2
+                            )
+                        }
                     }
                 }
             }
-            .padding(16)
         }
     }
 
     // MARK: 完整备份
 
-    private var fullBackupCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "完整备份", systemImage: "arrow.up.arrow.down.circle")
-            VStack(alignment: .leading, spacing: 10) {
-                Text("导出当前数据库快照（导出前自动 WAL checkpoint，并做 SQLite 头 / integrity_check / 表计数自检）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                    Button {
-                        Task { await exportFullBackup() }
-                    } label: {
-                        Label("导出完整备份", systemImage: "square.and.arrow.up")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
+    private var fullBackupSection: some View {
+        SettingsKnockGroup("完整备份", systemImage: "arrow.up.arrow.down.circle") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    KnockText(
+                        "导出当前数据库快照（导出前自动 WAL checkpoint，并做 SQLite 头 / integrity_check / 表计数自检）。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
 
-                    Button {
-                        importerKind = .fullBackup
-                        showImporter = true
-                    } label: {
-                        Label("导入备份", systemImage: "square.and.arrow.down")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
-                }
-                if let info = lastFullBackup {
-                    resultBlock(title: "最近导出", lines: [
-                        "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
-                        "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
-                        "自检：SQLite 头 \(info.inspection.headerValid ? "有效" : "无效") · integrity=\(info.inspection.integrityResult) · 表 \(info.inspection.tableCount)",
-                        info.inspection.countsText,
-                    ])
-                }
-                if let staged = stagedRestore {
-                    resultBlock(title: "待恢复（重启后生效）", tint: .orange, lines: [
-                        "文件：\(URL(fileURLWithPath: staged.pendingPath).lastPathComponent)",
-                        "自检：SQLite 头 \(staged.inspection.headerValid ? "有效" : "无效") · integrity=\(staged.inspection.integrityResult)",
-                        staged.inspection.countsText,
-                        "换入前现网计数：\(staged.currentCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
-                    ])
-                    HStack(spacing: 10) {
-                        Button(role: .destructive) {
-                            if bridge.cancelPendingRestore() {
-                                stagedRestore = nil
-                                statusText = "已撤销待恢复文件，当前数据未受影响"
-                            } else {
-                                errorText = "撤销失败：待恢复文件删除失败"
-                            }
+                    HStack(spacing: KnockTokens.spacingM) {
+                        Button {
+                            Task { await exportFullBackup() }
                         } label: {
-                            Label("撤销待恢复", systemImage: "trash")
-                                .font(.footnote)
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导出完整备份", role: .rowTitle, color: KnockTokens.onElectric, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
-                        Text("重启 App 后自动换入；换入后本页显示恢复后自检结果")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .buttonStyle(KnockPrimaryButtonStyle())
+                        .disabled(busy)
+
+                        Button {
+                            importerKind = .fullBackup
+                            showImporter = true
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导入备份", role: .rowTitle, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .disabled(busy)
                     }
-                } else if bridge.hasPendingRestore {
-                    resultBlock(title: "待恢复（重启后生效）", tint: .orange, lines: [
-                        "已存在待恢复文件：\(URL(fileURLWithPath: bridge.pendingRestorePath).lastPathComponent)",
-                        "重启 App 后自动换入。",
-                    ])
+
+                    if let info = lastFullBackup {
+                        resultBlock(title: "最近导出", lines: [
+                            "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
+                            "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
+                            "自检：SQLite 头 \(info.inspection.headerValid ? "有效" : "无效") · integrity=\(info.inspection.integrityResult) · 表 \(info.inspection.tableCount)",
+                            info.inspection.countsText,
+                        ])
+                    }
+
+                    if let staged = stagedRestore {
+                        resultBlock(title: "待恢复（重启后生效）", kind: .info, lines: [
+                            "文件：\(URL(fileURLWithPath: staged.pendingPath).lastPathComponent)",
+                            "自检：SQLite 头 \(staged.inspection.headerValid ? "有效" : "无效") · integrity=\(staged.inspection.integrityResult)",
+                            staged.inspection.countsText,
+                            "换入前现网计数：\(staged.currentCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
+                        ])
+                        HStack(spacing: KnockTokens.spacingM) {
+                            Button(role: .destructive) {
+                                if bridge.cancelPendingRestore() {
+                                    stagedRestore = nil
+                                    statusText = "已撤销待恢复文件，当前数据未受影响"
+                                } else {
+                                    errorText = "撤销失败：待恢复文件删除失败"
+                                }
+                            } label: {
+                                HStack(spacing: KnockTokens.spacingS) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 13, weight: .heavy))
+                                    KnockText("撤销待恢复", role: .rowTitle, color: KnockTokens.onDanger, lineLimit: 1)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(KnockDangerButtonStyle())
+
+                            KnockText(
+                                "重启 App 后自动换入；换入后本页显示恢复后自检结果",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineSpacing: 2
+                            )
+                        }
+                    } else if bridge.hasPendingRestore {
+                        resultBlock(title: "待恢复（重启后生效）", kind: .info, lines: [
+                            "已存在待恢复文件：\(URL(fileURLWithPath: bridge.pendingRestorePath).lastPathComponent)",
+                            "重启 App 后自动换入。",
+                        ])
+                    }
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     // MARK: 恢复后自检
 
-    private var restoreCheckCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "恢复后自检", systemImage: "checkmark.shield")
-            VStack(alignment: .leading, spacing: 8) {
-                if let report = lastRestoreReport {
-                    Text(report.passed ? "上次恢复：自检通过 ✅" : "上次恢复：自检未通过 ❌")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(report.passed ? .green : .red)
-                    Text(report.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    resultBlock(title: "自检明细", lines: [
-                        "integrity_check = \(report.integrityResult)",
-                        "期望：\(report.expectedCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
-                        "实际：\(report.actualCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
-                        "差异：\(report.mismatchesText)",
-                    ])
-                } else if bridge.hasPendingRestore {
-                    Text("已暂存待恢复文件。重启 App 后自动换入并执行自检（比对暂存时期望表计数 vs 现网计数）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("暂无恢复记录。导入备份并重启后，这里会显示恢复后自检结果（integrity_check + 表计数比对）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+    private var restoreCheckSection: some View {
+        SettingsKnockGroup("恢复后自检", systemImage: "checkmark.shield") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    if let report = lastRestoreReport {
+                        SettingsKnockStatusBanner(
+                            kind: report.passed ? .success : .failure,
+                            title: report.passed ? "上次恢复：自检通过" : "上次恢复：自检未通过",
+                            detail: report.summary
+                        )
+                        resultBlock(title: "自检明细", lines: [
+                            "integrity_check = \(report.integrityResult)",
+                            "期望：\(report.expectedCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
+                            "实际：\(report.actualCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · "))",
+                            "差异：\(report.mismatchesText)",
+                        ])
+                    } else if bridge.hasPendingRestore {
+                        KnockText(
+                            "已暂存待恢复文件。重启 App 后自动换入并执行自检（比对暂存时期望表计数 vs 现网计数）。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                    } else {
+                        KnockText(
+                            "暂无恢复记录。导入备份并重启后，这里会显示恢复后自检结果（integrity_check + 表计数比对）。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                    }
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     // MARK: 角色卡
 
     private var roleCardSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "角色卡", systemImage: "person.crop.square")
-            VStack(alignment: .leading, spacing: 10) {
-                if roles.isEmpty {
-                    Text("正在读取角色列表…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Picker("选择角色", selection: $selectedRoleId) {
-                        ForEach(roles) { role in
-                            Text("\(role.name)（\(role.id)）").tag(role.id)
+        SettingsKnockGroup("角色卡", systemImage: "person.crop.square") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    if roles.isEmpty {
+                        KnockText("正在读取角色列表…", role: .caption, color: KnockTokens.textSecondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                            KnockText("选择角色", role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                            KnockDropdown(
+                                items: roles.map {
+                                    KnockSegmentItem(value: $0.id, title: "\($0.name)（\($0.id)）", systemImage: nil)
+                                },
+                                selection: $selectedRoleId
+                            )
                         }
                     }
-                    .pickerStyle(.menu)
-                    .tint(GlassTokens.brandOrange)
-                }
-                HStack(spacing: 10) {
-                    Button {
-                        Task { await exportRoleCard() }
-                    } label: {
-                        Label("导出角色卡", systemImage: "square.and.arrow.up")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy || selectedRoleId.isEmpty)
 
-                    Button {
-                        importerKind = .roleCard
-                        showImporter = true
-                    } label: {
-                        Label("导入角色卡", systemImage: "square.and.arrow.down")
-                            .font(.footnote.weight(.semibold))
+                    HStack(spacing: KnockTokens.spacingM) {
+                        Button {
+                            Task { await exportRoleCard() }
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导出角色卡", role: .rowTitle, color: KnockTokens.onElectric, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockPrimaryButtonStyle())
+                        .disabled(busy || selectedRoleId.isEmpty)
+
+                        Button {
+                            importerKind = .roleCard
+                            showImporter = true
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导入角色卡", role: .rowTitle, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .disabled(busy)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
-                }
-                if let info = lastOperatorExport {
-                    resultBlock(title: "最近导出（rhodes-operator v1）", lines: [
-                        "角色：\(info.operatorName) · 关系 \(info.relationshipCount) 条 · 头像 \(info.hasAvatar ? "含" : "无")",
-                        "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
-                        "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
-                    ])
-                }
-                if let info = lastOperatorImport {
-                    resultBlock(title: "最近导入", lines: [
-                        "\(info.createdNew ? "已新建角色" : "已更新角色")「\(info.operatorName)」→ id=\(info.operatorId)",
-                        "关系导入 \(info.importedRelationships) 条，跳过 \(info.skippedRelationships) 条（目标端不存在）",
-                    ])
+
+                    if let info = lastOperatorExport {
+                        resultBlock(title: "最近导出（rhodes-operator v1）", lines: [
+                            "角色：\(info.operatorName) · 关系 \(info.relationshipCount) 条 · 头像 \(info.hasAvatar ? "含" : "无")",
+                            "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
+                            "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
+                        ])
+                    }
+
+                    if let info = lastOperatorImport {
+                        resultBlock(title: "最近导入", lines: [
+                            "\(info.createdNew ? "已新建角色" : "已更新角色")「\(info.operatorName)」→ id=\(info.operatorId)",
+                            "关系导入 \(info.importedRelationships) 条，跳过 \(info.skippedRelationships) 条（目标端不存在）",
+                        ])
+                    }
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     // MARK: 聊天记录
 
     private var chatSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "聊天记录", systemImage: "bubble.left.and.text.bubble.right")
-            VStack(alignment: .leading, spacing: 10) {
-                if sessions.isEmpty {
-                    Text("正在读取会话列表…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Picker("选择会话", selection: $selectedSessionId) {
-                        ForEach(sessions) { session in
-                            Text("\(session.title)（\(session.id)）").tag(session.id)
+        SettingsKnockGroup("聊天记录", systemImage: "bubble.left.and.text.bubble.right") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    if sessions.isEmpty {
+                        KnockText("正在读取会话列表…", role: .caption, color: KnockTokens.textSecondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                            KnockText("选择会话", role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                            KnockDropdown(
+                                items: sessions.map {
+                                    KnockSegmentItem(value: $0.id, title: "\($0.title)（\($0.id)）", systemImage: nil)
+                                },
+                                selection: $selectedSessionId
+                            )
                         }
                     }
-                    .pickerStyle(.menu)
-                    .tint(GlassTokens.brandOrange)
-                }
-                HStack(spacing: 10) {
-                    Button {
-                        Task { await exportChat() }
-                    } label: {
-                        Label("导出聊天记录", systemImage: "square.and.arrow.up")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy || selectedSessionId.isEmpty)
 
-                    Button {
-                        importerKind = .chat
-                        showImporter = true
-                    } label: {
-                        Label("导入聊天记录", systemImage: "square.and.arrow.down")
-                            .font(.footnote.weight(.semibold))
+                    HStack(spacing: KnockTokens.spacingM) {
+                        Button {
+                            Task { await exportChat() }
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导出聊天记录", role: .rowTitle, color: KnockTokens.onElectric, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockPrimaryButtonStyle())
+                        .disabled(busy || selectedSessionId.isEmpty)
+
+                        Button {
+                            importerKind = .chat
+                            showImporter = true
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("导入聊天记录", role: .rowTitle, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .disabled(busy)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
-                }
-                if let info = lastChatExport {
-                    resultBlock(title: "最近导出（rhodes-chat v1）", lines: [
-                        "会话：\(info.sessionTitle) · 消息 \(info.messageCount) · 媒体 \(info.mediaCount) · 存档 \(info.archiveCount)",
-                        "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
-                        "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
-                    ])
-                }
-                if let outcome = lastChatImport {
-                    resultBlock(title: "最近导入（合并语义）", tint: outcome.success ? .green : .red, lines: [
-                        outcome.summaryText,
-                        "目标会话：\(outcome.sessionId)",
-                        outcome.alerts.isEmpty ? "无告警" : "告警：\(outcome.alerts.joined(separator: " · "))",
-                    ])
+
+                    if let info = lastChatExport {
+                        resultBlock(title: "最近导出（rhodes-chat v1）", lines: [
+                            "会话：\(info.sessionTitle) · 消息 \(info.messageCount) · 媒体 \(info.mediaCount) · 存档 \(info.archiveCount)",
+                            "大小：\(info.sizeText) · SHA-256：\(info.sha256.prefix(24))…",
+                            "文件：\(URL(fileURLWithPath: info.path).lastPathComponent)",
+                        ])
+                    }
+
+                    if let outcome = lastChatImport {
+                        resultBlock(
+                            title: "最近导入（合并语义）",
+                            kind: outcome.success ? .success : .failure,
+                            lines: [
+                                outcome.summaryText,
+                                "目标会话：\(outcome.sessionId)",
+                                outcome.alerts.isEmpty ? "无告警" : "告警：\(outcome.alerts.joined(separator: " · "))",
+                            ]
+                        )
+                    }
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     // MARK: 自动化自检
 
     private var automationCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "备份自检矩阵（--backup-selftest）", systemImage: "checklist")
-            VStack(alignment: .leading, spacing: 6) {
-                if automation.lines.isEmpty {
-                    Text("等待自检开始…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(automation.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 11).monospaced())
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
+        SettingsKnockGroup("备份自检矩阵（--backup-selftest）", systemImage: "checklist") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                    if automation.lines.isEmpty {
+                        KnockText("等待自检开始…", role: .caption, color: KnockTokens.textSecondary)
+                    } else {
+                        ForEach(Array(automation.lines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(KnockTokens.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     private var errorCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                Text("操作未完成（数据未受影响）")
-                    .font(.subheadline.weight(.semibold))
+        SettingsKnockGroup("操作未完成", systemImage: "exclamationmark.triangle.fill") {
+            KnockPanel {
+                HStack(alignment: .top, spacing: KnockTokens.spacingM) {
+                    SettingsKnockStatusBanner(
+                        kind: .failure,
+                        title: "操作未完成（数据未受影响）",
+                        detail: errorText
+                    )
+                    // 关闭/退出统一用敲敲红色 X 胶囊键（计划书图 B 顶栏样式）
+                    KnockCloseButton(label: "关闭提示") {
+                        errorText = ""
+                    }
+                }
             }
-            Text(errorText)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("关闭") { errorText = "" }
-                .font(.caption)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    // MARK: 交互实现
+    // MARK: - 交互实现（逻辑零改动）
 
     private var importContentTypes: [UTType] {
         switch importerKind {
@@ -740,143 +801,184 @@ struct BackupSettingsView: View {
     // MARK: Markdown 聊天记录（T58）
 
     private var markdownChatSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "导入聊天记录（Markdown）", systemImage: "doc.text")
-            VStack(alignment: .leading, spacing: 10) {
-                Text("从 `.md` / `.markdown` / `.txt` 导入聊天记录：支持 RhodesLink Markdown 导出（`# 与<角色>的聊天记录` + `## 日期` + `称呼：内容`）及变体（`**称呼**：`、`称呼: `、`[yyyy-MM-dd HH:mm] 称呼：`），≤20MB。导入写真实数据库，不触发模型/记忆/未读。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                    Button {
-                        importerKind = .markdownChat
-                        showImporter = true
-                    } label: {
-                        Label("选择 Markdown 文件", systemImage: "square.and.arrow.down")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
+        SettingsKnockGroup("导入聊天记录（Markdown）", systemImage: "doc.text") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    KnockText(
+                        "从 `.md` / `.markdown` / `.txt` 导入聊天记录：支持 RhodesLink Markdown 导出（`# 与<角色>的聊天记录` + `## 日期` + `称呼：内容`）及变体（`**称呼**：`、`称呼: `、`[yyyy-MM-dd HH:mm] 称呼：`），≤20MB。导入写真实数据库，不触发模型/记忆/未读。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
 
-                    if markdownDocument != nil {
+                    HStack(spacing: KnockTokens.spacingM) {
                         Button {
-                            markdownFilter = ""
-                            showMarkdownRoleSheet = true
+                            importerKind = .markdownChat
+                            showImporter = true
                         } label: {
-                            Label("选择目标角色", systemImage: "person.crop.circle")
-                                .font(.footnote.weight(.semibold))
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 13, weight: .heavy))
+                                // P5 黄色面积审计整改：本页主 CTA 是「导出完整备份」，
+                                // Markdown 导入属辅助入口 → 由黄底主按钮降为描边次按钮，
+                                // 页面黄色占比 6.24% → 目标 <2%（计划书 1.2：黄只做选中/主 CTA/品牌）。
+                                KnockText("选择 Markdown 文件", role: .rowTitle, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(GlassTokens.brandOrange)
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .disabled(busy)
+
+                        if markdownDocument != nil {
+                            Button {
+                                markdownFilter = ""
+                                showMarkdownRoleSheet = true
+                            } label: {
+                                HStack(spacing: KnockTokens.spacingS) {
+                                    Image(systemName: "person.crop.circle")
+                                        .font(.system(size: 13, weight: .heavy))
+                                    KnockText("选择目标角色", role: .rowTitle, lineLimit: 2)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(KnockSecondaryButtonStyle())
+                            .disabled(busy)
+                        }
+                    }
+
+                    if let doc = markdownDocument {
+                        resultBlock(title: "解析预览", lines: [
+                            "标题：\(doc.preview.title)",
+                            "角色：\(doc.preview.operatorName.isEmpty ? "未识别（请选择目标角色）" : doc.preview.operatorName) · 消息 \(doc.preview.messageCount) 条 · 日期段 \(doc.preview.dayCount)",
+                            "格式：\(doc.preview.formatText)",
+                            "首：「\(doc.preview.firstMessageText)」",
+                            "尾：「\(doc.preview.lastMessageText)」",
+                        ])
+                    }
+
+                    if let info = lastMarkdownImport {
+                        resultBlock(
+                            title: "最近导入（Markdown）",
+                            kind: info.warning.isEmpty ? .success : .info,
+                            lines: [
+                                "目标角色：\(info.operatorName) · 新增 \(info.insertedMessages) 条 · 去重 \(info.skippedDuplicates) 条",
+                                info.warning.isEmpty ? "重复判定：无重复" : "警告：\(info.warning)",
+                                "目标会话：\(info.sessionId)",
+                            ]
+                        )
+                        Button {
+                            router.openChat(sessionId: info.sessionId)
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "bubble.left")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("打开该会话", role: .rowTitle, lineLimit: 1)
+                            }
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false))
                         .disabled(busy)
                     }
                 }
-                if let doc = markdownDocument {
-                    resultBlock(title: "解析预览", lines: [
-                        "标题：\(doc.preview.title)",
-                        "角色：\(doc.preview.operatorName.isEmpty ? "未识别（请选择目标角色）" : doc.preview.operatorName) · 消息 \(doc.preview.messageCount) 条 · 日期段 \(doc.preview.dayCount)",
-                        "格式：\(doc.preview.formatText)",
-                        "首：「\(doc.preview.firstMessageText)」",
-                        "尾：「\(doc.preview.lastMessageText)」",
-                    ])
-                }
-                if let info = lastMarkdownImport {
-                    resultBlock(title: "最近导入（Markdown）", tint: info.warning.isEmpty ? .green : .orange, lines: [
-                        "目标角色：\(info.operatorName) · 新增 \(info.insertedMessages) 条 · 去重 \(info.skippedDuplicates) 条",
-                        info.warning.isEmpty ? "重复判定：无重复" : "警告：\(info.warning)",
-                        "目标会话：\(info.sessionId)",
-                    ])
-                    Button {
-                        router.openChat(sessionId: info.sessionId)
-                    } label: {
-                        Label("打开该会话", systemImage: "bubble.left")
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(GlassTokens.brandOrange)
-                    .disabled(busy)
-                }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 18)
         }
     }
 
     /// 解析成功后弹出的目标角色选择 Sheet（147 位角色，默认匹配解析出的角色名）。
     private var markdownRoleSheet: some View {
-        NavigationStack {
+        ZStack {
+            AmbientBackground(parallax: 0, showsStandee: false)
+
             VStack(spacing: 0) {
-                if let doc = markdownDocument {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(doc.preview.title)
-                            .font(.headline)
-                        Text("格式：\(doc.preview.formatText) · 角色：\(doc.preview.operatorName.isEmpty ? "未识别" : doc.preview.operatorName) · 消息 \(doc.preview.messageCount) 条 · 日期段 \(doc.preview.dayCount)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("首：「\(doc.preview.firstMessageText)」")
-                            .font(.caption2.monospaced())
-                            .lineLimit(1)
-                        Text("尾：「\(doc.preview.lastMessageText)」")
-                            .font(.caption2.monospaced())
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    Divider()
-                }
-                List(filteredMarkdownRoles) { role in
-                    Button {
-                        markdownTargetRoleId = role.id
-                    } label: {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(role.name)
-                                    .font(.body)
-                                Text("\(role.id) · \(role.title)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if role.id == markdownTargetRoleId {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(GlassTokens.brandOrange)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .listStyle(.plain)
-                .searchable(text: $markdownFilter, prompt: "搜索角色")
-                if busy {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(importProgressText.isEmpty ? "正在导入…" : importProgressText)
-                            .font(.caption)
-                    }
-                    .padding(12)
-                }
-            }
-            .navigationTitle("选择目标角色")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockCloseButton(label: "取消") {
                         showMarkdownRoleSheet = false
                         markdownDocument = nil
                     }
-                }
-                ToolbarItem(placement: .confirmationAction) {
+
+                    KnockText("选择目标角色", role: .pageTitle, lineLimit: 1)
+
+                    Spacer(minLength: KnockTokens.spacingS)
+
                     Button("导入") {
                         Task { await confirmMarkdownImport() }
                     }
+                    .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 38))
                     .disabled(markdownTargetRoleId.isEmpty || busy)
+                }
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.top, KnockTokens.spacingM)
+                .padding(.bottom, KnockTokens.spacingS)
+
+                if let doc = markdownDocument {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                        KnockText(doc.preview.title, role: .rowTitle, lineLimit: 2)
+                        KnockText(
+                            "格式：\(doc.preview.formatText) · 角色：\(doc.preview.operatorName.isEmpty ? "未识别" : doc.preview.operatorName) · 消息 \(doc.preview.messageCount) 条 · 日期段 \(doc.preview.dayCount)",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                        KnockText("首：「\(doc.preview.firstMessageText)」", role: .mono, color: KnockTokens.textTertiary, lineLimit: 1)
+                        KnockText("尾：「\(doc.preview.lastMessageText)」", role: .mono, color: KnockTokens.textTertiary, lineLimit: 1)
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.bottom, KnockTokens.spacingS)
+                }
+
+                KnockSearchBar(placeholder: "搜索角色", text: $markdownFilter)
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.bottom, KnockTokens.spacingS)
+
+                ScrollView {
+                    LazyVStack(spacing: KnockTokens.spacingS) {
+                        ForEach(filteredMarkdownRoles) { role in
+                            Button {
+                                markdownTargetRoleId = role.id
+                            } label: {
+                                KnockListRow(
+                                    title: role.name,
+                                    subtitle: "\(role.id) · \(role.title)",
+                                    height: 60,
+                                    action: nil
+                                ) {
+                                    KnockRowAvatar(avatarId: role.id, name: role.name)
+                                } trailing: {
+                                    HStack(spacing: KnockTokens.spacingS) {
+                                        if role.id == markdownTargetRoleId {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 16, weight: .heavy))
+                                                .foregroundStyle(KnockTokens.electric)
+                                                .accessibilityHidden(true)
+                                        }
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.bottom, KnockTokens.spacingXXL)
+                }
+                .scrollIndicators(.hidden)
+                .settingsKnockScrollEdgeHidden()
+
+                if busy {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                        SettingsKnockProgressBar()
+                        KnockText(
+                            importProgressText.isEmpty ? "正在导入…" : importProgressText,
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineLimit: 2
+                        )
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.vertical, KnockTokens.spacingS)
                 }
             }
         }
+        .settingsKnockNavigationChrome()
+        .presentationBackground(KnockTokens.canvas)
     }
 
     private var filteredMarkdownRoles: [RoleItem] {
@@ -917,6 +1019,7 @@ struct BackupSettingsView: View {
             lastMarkdownImport = info
             showMarkdownRoleSheet = false
             markdownDocument = nil
+            publishMarkdownImportFinished(info)
             statusText = info.warning.isEmpty
                 ? "Markdown 导入完成：新增 \(info.insertedMessages) 条 → \(info.operatorName)"
                 : "Markdown 导入完成：新增 \(info.insertedMessages) 条（\(info.warning)）"
@@ -926,23 +1029,54 @@ struct BackupSettingsView: View {
         }
     }
 
+    /// 导入成功后广播「聊天数据外部变更」：
+    /// 1. 已打开的聊天页（ChatViewModel 监听通知）立即刷新并载入导入块，不用退出重进；
+    /// 2. 会话列表（ChatListView 监听通知）刷新预览/时间；
+    /// 3. 落「待定位导入块」设置项：聊天页**下次进入**时消费（导入记录时间戳通常早于
+    ///    首屏 50 条窗口——只刷新首屏在长会话里看不到导入内容，用户会以为导入失败）。
+    private func publishMarkdownImportFinished(_ info: MarkdownChatImportInfo) {
+        let firstImportedId = info.insertedIds.first ?? 0
+        if info.insertedMessages > 0, firstImportedId > 0 {
+            let key = ChatViewModel.pendingImportFocusKey(sessionId: info.sessionId)
+            bridge.setSettingsString(key: key, value: "\(firstImportedId):\(info.insertedIds.count)")
+        }
+        var userInfo: [AnyHashable: Any] = [
+            ChatExternalChangeKey.source: "markdown-import",
+            ChatExternalChangeKey.sessionId: info.sessionId,
+            ChatExternalChangeKey.operatorId: info.operatorId,
+            ChatExternalChangeKey.importedCount: info.insertedMessages,
+        ]
+        if firstImportedId > 0 {
+            userInfo[ChatExternalChangeKey.firstImportedId] = firstImportedId
+        }
+        NotificationCenter.default.post(
+            name: .chatDataDidChangeExternally,
+            object: nil,
+            userInfo: userInfo
+        )
+        SelfTestLog.add(
+            "settings markdown import broadcast session=\(info.sessionId) inserted=\(info.insertedMessages) " +
+            "firstImportedId=\(firstImportedId) lastImportedId=\(info.insertedIds.last ?? 0)"
+        )
+    }
+
     /// `--markdown-demo`：自检/截图用——解析内置示例并弹出目标角色 Sheet（无参数时零副作用）。
     private func runMarkdownDemoIfNeeded() async {
         guard ProcessInfo.processInfo.arguments.contains("--markdown-demo"), markdownDocument == nil else { return }
         let demo = """
-        # 与阿米娅的聊天记录
+        # 与安比的聊天记录
 
         导出时间：2025-06-15 22:10
 
         ## 2025-06-14
 
-        阿米娅：博士，今天的任务辛苦了。
+        安比：绳匠，今天的任务辛苦了。
 
-        博士：还好，你呢？
+        绳匠：还好，你呢？
 
         ## 2025-06-15
 
-        阿米娅：我很好，谢谢博士关心。
+        安比：我很好，谢谢绳匠关心。
         """
         switch await bridge.parseMarkdownText(text: demo) {
         case .success(let document):
@@ -954,35 +1088,42 @@ struct BackupSettingsView: View {
 
     // MARK: 组件
 
-    private func resultBlock(title: String, tint: Color = .secondary, lines: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint == .secondary ? Color.secondary : tint)
+    /// 结果块：内嵌面板底 + 1.5pt 描边 + 等宽多行（导出/导入/自检结果统一呈现）。
+    private func resultBlock(
+        title: String,
+        kind: SettingsKnockStatusKind = .info,
+        lines: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+            HStack(spacing: KnockTokens.spacingS) {
+                Image(systemName: kind.icon)
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(kind.iconColor)
+                    .accessibilityHidden(true)
+                KnockText(title, role: .captionStrong, color: kind == .info ? KnockTokens.textSecondary : kind.iconColor, lineLimit: 2)
+                Spacer(minLength: 0)
+            }
             ForEach(Array(lines.filter { !$0.isEmpty }.enumerated()), id: \.offset) { _, line in
                 Text(line)
-                    .font(.system(size: 11).monospaced())
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(KnockTokens.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
             }
         }
-        .padding(10)
+        .padding(KnockTokens.spacingM)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func infoLine(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(monospaced ? .caption2.monospaced() : .caption)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+        .background {
+            RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                .fill(KnockTokens.panelInset)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                .strokeBorder(
+                    kind == .info ? KnockTokens.strokeSecondary : kind.stroke,
+                    lineWidth: KnockTokens.strokeWidth
+                )
+        }
     }
 }

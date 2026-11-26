@@ -1,19 +1,21 @@
 //
 //  ProviderSettingsView.swift
-//  T37「模型供应商」设置页：11 家供应商列表 + 自定义端点 + API Key（Keychain）+ 连接测试。
+//  T37「模型供应商」设置页（11 家供应商 + 自定义端点 + API Key（Keychain）+ 连接测试），
+//  P4 敲敲视觉改造：胶囊行供应商列表 / 描边等宽表单 / 自绘滑杆 / 连接测试状态（成功黄描边、失败红描边）。
 //
-//  数据全部走 Shared.ProviderBridge（真实 SettingsRepository + Keychain）：
+//  数据全部走 Shared.ProviderBridge（真实 SettingsRepository + Keychain），业务逻辑零改动：
 //  - 保存后写入 provider / model_name / custom_url / ai_temperature，Key 只进 Keychain；
 //  - 聊天客户端每次发送前重新解析配置 → 本页保存后**下一次发送立即生效**，无需重启；
 //  - 未配置时聊天回退演示模式，本页与聊天页都会显示状态提示。
 //
-//  验证钩子：`--provider-selftest`（见 ProviderAutomation.swift）。
+//  验证钩子：`--provider-selftest`（见 ProviderAutomation.swift）；截图钩子：`--settings-vision`。
 //
 
 import SwiftUI
 
 struct ProviderSettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     @State private var providers: [ProviderItem] = []
     @State private var status: ProviderStatusItem?
@@ -53,461 +55,421 @@ struct ProviderSettingsView: View {
         ZStack {
             AmbientBackground(parallax: scrollOffset, showsStandee: false)
 
-            ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 14) {
-                    statusCard
-                    providerListCard
-                    if !editingId.isEmpty {
-                        editorCard
+            VStack(spacing: 0) {
+                KnockHeader(title: "模型供应商", showsBack: true, onBack: { dismiss() })
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: KnockTokens.spacingXL) {
+                            statusGroup
+                            providerListGroup
+                            if !editingId.isEmpty {
+                                editorGroup
+                            }
+                            visionGroup
+                                .id("vision-card")
+                            helpGroup
+                        }
+                        .padding(.horizontal, KnockTokens.screenPadding)
+                        .padding(.top, KnockTokens.spacingM)
+                        .padding(.bottom, KnockTokens.spacingXXL)
                     }
-                    visionCard
-                        .id("vision-card")
-                    helpCard
+                    .scrollIndicators(.hidden)
+                    .settingsKnockScrollEdgeHidden()
+                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.contentOffset.y
+                    } action: { _, newValue in
+                        scrollOffset = newValue
+                    }
+                    .task {
+                        // 截图证据钩子：`--settings-vision` 自动滚到「识图模型」section。
+                        guard ProcessInfo.processInfo.arguments.contains("--settings-vision") else { return }
+                        try? await Task.sleep(nanoseconds: 900_000_000)
+                        withAnimation(.none) { proxy.scrollTo("vision-card", anchor: .top) }
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
-            }
-            .task {
-                // 截图证据钩子：`--settings-vision` 自动滚到「识图模型」section。
-                guard ProcessInfo.processInfo.arguments.contains("--settings-vision") else { return }
-                try? await Task.sleep(nanoseconds: 900_000_000)
-                withAnimation(.none) { proxy.scrollTo("vision-card", anchor: .top) }
-            }
             }
         }
         .navigationTitle("模型供应商")
-        .navigationBarTitleDisplayMode(.inline)
+        .settingsKnockNavigationChrome()
         .task {
             reload()
             reloadVision()
         }
     }
 
-    // MARK: - 状态卡
+    // MARK: - 状态
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: status?.isDemo == false ? "bolt.horizontal.circle.fill" : "play.circle.fill")
-                    .foregroundStyle(status?.isDemo == false ? Color.green : GlassTokens.brandOrange)
-                Text(status?.isDemo == false ? "真实模型已启用" : "当前为演示模式")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if let status {
-                    Text(status.providerName)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
+    private var statusGroup: some View {
+        SettingsKnockGroup("当前状态", systemImage: "bolt.horizontal.circle") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    HStack(spacing: KnockTokens.spacingM) {
+                        KnockRowGlyph(
+                            systemImage: status?.isDemo == false ? "bolt.horizontal.circle.fill" : "play.circle.fill",
+                            tint: status?.isDemo == false ? KnockTokens.electric : KnockTokens.textSecondary,
+                            size: 36
+                        )
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                            KnockText(
+                                status?.isDemo == false ? "真实模型已启用" : "当前为演示模式",
+                                role: .rowTitle,
+                                lineLimit: 1
+                            )
+                            KnockText(
+                                status?.providerName ?? "读取中…",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineLimit: 1
+                            )
+                        }
+                        Spacer(minLength: KnockTokens.spacingS)
+                        KnockBadge(
+                            text: status?.isDemo == false ? "真实" : "演示",
+                            variant: status?.isDemo == false ? .accent : .neutral
+                        )
+                    }
 
-            if let status {
-                Text(status.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                infoLine("模型", status.model)
-                infoLine("端点", status.endpoint, monospaced: true)
-                if status.isDemo {
-                    Text("未配置时聊天使用本地演示回复；填写任一供应商的 API Key 并保存后，下一句话即走真实模型。")
-                        .font(.caption2)
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let status {
+                        KnockText(
+                            status.summary,
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                        SettingsKnockInfoLine("模型", status.model, monospaced: true)
+                        SettingsKnockInfoLine("端点", status.endpoint, monospaced: true)
+                        if status.isDemo {
+                            SettingsKnockStatusBanner(
+                                kind: .info,
+                                title: "未配置时聊天使用本地演示回复",
+                                detail: "填写任一供应商的 API Key 并保存后，下一句话即走真实模型。"
+                            )
+                        }
+                    } else {
+                        HStack(spacing: KnockTokens.spacingS) {
+                            ProgressView().controlSize(.small)
+                            KnockText("读取供应商状态…", role: .caption, color: KnockTokens.textSecondary)
+                        }
+                    }
                 }
-            } else {
-                ProgressView().controlSize(.small)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 22)
     }
 
-    // MARK: - 11 家供应商列表
+    // MARK: - 供应商列表（胶囊行）
 
-    private var providerListCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle(text: "供应商（11 家）", systemImage: "server.rack")
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
+    private var providerListGroup: some View {
+        SettingsKnockGroup("供应商（11 家）", systemImage: "server.rack") {
+            VStack(spacing: KnockTokens.spacingS) {
+                ForEach(providers) { provider in
+                    Button {
+                        beginEditing(provider)
+                    } label: {
+                        KnockListRow(
+                            title: provider.name,
+                            subtitle: provider.requiresCustomUrl
+                                ? "自定义端点（OpenAI 兼容）"
+                                : provider.endpointHint
+                        ) {
+                            KnockRowGlyph(
+                                systemImage: provider.selected ? "largecircle.fill.circle" : "circle",
+                                tint: provider.selected ? KnockTokens.electric : KnockTokens.textSecondary
+                            )
+                        } trailing: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                if provider.selected {
+                                    KnockBadge(text: "当前", variant: .accent)
+                                } else if provider.configured {
+                                    KnockBadge(text: "已配置", variant: .neutral)
+                                }
+                                KnockChevron()
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
 
-            ForEach(providers) { provider in
-                Button {
-                    beginEditing(provider)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: provider.selected ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(provider.selected ? GlassTokens.brandOrange : Color.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(provider.name)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                if provider.configured {
-                                    Text("已配置")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(.green)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.green.opacity(0.12), in: Capsule())
+    // MARK: - 配置编辑
+
+    private var editorGroup: some View {
+        SettingsKnockGroup("配置 · \(editingName)", systemImage: "slider.horizontal.3") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        if keyConfigured {
+                            KnockBadge(text: "Key \(keyPreview)", variant: .neutral)
+                        } else {
+                            KnockBadge(text: "未配置 Key", variant: .danger)
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    SettingsKnockField(
+                        "模型",
+                        text: $model,
+                        placeholder: "模型名，如 deepseek-v4-flash",
+                        footnote: nil
+                    )
+
+                    if !modelSuggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                ForEach(modelSuggestions, id: \.self) { suggestion in
+                                    KnockChip(
+                                        title: suggestion,
+                                        isSelected: model == suggestion,
+                                        action: { model = suggestion }
+                                    )
                                 }
                             }
-                            Text(provider.requiresCustomUrl ? "自定义端点（OpenAI 兼容）" : provider.endpointHint)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            .padding(.vertical, 1)
                         }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
 
-                if provider.id != providers.last?.id {
-                    Divider().padding(.leading, 44).opacity(0.4)
-                }
-            }
-            .padding(.bottom, 6)
-        }
-        .cardSurface(cornerRadius: 20)
-    }
+                    if requiresCustomUrl {
+                        SettingsKnockField(
+                            "API 地址（OpenAI 兼容）",
+                            text: $customUrl,
+                            placeholder: "https://your-host/v1",
+                            footnote: "填到 /v1 即可，客户端会自动补 /chat/completions；也可直接填完整 endpoint。",
+                            keyboardType: .URL
+                        )
+                    }
 
-    // MARK: - 编辑卡
+                    SettingsKnockField(
+                        "API Key",
+                        text: $apiKey,
+                        placeholder: keyConfigured ? "已保存 \(keyPreview)，留空则保持不变" : "粘贴 API Key（保存到系统 Keychain）",
+                        isSecure: true,
+                        footnote: "Key 只写入 Keychain，不落 NSUserDefaults、不进备份包。"
+                    )
 
-    private var editorCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "slider.horizontal.3")
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text("配置 · \(editingName)")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if keyConfigured {
-                    Text(keyPreview)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
+                    SettingsKnockSliderRow(
+                        title: "温度",
+                        valueText: String(format: "%.2f", temperature),
+                        value: $temperature,
+                        range: 0...2,
+                        step: 0.05,
+                        hint: nil
+                    )
 
-            // 模型
-            VStack(alignment: .leading, spacing: 5) {
-                Text("模型").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                TextField("模型名，如 deepseek-v4-flash", text: $model)
-                    .font(.callout.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                if !modelSuggestions.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(modelSuggestions, id: \.self) { suggestion in
-                                Button(suggestion) { model = suggestion }
-                                    .font(.caption2)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        model == suggestion ? GlassTokens.brandOrange.opacity(0.18) : Color.secondary.opacity(0.10),
-                                        in: Capsule()
-                                    )
-                                    .buttonStyle(.plain)
+                    HStack(spacing: KnockTokens.spacingM) {
+                        Button {
+                            save()
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 14, weight: .heavy))
+                                KnockText("保存", role: .rowTitle, color: KnockTokens.onElectric, lineLimit: 1)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockPrimaryButtonStyle())
+
+                        Button {
+                            runTest()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if testing {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "network")
+                                        .font(.system(size: 13, weight: .heavy))
+                                }
+                                KnockText(testing ? "测试中…" : "连接测试", role: .rowTitle, lineLimit: 1)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                        .disabled(testing || model.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    if testing {
+                        SettingsKnockProgressBar()
+                    }
+
+                    if keyConfigured {
+                        Button(role: .destructive) {
+                            let ok = environment.bridge.clearProviderApiKey(providerId: editingId)
+                            saveMessage = ok ? "已清除 Key" : "清除 Key 失败"
+                            saveOK = ok
+                            reload()
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 12, weight: .heavy))
+                                KnockText("清除已保存的 API Key", role: .captionStrong, color: KnockTokens.dangerBright, lineLimit: 1)
+                                Spacer(minLength: 0)
                             }
                         }
+                        .buttonStyle(.plain)
+                    }
+
+                    if !saveMessage.isEmpty {
+                        SettingsKnockStatusBanner(
+                            kind: saveOK ? .success : .failure,
+                            title: saveMessage
+                        )
+                    }
+
+                    if let testResult {
+                        testResultCard(testResult)
                     }
                 }
-            }
-
-            // 自定义端点
-            if requiresCustomUrl {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("API 地址（OpenAI 兼容）").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    TextField("https://your-host/v1", text: $customUrl)
-                        .font(.callout.monospaced())
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .padding(10)
-                        .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                    Text("填到 /v1 即可，客户端会自动补 /chat/completions；也可直接填完整 endpoint。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            // Key
-            VStack(alignment: .leading, spacing: 5) {
-                Text("API Key").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                SecureField(keyConfigured ? "已保存 \(keyPreview)，留空则保持不变" : "粘贴 API Key（保存到系统 Keychain）", text: $apiKey)
-                    .font(.callout.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                Text("Key 只写入 Keychain，不落 NSUserDefaults、不进备份包。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-
-            // 温度
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("温度").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "%.2f", temperature))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $temperature, in: 0...2, step: 0.05)
-                    .tint(GlassTokens.brandOrange)
-            }
-
-            // 操作
-            HStack(spacing: 10) {
-                Button {
-                    save()
-                } label: {
-                    Label("保存", systemImage: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(GlassTokens.brandOrange.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    runTest()
-                } label: {
-                    HStack(spacing: 6) {
-                        if testing { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "network") }
-                        Text(testing ? "测试中…" : "连接测试")
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .disabled(testing || model.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-
-            if keyConfigured {
-                Button(role: .destructive) {
-                    let ok = environment.bridge.clearProviderApiKey(providerId: editingId)
-                    saveMessage = ok ? "已清除 Key" : "清除 Key 失败"
-                    saveOK = ok
-                    reload()
-                } label: {
-                    Text("清除已保存的 API Key")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if !saveMessage.isEmpty {
-                Text(saveMessage)
-                    .font(.caption)
-                    .foregroundStyle(saveOK ? .green : .red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let testResult {
-                testResultCard(testResult)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
+    /// 连接测试结果：成功 = 黄描边、失败 = 红描边（计划书配色纪律）。
     private func testResultCard(_ result: ProviderTestResultItem) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(result.ok ? .green : .red)
-                Text(result.ok ? "连接成功" : "连接失败")
-                    .font(.caption.weight(.semibold))
-                if result.latencyMs > 0 {
-                    Text("首 token \(result.latencyMs)ms")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if !result.replyPreview.isEmpty {
-                Text("回复预览：\(result.replyPreview)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if !result.message.isEmpty && result.message != "连接成功" {
-                Text(result.message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            Text("\(result.providerName) · \(result.model)")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+        var detail: [String] = []
+        if result.latencyMs > 0 {
+            detail.append("首 token \(result.latencyMs)ms")
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background((result.ok ? Color.green : Color.red).opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        if !result.replyPreview.isEmpty {
+            detail.append("回复预览：\(result.replyPreview)")
+        }
+        if !result.message.isEmpty && result.message != "连接成功" {
+            detail.append(result.message)
+        }
+        detail.append("\(result.providerName) · \(result.model)")
+        return SettingsKnockStatusBanner(
+            kind: result.ok ? .success : .failure,
+            title: result.ok ? "连接成功" : "连接失败",
+            detail: detail.joined(separator: "\n")
+        )
     }
 
     // MARK: - 识图模型（T46：图片聊天真实识图）
 
-    private var visionCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: visionStatus?.engineConfigured == true ? "eye.circle.fill" : "eye.slash.circle")
-                    .foregroundStyle(visionStatus?.engineConfigured == true ? .green : GlassTokens.brandOrange)
-                Text("识图模型（图片聊天）")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if let visionStatus {
-                    Text(visionStatus.mode == "independent" ? "独立配置" : "自动")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(visionStatus.engineConfigured ? .green : .secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background((visionStatus.engineConfigured ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
-                }
-            }
-
-            if let visionStatus {
-                Text(visionStatus.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 8) {
-                    Text("configured=\(visionStatus.configured ? "true" : "false")")
-                    Text("engine=\(visionStatus.engineConfigured ? "true" : "false")")
-                    Text("key=\(visionStatus.keyConfigured ? "已保存" : "无")")
-                    Text("backend=\(visionStatus.keyStoreBackend)")
-                }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            }
-
-            Divider().opacity(0.4)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("供应商").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Picker("供应商", selection: $visionProvider) {
-                    ForEach(providers) { provider in
-                        Text(provider.name).tag(provider.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .tint(GlassTokens.brandOrange)
-                .onChange(of: visionProvider) { _, newValue in
-                    guard let provider = providers.first(where: { $0.id == newValue }) else { return }
-                    guard !provider.requiresCustomUrl else {
-                        // 自定义端点：保留用户已填的端点/模型；「自填」只是聊天供应商的候选占位，不能当识图模型名。
-                        if visionEndpoint.isEmpty {
-                            visionEndpoint = "https://your-host/v1/chat/completions"
+    private var visionGroup: some View {
+        SettingsKnockGroup("识图模型（图片聊天）", systemImage: "eye.circle") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    HStack(spacing: KnockTokens.spacingM) {
+                        KnockRowGlyph(
+                            systemImage: visionStatus?.engineConfigured == true ? "eye.circle.fill" : "eye.slash.circle",
+                            tint: visionStatus?.engineConfigured == true ? KnockTokens.electric : KnockTokens.textSecondary,
+                            size: 36
+                        )
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                            KnockText(
+                                visionStatus?.engineConfigured == true ? "识图已就绪" : "识图未配置",
+                                role: .rowTitle,
+                                lineLimit: 1
+                            )
+                            if let visionStatus {
+                                KnockText(visionStatus.summary, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
+                            }
                         }
-                        return
+                        Spacer(minLength: KnockTokens.spacingS)
+                        if let visionStatus {
+                            KnockBadge(
+                                text: visionStatus.mode == "independent" ? "独立配置" : "自动",
+                                variant: visionStatus.engineConfigured ? .accent : .neutral
+                            )
+                        }
                     }
-                    visionEndpoint = provider.endpointHint
-                    if visionModel.isEmpty {
-                        visionModel = provider.defaultModel
+
+                    if let visionStatus {
+                        HStack(spacing: KnockTokens.spacingS) {
+                            Text("configured=\(visionStatus.configured ? "true" : "false")")
+                            Text("engine=\(visionStatus.engineConfigured ? "true" : "false")")
+                            Text("key=\(visionStatus.keyConfigured ? "已保存" : "无")")
+                            Text("backend=\(visionStatus.keyStoreBackend)")
+                        }
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(KnockTokens.textTertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    }
+
+                    KnockDivider()
+
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                        KnockText("供应商", role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                        KnockDropdown(
+                            items: providers.map { KnockSegmentItem(value: $0.id, title: $0.name, systemImage: nil) },
+                            selection: $visionProvider
+                        )
+                        .onChange(of: visionProvider) { _, newValue in
+                            guard let provider = providers.first(where: { $0.id == newValue }) else { return }
+                            guard !provider.requiresCustomUrl else {
+                                // 自定义端点：保留用户已填的端点/模型；「自填」只是聊天供应商的候选占位，不能当识图模型名。
+                                if visionEndpoint.isEmpty {
+                                    visionEndpoint = "https://your-host/v1/chat/completions"
+                                }
+                                return
+                            }
+                            visionEndpoint = provider.endpointHint
+                            if visionModel.isEmpty {
+                                visionModel = provider.defaultModel
+                            }
+                        }
+                    }
+
+                    SettingsKnockField(
+                        "识图端点",
+                        text: $visionEndpoint,
+                        placeholder: "https://host/v1/chat/completions",
+                        footnote: "OpenAI 兼容 chat/completions 端点；阿里云原生 dashscope 多模态端点亦可（不含 /compatible-mode/ 时走 Qwen-VL 协议）。",
+                        keyboardType: .URL
+                    )
+
+                    SettingsKnockField(
+                        "识图模型名",
+                        text: $visionModel,
+                        placeholder: "qwen3-vl-plus / gpt-4o-mini …"
+                    )
+
+                    SettingsKnockField(
+                        "识图 API Key",
+                        text: $visionApiKey,
+                        placeholder: visionStatus?.keyConfigured == true
+                            ? "已保存（留空保持不变，空串复用聊天 Key）"
+                            : "粘贴识图 API Key（保存到 Keychain）",
+                        isSecure: true,
+                        footnote: "Key 只写 Keychain（模拟器未签名时回退沙盒私密文件，同供应商 Key 策略）；保存后图片聊天立即使用真实识图。"
+                    )
+
+                    HStack(spacing: KnockTokens.spacingM) {
+                        Button(action: saveVision) {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 14, weight: .heavy))
+                                KnockText("保存识图配置", role: .rowTitle, color: KnockTokens.onElectric, lineLimit: 1)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockPrimaryButtonStyle())
+                        .disabled(visionEndpoint.trimmingCharacters(in: .whitespaces).isEmpty || visionModel.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                        Button {
+                            clearVision()
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingS) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 13, weight: .heavy))
+                                KnockText("清空（回到自动）", role: .rowTitle, lineLimit: 2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                    }
+
+                    if !visionSaveMessage.isEmpty {
+                        SettingsKnockStatusBanner(
+                            kind: visionSaveOK ? .success : .failure,
+                            title: visionSaveMessage
+                        )
                     }
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("识图端点").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                TextField("https://host/v1/chat/completions", text: $visionEndpoint)
-                    .font(.callout.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                Text("OpenAI 兼容 chat/completions 端点；阿里云原生 dashscope 多模态端点亦可（不含 /compatible-mode/ 时走 Qwen-VL 协议）。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("识图模型名").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                TextField("qwen3-vl-plus / gpt-4o-mini …", text: $visionModel)
-                    .font(.callout.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("识图 API Key").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                SecureField(
-                    visionStatus?.keyConfigured == true ? "已保存（留空保持不变，空串复用聊天 Key）" : "粘贴识图 API Key（保存到 Keychain）",
-                    text: $visionApiKey
-                )
-                .font(.callout.monospaced())
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .padding(10)
-                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                Text("Key 只写 Keychain（模拟器未签名时回退沙盒私密文件，同供应商 Key 策略）；保存后图片聊天立即使用真实识图。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                Button(action: saveVision) {
-                    Label("保存识图配置", systemImage: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(GlassTokens.brandOrange.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .disabled(visionEndpoint.trimmingCharacters(in: .whitespaces).isEmpty || visionModel.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                Button {
-                    clearVision()
-                } label: {
-                    Label("清空（回到自动）", systemImage: "trash")
-                        .font(.caption.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-            }
-
-            if !visionSaveMessage.isEmpty {
-                Text(visionSaveMessage)
-                    .font(.caption2)
-                    .foregroundStyle(visionSaveOK ? .green : .red)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     private func reloadVision() {
@@ -553,22 +515,20 @@ struct ProviderSettingsView: View {
         reloadVision()
     }
 
-    private var helpCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: "说明", systemImage: "questionmark.circle")
-            Text("• 保存后无需重启：下一次发送消息即使用新配置。")
-            Text("• 连接测试会发一条最小请求（1 次补全），用于验证 Key / 端点 / 模型名。")
-            Text("• 未配置或无 Key 时聊天回退「演示模式」，聊天页顶部会显示提示。")
-            Text("• Google / Anthropic 使用官方 OpenAI 兼容端点；其余 9 家为原生 OpenAI 兼容。")
+    private var helpGroup: some View {
+        SettingsKnockGroup("说明", systemImage: "questionmark.circle") {
+            KnockPanel {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                    SettingsKnockBullet("保存后无需重启：下一次发送消息即使用新配置。")
+                    SettingsKnockBullet("连接测试会发一条最小请求（1 次补全），用于验证 Key / 端点 / 模型名。")
+                    SettingsKnockBullet("未配置或无 Key 时聊天回退「演示模式」，聊天页顶部会显示提示。")
+                    SettingsKnockBullet("Google / Anthropic 使用官方 OpenAI 兼容端点；其余 9 家为原生 OpenAI 兼容。")
+                }
+            }
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .cardSurface(cornerRadius: 18)
     }
 
-    // MARK: - 行为
+    // MARK: - 行为（逻辑零改动）
 
     private func reload() {
         providers = environment.bridge.loadProviders()
@@ -650,20 +610,5 @@ struct ProviderSettingsView: View {
                 )
             }
         )
-    }
-
-    private func infoLine(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(monospaced ? .caption2.monospaced() : .caption2)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

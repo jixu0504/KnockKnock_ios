@@ -2,17 +2,41 @@
 //  RolesView.swift
 //  角色列表（Tab 根，A2 / T36）：数据来自 shared `RoleBridge`（真实 SQLite
 //  operators + chat_sessions + memories）：
-//  - 头像：operators.avatarUri "1".."147" → Bundle 资源 avatar_<N>.png（T16 裁决），
-//    其它值走占位色块 + 首字；
+//  - 头像：`RoleAvatar`（敲敲占位：黑底 + 1.5pt 浅蓝圈 + 白色 heavy 首字；原 147 内置头像默认不展示，
+//    上传头像保留并套蓝圈）；
 //  - 关系/等级：operators.userRelation / intimacy；
 //  - 会话状态：ChatSession 的 mode / lastMessage / lastTime（无会话显示「尚未开始对话」）。
 //  导航：点击 → Route.roleDetail(roleId:)（operatorId；兼容旧 sessionId 深链）。
 //  T40：右上角「+」新建聊天（对齐 Android ContactsScreen 的新建入口：选角色 → 创建/复用会话
 //        → 进入聊天，路由落本 Tab 的 contactsPath，不再占用聊天 Tab 工具栏）。
-//  玻璃元素计数：头部卡片 1（一屏 ≤5 原则）。
+//  T49：右上角「新建角色」入口（person.badge.plus），与新建聊天/新建群聊入口并存不冲突。
+//
+//  P2「敲敲」改版（docs/敲敲UI改版计划书-v1.1.md）：
+//  - 大标题 + `KnockSearchBar` + `KnockSegmentedBar` 二级筛选（图 B 条形栏形态）；
+//  - 角色/群聊行 = `KnockListRow` 胶囊行（行底 + 1.5pt 描边 + 蓝圈头像）；
+//  - 空态 = `KnockEmptyState`（E M P T Y 宽字距 pill + NoData 行）；
+//  - 隐藏系统导航栏，iOS 26+ 关闭滚动边缘玻璃（`.knockHideSystemChrome()`）。
+//  只改视觉层：数据加载 / 自检钩子 / 路由 / 日志断言全部保留。
 //
 
 import SwiftUI
+
+/// 角色列表二级筛选（纯展示过滤；不改数据层与 bridge 调用）。
+enum RoleListFilter: String, CaseIterable, Hashable, Identifiable {
+    case all
+    case withSession
+    case withoutSession
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .withSession: return "有会话"
+        case .withoutSession: return "未开始"
+        }
+    }
+}
 
 struct RolesView: View {
     @EnvironmentObject private var environment: AppEnvironment
@@ -23,104 +47,75 @@ struct RolesView: View {
     @State private var groups: [GroupItem] = []
     @State private var showNewGroup = false
     @State private var searchText = ""
+    /// 分区展开/收起（群聊 / 私聊）
+    @Environment(\.accessibilityReduceMotion) private var reduceMotionEnabled
+    /// 截图/调试钩子：`--roles-collapse-groups` 启动时收起群聊分区（让私聊分区首屏可见）；无参数零影响
+    @State private var groupsExpanded = !ProcessInfo.processInfo.arguments.contains("--roles-collapse-groups")
+    @State private var privateExpanded = true
     @State private var isLoading = false
     @State private var errorText: String?
-    @State private var scrollOffset: CGFloat = 0
+    /// P2：二级筛选（全部 / 有会话 / 未开始）
+    @State private var filter: RoleListFilter = .all
     /// T49：角色人设编辑（.sheet(item:) 携带目标，避免 isPresented 闭包读到旧状态）
     @State private var roleEditTarget: RoleEditTarget?
 
     private var filteredRoles: [RoleItem] {
         let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !keyword.isEmpty else { return roles }
-        return roles.filter {
-            $0.name.localizedCaseInsensitiveContains(keyword)
-                || $0.title.localizedCaseInsensitiveContains(keyword)
-                || $0.relationLabel.localizedCaseInsensitiveContains(keyword)
+        return roles.filter { role in
+            if !keyword.isEmpty {
+                let matched = role.name.localizedCaseInsensitiveContains(keyword)
+                    || role.title.localizedCaseInsensitiveContains(keyword)
+                    || role.relationLabel.localizedCaseInsensitiveContains(keyword)
+                guard matched else { return false }
+            }
+            switch filter {
+            case .all: return true
+            case .withSession: return role.hasSession
+            case .withoutSession: return !role.hasSession
+            }
         }
     }
 
     private var sessionCount: Int { roles.filter(\.hasSession).count }
 
+    private var filterItems: [KnockSegmentItem<RoleListFilter>] {
+        RoleListFilter.allCases.map { KnockSegmentItem(value: $0, title: $0.title) }
+    }
+
     var body: some View {
         ZStack {
-            AmbientBackground(parallax: scrollOffset, showsStandee: false)
+            AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    headerCard
-                    searchField
-                    groupSection
-
-                    if let errorText {
-                        EmptyStateView(
-                            title: "角色读取失败",
-                            message: errorText,
-                            systemImage: "exclamationmark.triangle",
-                            actionTitle: "重试",
-                            action: { Task { await reload() } }
-                        )
-                    } else if isLoading && roles.isEmpty {
-                        ProgressView("读取 shared 角色数据…")
-                            .padding(40)
-                    } else if roles.isEmpty {
-                        EmptyStateView(
-                            title: "还没有角色",
-                            message: "shared operators 表为空。首次进入会自动补齐预设角色；若仍为空，可尝试重新播种。",
-                            systemImage: "person.2",
-                            actionTitle: "重新播种",
-                            action: {
-                                Task {
-                                    _ = await environment.bridge.bootstrap()
-                                    await reload()
-                                }
-                            }
-                        )
-                    } else if filteredRoles.isEmpty {
-                        EmptyStateView(
-                            title: "没有匹配的角色",
-                            message: "没有名字 / 身份 / 关系匹配「\(searchText)」的角色。",
-                            systemImage: "magnifyingglass"
-                        )
-                    } else {
-                        ForEach(filteredRoles) { role in
-                            roleRow(role)
-                        }
-                    }
+            VStack(spacing: 0) {
+                // 头部固定区（非 lazy）：搜索框焦点不会因列表 5s 刷新/懒加载重建而丢失
+                VStack(spacing: KnockTokens.spacingM) {
+                    titleSection
+                    KnockSearchBar(placeholder: "搜索联系人 / 阵营 / 关系", text: $searchText)
+                    KnockSegmentedBar(
+                        items: filterItems,
+                        selection: $filter,
+                        height: KnockTokens.segmentedSmallHeight,
+                        showsIcons: false
+                    )
+                    .accessibilityLabel("联系人筛选")
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.top, KnockTokens.spacingS)
+
+                ScrollView {
+                    LazyVStack(spacing: KnockTokens.spacingM) {
+                        groupSection
+                        contentSection
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingM)
+                    .padding(.bottom, KnockTokens.spacingXL)
+                }
             }
             .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
-            }
             .refreshable { await reload() }
         }
-        .navigationTitle("联系人")
-        .toolbar {
-            // T40：对齐 Android ContactsScreen——「+」新建聊天入口在联系人 Tab
-            // T49：新增「新建角色」入口（person.badge.plus），与新建聊天/新建群聊入口并存不冲突
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    openRoleEditor(roleId: nil)
-                } label: {
-                    Image(systemName: "person.crop.circle.badge.plus")
-                }
-                .accessibilityLabel("新建角色")
-                .accessibilityHint("创建新的角色人设")
-
-                Button {
-                    router.openNewChatFromContacts()
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel("新建聊天")
-                .accessibilityHint("选择角色开始对话")
-            }
-        }
+        .knockHideSystemChrome()
         .task {
             await reload()
             // T43 群聊全链路自检（--group-selftest；真实引擎 + DB + 深链，独立日志落盘）
@@ -164,232 +159,268 @@ struct RolesView: View {
         }
     }
 
-    // MARK: 群聊分区（T43：列表 + 进入群聊 + 新建群聊）
+    // MARK: - 大标题 + 顶部操作（替代系统导航栏 toolbar）
 
-    private var groupSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Label("群聊", systemImage: "person.3.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text("\(groups.count)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                Spacer(minLength: 4)
-                Button {
-                    showNewGroup = true
-                    GroupSelfTestLog.add("roles newGroup opened groups=\(groups.count)")
-                } label: {
-                    Label("新建群聊", systemImage: "plus.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(GlassTokens.brandOrange)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("新建群聊")
+    private var titleSection: some View {
+        HStack(alignment: .center, spacing: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                KnockText("联系人", role: .display, lineLimit: 1)
+                KnockText(
+                    "\(roles.count) 位联系人 · \(sessionCount) 个会话进行中",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineLimit: 1
+                )
             }
 
-            if groups.isEmpty {
-                Text("还没有群聊。点「新建群聊」选择成员创建；首次打开会自动播种预设群。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(groups) { group in
-                    groupRow(group)
+            Spacer(minLength: KnockTokens.spacingS)
+
+            // T49：新建角色入口（原 toolbar person.badge.plus）
+            KnockCapsuleIconButton(
+                systemImage: "person.badge.plus",
+                variant: .neutral,
+                accessibilityLabel: "新建角色"
+            ) {
+                openRoleEditor(roleId: nil)
+            }
+
+            // T40：新建聊天入口（主 CTA = 黄胶囊）
+            KnockCapsuleIconButton(
+                systemImage: "plus",
+                variant: .accent,
+                accessibilityLabel: "新建聊天"
+            ) {
+                router.openNewChatFromContacts()
+            }
+        }
+        .padding(.bottom, KnockTokens.spacingXS)
+    }
+
+    // MARK: - 群聊分区（T43：列表 + 进入群聊 + 新建群聊）
+
+    private var groupSection: some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "person.3.fill")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textSecondary)
+                        .accessibilityHidden(true)
+                    Button {
+                        withAnimation(reduceMotionEnabled ? nil : .easeOut(duration: 0.16)) { groupsExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            KnockText("群聊", role: .sectionTitle, lineLimit: 1)
+                            KnockBadge(text: "\(groups.count)", variant: .neutral)
+                            Image(systemName: groupsExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 11, weight: .heavy))
+                                .foregroundStyle(KnockTokens.textSecondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(groupsExpanded ? "收起群聊分区" : "展开群聊分区")
+                    Spacer(minLength: KnockTokens.spacingS)
+                    Button {
+                        showNewGroup = true
+                        GroupSelfTestLog.add("roles newGroup opened groups=\(groups.count)")
+                    } label: {
+                        KnockText("新建群聊", role: .sectionTitle, color: KnockTokens.textPrimary, lineLimit: 1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("新建群聊")
+                }
+                .accessibilityAddTraits(.isHeader)
+
+                if groupsExpanded {
+                    if groups.isEmpty {
+                        KnockText(
+                            "还没有群聊。点「新建群聊」选择成员创建；首次打开会自动播种预设群。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(spacing: KnockTokens.spacingS) {
+                            ForEach(groups) { group in
+                                groupRow(group)
+                            }
+                        }
+                    }
                 }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     private func groupRow(_ group: GroupItem) -> some View {
-        Button {
-            router.contactsPath.append(Route.groupChat(sessionId: group.sessionId))
-            GroupSelfTestLog.add("roles openGroup id=\(group.sessionId) name=\(group.name) members=\(group.memberCount)")
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(GlassTokens.brandOrange.opacity(0.16))
-                    Image(systemName: "person.3.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(GlassTokens.brandOrange)
-                }
-                .frame(width: 38, height: 38)
+        let subtitle = [
+            group.lastTimeText,
+            group.memberCountText,
+            group.modeText,
+            group.mutedCount > 0 ? "\(group.mutedCount) 人禁言" : "",
+            group.lastMessage.isEmpty ? "（暂无群消息）" : group.lastMessage,
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(group.name)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        if group.unreadCount > 0 {
-                            Text("\(group.unreadCount)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(GlassTokens.brandOrange, in: Capsule())
-                        }
-                        Spacer(minLength: 0)
-                        Text(group.lastTimeText)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Text("\(group.memberCountText) · \(group.modeText)\(group.mutedCount > 0 ? " · \(group.mutedCount) 人禁言" : "")")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(group.lastMessage.isEmpty ? "（暂无群消息）" : group.lastMessage)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+        return KnockListRow(
+            title: group.name,
+            subtitle: subtitle,
+            height: KnockTokens.rowMinHeight,
+            action: {
+                router.contactsPath.append(Route.groupChat(sessionId: group.sessionId))
+                GroupSelfTestLog.add("roles openGroup id=\(group.sessionId) name=\(group.name) members=\(group.memberCount)")
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+        ) {
+            KnockRowGlyph(systemImage: "person.3.fill")
+        } trailing: {
+            HStack(spacing: KnockTokens.spacingS) {
+                if group.unreadCount > 0 {
+                    // 未读 = 聊天语义 → 聊天蓝角标（黄只做选中/主 CTA）
+                    KnockBadge(text: "\(group.unreadCount)", variant: .chat)
+                }
+                KnockChevron()
+            }
         }
-        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("群聊 \(group.name)，\(group.memberCountText)")
         .accessibilityHint("打开群聊")
     }
 
-    // MARK: 头部（玻璃 1）
+    // MARK: - 角色列表 / 状态
 
-    private var headerCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "person.2.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("我的干员")
-                        .font(.subheadline.weight(.semibold))
-                    Text("\(roles.count) 位角色 · \(sessionCount) 个会话进行中")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-        }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            TextField("搜索角色 / 身份 / 关系", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(.subheadline)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .cardSurface(cornerRadius: 14)
-    }
-
-    // MARK: 角色行（非玻璃）
-
-    private func roleRow(_ role: RoleItem) -> some View {
-        Button {
-            router.contactsPath.append(Route.roleDetail(roleId: role.id))
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                RoleAvatar(avatarId: role.avatarId, name: role.name, size: 54)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        Text(role.name)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(role.levelText)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(GlassTokens.brandOrange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(GlassTokens.bubbleSystem, in: Capsule())
-                        Spacer(minLength: 0)
-                        Text(role.hasSession ? role.modeText : "未建会话")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+    @ViewBuilder
+    private var contentSection: some View {
+        if let errorText {
+            KnockEmptyState(
+                title: "角色读取失败",
+                message: errorText,
+                systemImage: "exclamationmark.triangle",
+                actionTitle: "重试",
+                action: { Task { await reload() } }
+            )
+        } else if isLoading && roles.isEmpty {
+            loadingCard
+        } else if roles.isEmpty {
+            KnockEmptyState(
+                title: "还没有联系人",
+                message: "shared operators 表为空。首次进入会自动补齐预设角色；若仍为空，可尝试重新播种。",
+                systemImage: "person.2",
+                actionTitle: "重新播种",
+                action: {
+                    Task {
+                        _ = await environment.bridge.bootstrap()
+                        await reload()
                     }
-
-                    if !role.subtitle.isEmpty {
-                        Text(role.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                }
+            )
+        } else if filteredRoles.isEmpty {
+            KnockEmptyState(
+                title: "没有匹配的联系人",
+                message: "没有名字 / 阵营 / 关系匹配「\(searchText)」的联系人。",
+                systemImage: "magnifyingglass"
+            )
+        } else {
+            // 私聊分区：与群聊分区同款 KnockPanel 卡片 bar（头部图标 + 标题 + 计数 badge + 折叠 chevron）
+            KnockPanel(padding: KnockTokens.spacingM) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textSecondary)
+                            .accessibilityHidden(true)
+                        Button {
+                            withAnimation(reduceMotionEnabled ? nil : .easeOut(duration: 0.16)) { privateExpanded.toggle() }
+                        } label: {
+                            HStack(spacing: KnockTokens.spacingXS) {
+                                KnockText("私聊", role: .sectionTitle, lineLimit: 1)
+                                KnockBadge(text: "\(filteredRoles.count)", variant: .neutral)
+                                Image(systemName: privateExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 11, weight: .heavy))
+                                    .foregroundStyle(KnockTokens.textSecondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(privateExpanded ? "收起私聊分区" : "展开私聊分区")
+                        Spacer(minLength: KnockTokens.spacingS)
                     }
+                    .accessibilityAddTraits(.isHeader)
 
-                    HStack(spacing: 6) {
-                        Label(role.relationLabel, systemImage: "link")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if !role.emotion.isEmpty {
-                            Text("· \(role.emotion)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                    if privateExpanded {
+                        VStack(spacing: KnockTokens.spacingS) {
+                            ForEach(filteredRoles) { role in
+                                roleRow(role)
+                            }
                         }
                     }
-
-                    Text(role.hasSession
-                         ? (role.lastMessage.isEmpty ? "（暂无对话）" : role.lastMessage)
-                         : "尚未开始对话 · 点入详情可直接发起")
-                        .font(.subheadline)
-                        .foregroundStyle(role.hasSession ? .secondary : .tertiary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 16)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 20)
         }
-        .buttonStyle(.plain)
+    }
+
+    private var loadingCard: some View {
+        KnockPanel {
+            HStack(spacing: KnockTokens.spacingM) {
+                ProgressView()
+                    .tint(KnockTokens.electric)
+                KnockText("读取 shared 角色数据…", role: .caption, color: KnockTokens.textSecondary)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // MARK: - 角色行（胶囊行；非玻璃）
+
+    private func roleRow(_ role: RoleItem) -> some View {
+        KnockListRow(
+            title: role.name,
+            subtitle: rowSubtitle(role),
+            action: {
+                router.contactsPath.append(Route.roleDetail(roleId: role.id))
+            }
+        ) {
+            RoleAvatar(avatarId: role.avatarId, name: role.name, size: KnockTokens.rowIconSize)
+        } trailing: {
+            HStack(spacing: KnockTokens.spacingS) {
+                VStack(alignment: .trailing, spacing: KnockTokens.spacingXXS) {
+                    KnockBadge(text: role.levelText, variant: .neutral)
+                    if role.hasSession {
+                        KnockText(role.modeText, role: .badge, color: KnockTokens.textSecondary, lineLimit: 1)
+                    } else {
+                        KnockText("未建会话", role: .badge, color: KnockTokens.textTertiary, lineLimit: 1)
+                    }
+                }
+                KnockChevron()
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("角色 \(role.name)，\(role.title)，\(role.relationLabel)，\(role.levelText)")
         .accessibilityHint("打开角色详情")
     }
 
-    // MARK: 角色编辑（T49）
+    /// 行副标题：身份 + 关系摘要 + 会话状态 / 最近一句（胶囊行只放最有辨识度的信息）。
+    private func rowSubtitle(_ role: RoleItem) -> String {
+        var parts: [String] = []
+        if !role.title.isEmpty { parts.append(role.title) }
+        parts.append(role.relationLabel)
+        if role.hasSession {
+            parts.append(role.lastMessage.isEmpty ? "（暂无对话）" : role.lastMessage)
+        } else {
+            parts.append("尚未开始对话")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - 角色编辑（T49）
 
     private func openRoleEditor(roleId: String?) {
         roleEditTarget = RoleEditTarget(operatorId: roleId)
         SelfTestLog.add("roles openRoleEditor roleId=\(roleId ?? "new")")
     }
 
-    // MARK: 数据
+    // MARK: - 数据
 
     private func reload() async {
         isLoading = true

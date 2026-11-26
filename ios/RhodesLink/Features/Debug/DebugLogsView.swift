@@ -9,11 +9,15 @@
 //
 //  截图/演示钩子：`--settings-extra-demo-logs`（写入一组演示级别日志，仅当次启动）。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 刷新胶囊）；
+//  日志阅读器 = 黑底面板 + 等宽字体 + 灰字（错误行危险红）+ 可选中文本；无毛玻璃、无渐变。
+//
 
 import SwiftUI
 
 struct DebugLogsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     enum LevelFilter: String, CaseIterable, Identifiable {
         case all = "全部"
@@ -23,16 +27,6 @@ struct DebugLogsView: View {
         case error = "ERROR"
 
         var id: String { rawValue }
-
-        var color: Color {
-            switch self {
-            case .all: return .secondary
-            case .debug: return .secondary
-            case .info: return .blue
-            case .warn: return .orange
-            case .error: return .red
-            }
-        }
     }
 
     @State private var snapshot: DebugLogSnapshotItem?
@@ -72,45 +66,54 @@ struct DebugLogsView: View {
         ZStack {
             AmbientBackground(parallax: scrollOffset, showsStandee: false)
 
-            ScrollView {
-                VStack(spacing: 14) {
-                    statusCard
-                    filterCard
-                    entriesSection
+            VStack(spacing: 0) {
+                KnockHeader(title: "调试日志", showsBack: true, onBack: { dismiss() }, trailing: {
+                    knockRefreshButton
+                })
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        statusPanel
+                        filterPanel
+                        entriesSection
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .scrollIndicators(.hidden)
-            .refreshable { reload() }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
+                .refreshable { reload() }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, newValue in
+                    scrollOffset = newValue
+                }
             }
         }
-        .navigationTitle("调试日志")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    reload()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("刷新日志")
-            }
-        }
+        .knockHiddenNavigationBar()
         .task {
             writeDemoEntriesIfNeeded()
             reload()
         }
-        .confirmationDialog("清空全部日志？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-            Button("清空主文件与全部归档", role: .destructive) { clearAll() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将删除 Application Support/logs/ 下的 rhodes.log 与全部归档文件，操作不可恢复。")
+        .knockConfirmDialog(
+            isPresented: $showClearConfirm,
+            title: "清空全部日志？",
+            message: "将删除 Application Support/logs/ 下的 rhodes.log 与全部归档文件，操作不可恢复。",
+            confirmTitle: "清空",
+            isDestructive: true
+        ) {
+            clearAll()
+        }
+    }
+
+    private var knockRefreshButton: some View {
+        KnockCapsuleIconButton(
+            systemImage: "arrow.clockwise",
+            variant: .neutral,
+            accessibilityLabel: "刷新日志"
+        ) {
+            reload()
         }
     }
 
@@ -159,12 +162,12 @@ struct DebugLogsView: View {
         let lines: [(String, String, String)] = [
             ("INFO", "App", "RhodesLink 启动完成，shared framework 已连接"),
             ("DEBUG", "Settings", "读取外观键 appearance=dark chat_background=dusk font=large"),
-            ("INFO", "ChatEngine", "发送消息 session=session_amiya 历史轮数=15 温度=0.70"),
+            ("INFO", "ChatEngine", "发送消息 session=session_zzz008 历史轮数=15 温度=0.70"),
             ("DEBUG", "Prompt", "提示词模板解析完成 type=private mode=online len=890"),
             ("WARN", "Provider", "供应商连接测试超时，已自动回退本地演示通道"),
-            ("INFO", "Memory", "写入长期印象 memoryId=1024 operator=amiya"),
+            ("INFO", "Memory", "写入长期印象 memoryId=1024 operator=zzz008"),
             ("ERROR", "Notification", "通知授权被拒绝（status=denied），已引导用户前往系统设置"),
-            ("INFO", "Diary", "干员日记同步完成 count=3 未读=1"),
+            ("INFO", "Diary", "代理人日记同步完成 count=3 未读=1"),
             ("DEBUG", "Knowledge", "知识库召回命中 2 条 chunk，topScore=0.83"),
             ("INFO", "DebugLogs", "演示日志写入完成（--settings-extra-demo-logs）"),
         ]
@@ -174,159 +177,139 @@ struct DebugLogsView: View {
         SelfTestLog.add("debug-logs demo entries written=\(lines.count)")
     }
 
-    // MARK: 状态卡
+    // MARK: 状态面板
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text("日志文件")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
+    private var statusPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .accessibilityHidden(true)
+                    KnockText("日志文件", role: .sectionTitle, lineLimit: 1)
+                    Spacer(minLength: KnockTokens.spacingS)
+                    if let snapshot {
+                        KnockCountPill(title: "共", value: "\(snapshot.totalLines) 行")
+                    }
+                }
+
                 if let snapshot {
-                    Text("共 \(snapshot.totalLines) 行")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    infoLine("主文件", snapshot.path, monospaced: true)
+                    infoLine("大小", "\(snapshot.bytesText) · 归档 \(max(0, snapshot.files.count - 1)) 个")
+                    if snapshot.truncated {
+                        KnockText("列表仅显示最近 500 行；导出文件包含完整主文件。", role: .caption, color: KnockTokens.textSecondary)
+                    }
+                } else {
+                    KnockText("读取中…", role: .caption, color: KnockTokens.textSecondary)
                 }
-            }
 
-            if let snapshot {
-                infoLine("主文件", snapshot.path, monospaced: true)
-                infoLine("大小", "\(snapshot.bytesText) · 归档 \(max(0, snapshot.files.count - 1)) 个")
-                if snapshot.truncated {
-                    Text("列表仅显示最近 500 行；导出文件包含完整主文件。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if !statusMessage.isEmpty {
+                    KnockText(
+                        statusMessage,
+                        role: .captionStrong,
+                        color: statusIsError ? KnockTokens.dangerBright : KnockTokens.textPrimary
+                    )
                 }
-            } else {
-                Text("读取中…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !statusMessage.isEmpty {
-                Text(statusMessage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(statusIsError ? .red : .green)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 22)
     }
 
     private func infoLine(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+            KnockText(title, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
             Text(value)
-                .font(monospaced ? .caption2.monospaced() : .caption2)
-                .foregroundStyle(.primary)
+                .font(.system(size: 11, weight: .medium, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(KnockTokens.textPrimary)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: 筛选 / 操作卡
+    // MARK: 筛选 / 操作面板
 
-    private var filterCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("级别", selection: $levelFilter) {
-                ForEach(LevelFilter.allCases) { level in
-                    Text(level.rawValue).tag(level)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("日志级别筛选")
+    private var filterPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockText("级别", role: .captionStrong, color: KnockTokens.textSecondary)
+                KnockSegmentedBar(
+                    items: LevelFilter.allCases.map {
+                        KnockSegmentItem(value: $0, title: $0.rawValue)
+                    },
+                    selection: $levelFilter,
+                    height: KnockTokens.segmentedSmallHeight,
+                    showsIcons: false
+                )
+                .accessibilityLabel("日志级别筛选")
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("搜索关键词（正文 / 来源）", text: $keyword)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.footnote)
-                if !keyword.isEmpty {
+                KnockSearchBar(
+                    placeholder: "搜索关键词（正文 / 来源）",
+                    text: $keyword
+                )
+
+                KnockFlowLayout(spacing: KnockTokens.spacingS) {
                     Button {
-                        keyword = ""
+                        exportNow()
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.tertiary)
+                        Label("生成导出文件", systemImage: "doc.badge.plus")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 36))
 
-            HStack(spacing: 10) {
-                Button {
-                    exportNow()
-                } label: {
-                    Label("生成导出文件", systemImage: "doc.badge.plus")
-                        .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(GlassTokens.brandOrange)
-
-                if let exportedURL {
-                    ShareLink(item: exportedURL) {
-                        Label("分享", systemImage: "square.and.arrow.up")
-                            .font(.footnote.weight(.semibold))
+                    if let exportedURL {
+                        ShareLink(item: exportedURL) {
+                            Label("分享", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GlassTokens.brandOrange)
+
+                    Button {
+                        showClearConfirm = true
+                    } label: {
+                        Label("清空", systemImage: "trash")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(KnockDangerButtonStyle(fullWidth: false, height: 36))
                 }
 
-                Spacer()
-
-                Button(role: .destructive) {
-                    showClearConfirm = true
-                } label: {
-                    Label("清空", systemImage: "trash")
-                        .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
+                KnockText(
+                    "匹配 \(filteredEntries.count) 条 · 新日志在前 · 点按条目展开/收起正文",
+                    role: .caption,
+                    color: KnockTokens.textSecondary
+                )
             }
-            .font(.footnote)
-
-            Text("匹配 \(filteredEntries.count) 条 · 新日志在前 · 点按条目展开/收起正文")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 22)
     }
 
-    // MARK: 列表
+    // MARK: 日志阅读器
 
     private var entriesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: "日志条目", systemImage: "list.bullet.rectangle")
+        VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+            KnockGroupTitle(title: "日志条目", systemImage: "list.bullet.rectangle")
 
             if filteredEntries.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "text.magnifyingglass")
-                        .font(.system(size: 28, weight: .light))
-                        .foregroundStyle(.tertiary)
-                    Text((snapshot?.totalLines ?? 0) == 0 ? "日志文件为空——使用 App 后会产生日志" : "没有匹配的日志条目")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 28)
-                .cardSurface(cornerRadius: 18)
+                KnockEmptyState(
+                    title: (snapshot?.totalLines ?? 0) == 0 ? "日志文件为空" : "没有匹配的日志",
+                    message: (snapshot?.totalLines ?? 0) == 0
+                        ? "使用 App 后会产生日志；导出功能可生成完整日志文件。"
+                        : "试试切换级别或清空搜索关键词。"
+                )
             } else {
-                LazyVStack(spacing: 8) {
-                    ForEach(filteredEntries) { entry in
-                        entryRow(entry)
+                // 黑底等宽日志阅读器：面板内逐行渲染，可选中复制
+                KnockPanel(padding: KnockTokens.spacingS, showsChecker: false) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
+                            entryRow(entry)
+                            if index < filteredEntries.count - 1 {
+                                Rectangle()
+                                    .fill(KnockTokens.stroke)
+                                    .frame(height: KnockTokens.hairline)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                     }
                 }
             }
@@ -342,33 +325,34 @@ struct DebugLogsView: View {
                 expandedIDs.insert(entry.id)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                HStack(spacing: KnockTokens.spacingS) {
                     Text(entry.timeText)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(KnockTokens.textTertiary)
                     levelBadge(entry)
                     if !entry.tag.isEmpty {
                         Text("[\(entry.tag)]")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(KnockTokens.textSecondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textTertiary)
+                        .accessibilityHidden(true)
                 }
                 Text(entry.message)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(entry.levelIsError ? KnockTokens.dangerBright : KnockTokens.textSecondary)
                     .lineLimit(expanded ? nil : 2)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
+            .padding(.horizontal, KnockTokens.spacingS)
+            .padding(.vertical, KnockTokens.spacingS)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -376,12 +360,15 @@ struct DebugLogsView: View {
     }
 
     private func levelBadge(_ entry: DebugLogEntryItem) -> some View {
-        let color: Color = entry.levelIsError ? .red : (entry.levelIsWarn ? .orange : (entry.level == "DEBUG" ? .secondary : .blue))
+        let color: Color = entry.levelIsError
+            ? KnockTokens.dangerBright
+            : (entry.levelIsWarn ? KnockTokens.textPrimary : KnockTokens.textSecondary)
         return Text(entry.level)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
             .foregroundStyle(color)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(color.opacity(0.12), in: Capsule())
+            .background(Capsule(style: .continuous).fill(KnockTokens.rowIconWell))
+            .accessibilityLabel("级别 \(entry.level)")
     }
 }

@@ -1,14 +1,21 @@
 //
 //  ChatView.swift
-//  聊天页（Phase 3/4）：标准聊天软件布局（参考微信 / QQ）。
+//  私聊页（P1 视觉重写，业务逻辑零改动）。
 //
-//  布局：
-//  ① 顶部：系统导航栏（返回 + 角色名 + 状态副标题），**不再使用页面内浮动玻璃状态卡**
-//  ② 中部：消息时间线（LazyVStack + 稳定 Int64 id；真实 chat_messages 分页；时间分隔条；气泡非玻璃）
-//  ③ 底部：**仅** 输入栏（附件 + 输入框 + 发送/停止），聊天页隐藏 Tab Bar
+//  设计依据：docs/敲敲UI改版计划书-v1.1.md 图 A + 7.1 验收 12 条：
+//  ① 顶部 44pt 自绘 `KnockHeader`（返回胶囊 + 左对齐 heavy 标题 + 右侧模式胶囊），隐藏系统导航栏；
+//  ② 中部纯黑底 + 斜切迷彩纹理；白/蓝胶囊气泡（见 MessageBubble）+ 时间分隔 `- … -`；
+//     消息区间距：同人 10pt / 换人 18pt / 页边距 12pt；头像 36pt 每消息独立；
+//  ③ 底部仅输入栏（附件 + 描边胶囊输入框 + 黄色圆形发送/停止），聊天页隐藏 TabBar；
+//  ④ 错误条 / 引用条换敲敲视觉（实色面板 + 1.5pt 描边 + 黄竖条），无毛玻璃；
+//  ⑤ iOS 26+ `.scrollEdgeEffectHidden()` 关闭系统滚动边缘玻璃效果。
 //
-//  玻璃纪律：聊天内容区不使用玻璃；玻璃只保留在输入栏背景与导航 chrome（系统提供），
-//  避免页面内出现无意义的椭圆/胶囊玻璃框。
+//  能力保留（与 T34/T42/T55/T59 完全一致）：
+//  - 时间线按 `displayItems` 渲染（一条 ai_json → 旁白/台词交错多气泡），长按菜单/操作按 messageId 回落；
+//  - 首屏滚动到底后开启上滑分页；前插锚点保持阅读位置；流式跟随滚动；
+//  - 图片附件（PhotosPicker → shared 媒体入库 → sendImage）、全屏查看、本地删除二次确认；
+//  - 模式切换（线上/线下/导演，写 chat_sessions.mode）、操作结果轻提示、自检钩子（--chat-ops /
+//    --bubble-split / --mode-switch-* / --history-load-more / --image-send-demo）全部保留。
 //
 
 import SwiftUI
@@ -17,7 +24,9 @@ import PhotosUI
 
 struct ChatView: View {
     @StateObject private var model: ChatViewModel
+    @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
     /// 首屏滚到底完成后才允许上滑分页（否则初始布局时顶部 header 的 onAppear 会误触发预加载）
     @State private var didInitialScroll = false
     /// T42：图片附件选择（+ → PhotosPicker → shared 媒体入库 → 引擎发送）
@@ -33,278 +42,370 @@ struct ChatView: View {
     }
 
     var body: some View {
-        timeline
-            .background(chatBackground)
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    navTitle
+        VStack(spacing: 6) {
+            header
+            // 参考图：消息 + 输入栏同处一块内凹圆角面板
+            VStack(spacing: 0) {
+                timeline
+                composerStack
+            }
+            .background(KnockTokens.chatPanel)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.bottom, 4)
+        }
+        .background(chatBackground)
+        // 计划书 2.3 / 7.1-9：隐藏系统导航栏与 TabBar，顶栏自绘
+        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
+        // 键盘避让由 GlassInputBar 显式监听抬升（此处禁用系统自动推导，避免双重偏移）
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        // T55：模式弹窗（自绘敲敲面板，替代系统 confirmationDialog）
+        .overlay {
+            if isModePickerPresented {
+                modePickerOverlay
+            }
+        }
+        .task {
+            await model.load()
+            // 新需求取证钩子：--chat-avatar-profile 自动触发「点头像进角色简介」同一路径
+            if ProcessInfo.processInfo.arguments.contains("--chat-avatar-profile") {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                openRoleProfile()
+            }
+            // 敲敲自绘长按菜单演示/取证钩子（仅 --knock-menu-demo；对用户路径零影响）
+            if ProcessInfo.processInfo.arguments.contains("--knock-menu-demo") {
+                await runKnockMenuDemoIfNeeded()
+            }
+            // T42 消息操作自检（--chat-ops-selftest；真实引擎走撤回/重试/重说/继续/图片）
+            if ChatOpsAutomation.isEnabled {
+                Task { await ChatOpsAutomation.runIfNeeded(model: model) }
+            }
+            // 图片发送自检钩子（仅 --image-send-demo；走与 PhotosPicker 同一条 sendImage 路径）
+            if ProcessInfo.processInfo.arguments.contains("--image-send-demo") {
+                let renderer = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 320))
+                let image = renderer.image { ctx in
+                    UIColor.systemTeal.setFill()
+                    ctx.fill(CGRect(x: 0, y: 0, width: 320, height: 320))
+                    UIColor.white.setFill()
+                    ctx.fill(CGRect(x: 80, y: 80, width: 160, height: 160))
                 }
-                // T55：聊天模式切换——右上角常驻当前模式徽标，点击弹出「线上 / 线下 / 导演」三选一
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isModePickerPresented = true
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(model.modeBadgeText)
-                                .font(.caption.weight(.medium))
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(GlassTokens.brandOrange.opacity(0.12), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.isModeBusy)
-                    .accessibilityLabel("切换聊天模式，当前\(model.modeText)")
-                    .accessibilityHint("线上 / 线下 / 导演，切换后下一轮回复生效")
+                if let data = image.jpegData(compressionQuality: 0.8) {
+                    ImageSendLog.add("image-send-demo generated bytes=\(data.count)")
+                    model.sendImage(data, caption: "")
+                } else {
+                    ImageSendLog.add("image-send-demo FAILED to encode jpeg")
                 }
             }
-            .confirmationDialog("切换模式", isPresented: $isModePickerPresented, titleVisibility: .visible) {
-                ForEach(ChatViewModel.chatModes) { item in
-                    Button {
-                        Task { await model.setMode(item.code) }
-                    } label: {
-                        Text(item.code == model.mode ? "\(item.icon) \(item.label)（当前）" : "\(item.icon) \(item.label)")
-                    }
-                }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("线上：只写发送的文字；线下：面对面场景互动；导演：由你描述场景与事件。切换后下一轮回复生效。")
-            }
-            // 聊天详情页不显示底部 Tab Bar（微信/QQ 同款：进入会话即全屏沉浸）
-            .toolbar(.hidden, for: .tabBar)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    if let err = model.errorText {
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.red)
-                            Text(err)
-                                .font(.footnote)
-                                .lineLimit(2)
-                            Spacer(minLength: 0)
-                            Button { model.clearError() } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.bar)
-                    }
-                    if let quoted = model.quotedMessage {
-                        quoteBar(for: quoted)
-                    }
-                    GlassInputBar(
-                        text: $model.draft,
-                        isStreaming: model.isStreaming,
-                        onSend: { model.send() },
-                        onCancel: { model.cancel() },
-                        onAddAttachment: { isPhotoPickerPresented = true }
-                    )
-                }
-            }
-            // 键盘避让由 GlassInputBar 显式监听抬升（此处禁用系统自动推导，避免双重偏移）
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-            .task {
-                await model.load()
-                // T42 消息操作自检（--chat-ops-selftest；真实引擎走撤回/重试/重说/继续/图片）
-                if ChatOpsAutomation.isEnabled {
-                    Task { await ChatOpsAutomation.runIfNeeded(model: model) }
-                }
-                // 图片发送自检钩子（仅 --image-send-demo；走与 PhotosPicker 同一条 sendImage 路径）
-                if ProcessInfo.processInfo.arguments.contains("--image-send-demo") {
-                    let renderer = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 320))
-                    let image = renderer.image { ctx in
-                        UIColor.systemTeal.setFill()
-                        ctx.fill(CGRect(x: 0, y: 0, width: 320, height: 320))
-                        UIColor.white.setFill()
-                        ctx.fill(CGRect(x: 80, y: 80, width: 160, height: 160))
-                    }
-                    if let data = image.jpegData(compressionQuality: 0.8) {
-                        ImageSendLog.add("image-send-demo generated bytes=\(data.count)")
-                        model.sendImage(data, caption: "")
-                    } else {
-                        ImageSendLog.add("image-send-demo FAILED to encode jpeg")
-                    }
-                }
-                // T55 模式切换 UI 演示/取证（仅 --mode-switch-ui-demo / --mode-switch-menu）：
-                // 自动展开模式弹窗并依次切三模式，供 xcrun simctl 定时截图；对用户路径零影响。
-                if ModeSwitchAutomation.isEnabled || ModeSwitchAutomation.isMenuShotEnabled {
-                    await ModeSwitchAutomation.run(
-                        model: model,
-                        presentPicker: { isModePickerPresented = true },
-                        dismissPicker: { isModePickerPresented = false }
-                    )
-                }
-                // T59 气泡分段自检钩子（仅 --bubble-split-selftest）
-                if BubbleSplitAutomation.isEnabled {
-                    Task { await BubbleSplitAutomation.runIfNeeded(model: model) }
-                }
-                // 历史分页自动化钩子（仅 --history-load-more；用于无 GUI 触控的模拟器证据）
-                if ProcessInfo.processInfo.arguments.contains("--history-load-more") {
-                    for _ in 0..<50 where !model.paginationEnabledForUI {
-                        try? await Task.sleep(nanoseconds: 100_000_000)
-                    }
-                    SelfTestLog.add("history automation: loadMore start loaded=\(model.loadedCount)/\(model.totalCount) hasMore=\(model.hasMoreHistory) enabled=\(model.paginationEnabledForUI)")
-                    await model.loadMore()
-                    await model.loadMore()
-                    SelfTestLog.add("history automation: done loaded=\(model.loadedCount)/\(model.totalCount) hasMore=\(model.hasMoreHistory)")
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .shellSelfTestSendMessage)) { notification in
-                model.send(notification.object as? String)
-            }
-            // T42 图片附件：PhotosPicker → Data → 缩放 → shared 媒体入库 → 引擎 sendImageMessage
-            .photosPicker(
-                isPresented: $isPhotoPickerPresented,
-                selection: $pickedPhotoItem,
-                matching: .images,
-                photoLibrary: .shared()
-            )
-            .onChange(of: pickedPhotoItem) { _, item in
-                guard let item else { return }
-                Task {
-                    do {
-                        guard let data = try await item.loadTransferable(type: Data.self) else {
-                            SelfTestLog.add("chat image picker FAILED (no data)")
-                            ImageSendLog.add("FAILED: PhotosPicker returned no data")
-                            return
-                        }
-                        SelfTestLog.add("chat image picker bytes=\(data.count)")
-                        ImageSendLog.add("picker bytes=\(data.count)")
-                        model.sendImage(data, caption: model.draft)
-                    } catch {
-                        SelfTestLog.add("chat image picker FAILED error=\(error.localizedDescription)")
-                        ImageSendLog.add("FAILED: PhotosPicker loadTransferable \(error.localizedDescription)")
-                    }
-                    pickedPhotoItem = nil
-                }
-            }
-            // T42 本地删除二次确认（对齐原版危险操作确认习惯）
-            .alert("删除这条消息？", isPresented: deleteAlertBinding) {
-                Button("删除", role: .destructive) {
-                    if let message = pendingDeleteMessage { model.deleteLocal(message) }
-                    pendingDeleteMessage = nil
-                }
-                Button("取消", role: .cancel) { pendingDeleteMessage = nil }
-            } message: {
-                Text("仅从本机记录中删除，不会撤回或通知对方。此操作不可恢复。")
-            }
-            // T42 图片全屏查看
-            .fullScreenCover(item: $model.fullscreenImage) { message in
-                FullScreenImageView(
-                    url: model.imageURL(for: message),
-                    caption: message.text,
-                    onClose: { model.fullscreenImage = nil }
+            // T55 模式切换 UI 演示/取证（仅 --mode-switch-ui-demo / --mode-switch-menu）：
+            // 自动展开模式弹窗并依次切三模式，供 xcrun simctl 定时截图；对用户路径零影响。
+            if ModeSwitchAutomation.isEnabled || ModeSwitchAutomation.isMenuShotEnabled {
+                await ModeSwitchAutomation.run(
+                    model: model,
+                    presentPicker: { isModePickerPresented = true },
+                    dismissPicker: { isModePickerPresented = false }
                 )
             }
-            // T42 操作结果轻提示（复制/撤回/重说等 1.8s 自动消失）
-            .overlay(alignment: .top) {
-                if let feedback = model.actionFeedback {
-                    Text(feedback)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(Color.black.opacity(0.72)))
-                        .padding(.top, 8)
-                        .transition(.opacity)
-                        .accessibilityLabel("操作结果：\(feedback)")
+            // T59 气泡分段自检钩子（仅 --bubble-split-selftest）
+            if BubbleSplitAutomation.isEnabled {
+                Task { await BubbleSplitAutomation.runIfNeeded(model: model) }
+            }
+            // 历史分页自动化钩子（仅 --history-load-more；用于无 GUI 触控的模拟器证据）
+            if ProcessInfo.processInfo.arguments.contains("--history-load-more") {
+                for _ in 0..<50 where !model.paginationEnabledForUI {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                SelfTestLog.add("history automation: loadMore start loaded=\(model.loadedCount)/\(model.totalCount) hasMore=\(model.hasMoreHistory) enabled=\(model.paginationEnabledForUI)")
+                await model.loadMore()
+                await model.loadMore()
+                SelfTestLog.add("history automation: done loaded=\(model.loadedCount)/\(model.totalCount) hasMore=\(model.hasMoreHistory)")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .shellSelfTestSendMessage)) { notification in
+            model.send(notification.object as? String)
+        }
+        // T42 图片附件：PhotosPicker → Data → 缩放 → shared 媒体入库 → 引擎 sendImageMessage
+        .photosPicker(
+            isPresented: $isPhotoPickerPresented,
+            selection: $pickedPhotoItem,
+            matching: .images,
+            photoLibrary: .shared()
+        )
+        .onChange(of: pickedPhotoItem) { _, item in
+            guard let item else { return }
+            Task {
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        SelfTestLog.add("chat image picker FAILED (no data)")
+                        ImageSendLog.add("FAILED: PhotosPicker returned no data")
+                        return
+                    }
+                    SelfTestLog.add("chat image picker bytes=\(data.count)")
+                    ImageSendLog.add("picker bytes=\(data.count)")
+                    model.sendImage(data, caption: model.draft)
+                } catch {
+                    SelfTestLog.add("chat image picker FAILED error=\(error.localizedDescription)")
+                    ImageSendLog.add("FAILED: PhotosPicker loadTransferable \(error.localizedDescription)")
+                }
+                pickedPhotoItem = nil
+            }
+        }
+        // T42 本地删除二次确认（对齐原版危险操作确认习惯）
+        .alert("删除这条消息？", isPresented: deleteAlertBinding) {
+            Button("删除", role: .destructive) {
+                if let message = pendingDeleteMessage { model.deleteLocal(message) }
+                pendingDeleteMessage = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteMessage = nil }
+        } message: {
+            Text("仅从本机记录中删除，不会撤回或通知对方。此操作不可恢复。")
+        }
+        // T42 图片全屏查看
+        .fullScreenCover(item: $model.fullscreenImage) { message in
+            FullScreenImageView(
+                url: model.imageURL(for: message),
+                caption: message.text,
+                onClose: { model.fullscreenImage = nil }
+            )
+        }
+        // T42 操作结果轻提示（复制/撤回/重说等 1.8s 自动消失）——敲敲黑底胶囊
+        .overlay(alignment: .top) {
+            if let feedback = model.actionFeedback {
+                KnockText(feedback, role: .captionStrong, color: KnockTokens.textOnDark, lineLimit: 1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule(style: .continuous).fill(KnockTokens.panelInset))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                    }
+                    .padding(.top, 8)
+                    .transition(.opacity)
+                    .accessibilityLabel("操作结果：\(feedback)")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatOpsSelftestRefresh)) { _ in
+            Task { await model.refresh() }
+        }
+    }
+
+    // MARK: - 顶栏（标题真居中 + 模式小按钮在名称下方）
+
+    /// 图 A 顶栏：返回胶囊在左、标题块**真水平居中**（两侧等宽占位，不被按钮挤压），
+    /// 标题/副标题左对齐随块居中；模式切换小胶囊在聊天名称下方（线上/线下/导演）。
+    /// 参考图聊天顶栏：浮动圆角黑条 = 返回 + 黄色手机标识 + 左对齐名称 + 右侧模式胶囊。
+    private var header: some View {
+        HStack(spacing: KnockTokens.spacingS) {
+            backButton
+            Image("KnockPhone")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 34, height: 34)
+                .accessibilityHidden(true)
+            KnockText(model.title, role: .pageTitle, lineLimit: 1, minimumScaleFactor: 0.7)
+            Spacer(minLength: KnockTokens.spacingS)
+            modeChip
+        }
+        .padding(.horizontal, KnockTokens.spacingM)
+        .frame(height: 50)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(KnockTokens.chatHeaderBar)
+        )
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .padding(.top, KnockTokens.spacingXS)
+    }
+
+    /// 返回圆胶囊（仅图标，保持顶栏紧凑）。
+    /// 返回圆胶囊（仅图标，保持顶栏紧凑）。
+    private var backButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(KnockTokens.textPrimary)
+                .frame(width: 30, height: 30)
+                .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("返回")
+    }
+
+    private var modeChip: some View {
+        Button {
+            isModePickerPresented = true
+        } label: {
+            HStack(spacing: 3) {
+                KnockText(model.modeText, role: .captionStrong, lineLimit: 1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .heavy))
+                    .foregroundStyle(KnockTokens.textSecondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 26)
+            .background(Capsule(style: .continuous).fill(KnockTokens.row))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isModeBusy)
+        .accessibilityLabel("切换聊天模式，当前\(model.modeText)")
+        .accessibilityHint("线上 / 线下 / 导演，切换后下一轮回复生效")
+    }
+
+    // MARK: - 模式弹窗（自绘敲敲面板）
+
+    private var modePickerOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture { isModePickerPresented = false }
+
+            KnockDialogPanel(title: "切换模式") {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    ForEach(ChatViewModel.chatModes) { item in
+                        modeOptionRow(item)
+                    }
+                    KnockText(
+                        "线上：只写发送的文字；线下：面对面场景互动；导演：由你描述场景与事件。切换后下一轮回复生效。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 3
+                    )
+                    Button("取消") { isModePickerPresented = false }
+                        .buttonStyle(KnockSecondaryButtonStyle())
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .chatOpsSelftestRefresh)) { _ in
-                Task { await model.refresh() }
-            }
+            .padding(.horizontal, 28)
+        }
+        .transition(.opacity)
     }
 
-    // MARK: - T42 消息长按菜单（对齐 Android MessageList.kt:532-563 的菜单项与条件）
-
-    @ViewBuilder
-    private func messageMenu(for message: ChatMessage, copyText: String? = nil) -> some View {
-        Button {
-            if let copyText {
-                model.copyText(copyText, messageId: message.id)
-            } else {
-                model.copyText(message)
-            }
+    private func modeOptionRow(_ item: ChatModeOption) -> some View {
+        let isCurrent = item.code == model.mode
+        return Button {
+            isModePickerPresented = false
+            guard !isCurrent else { return }
+            Task { await model.setMode(item.code) }
         } label: {
-            Label("复制", systemImage: "doc.on.doc")
+            HStack(spacing: KnockTokens.spacingS) {
+                Text(item.icon)
+                    .font(.system(size: 15))
+                KnockText(
+                    item.label,
+                    role: .rowTitle,
+                    color: isCurrent ? KnockTokens.onElectric : KnockTokens.textPrimary,
+                    lineLimit: 1
+                )
+                Spacer(minLength: KnockTokens.spacingS)
+                if isCurrent {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.onElectric)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(isCurrent ? KnockTokens.electric : KnockTokens.row)
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        isCurrent ? KnockTokens.electricRing : KnockTokens.strokeSecondary,
+                        lineWidth: KnockTokens.strokeWidth
+                    )
+            }
+            .contentShape(Capsule(style: .continuous))
         }
-        if message.side != .system {
-            Button {
-                model.quote(message)
-            } label: {
-                Label("引用", systemImage: "quote.bubble")
+        .buttonStyle(.plain)
+        .accessibilityLabel(isCurrent ? "\(item.label)，当前模式" : item.label)
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+    }
+
+    // MARK: - 底部组合（错误条 + 引用条 + 输入栏）
+
+    /// 输入框占位：「对{当前对话的代理人名字}说些什么…」（参考敲敲聊天页文案）。
+    private var inputPlaceholder: String {
+        let name = model.title
+        let bare = (name.hasPrefix("「") && name.hasSuffix("」") && name.count > 2)
+            ? String(name.dropFirst().dropLast())
+            : name
+        return "对\(bare)说些什么…"
+    }
+
+    private var composerStack: some View {
+        VStack(spacing: 0) {
+            if let err = model.errorText {
+                errorBar(err)
             }
-        }
-        // 撤回：自己的消息（系统提示除外）；引擎整条撤回 = 删行 + turn 终态
-        if message.side == .outgoing && message.id > 0 {
-            Button(role: .destructive) {
-                model.recall(message)
-            } label: {
-                Label("撤回", systemImage: "arrow.uturn.backward")
+            if let quoted = model.quotedMessage {
+                quoteBar(for: quoted)
             }
-        }
-        // 重试：未送达 / 图片识别失败（引擎 retryFailedMessage / resumeImageReply）
-        if message.isSendFailed || message.isFailedImage {
-            Button {
-                model.retry(message)
-            } label: {
-                Label("重试", systemImage: "arrow.clockwise")
-            }
-        }
-        if message.isAIMessage {
-            Button {
-                model.regenerate(message)
-            } label: {
-                Label("重说", systemImage: "arrow.triangle.2.circlepath")
-            }
-            Button {
-                model.continueGenerating(message)
-            } label: {
-                Label("继续说", systemImage: "forward.end")
-            }
-        }
-        if message.id > 0 {
-            Button(role: .destructive) {
-                pendingDeleteMessage = message
-            } label: {
-                Label("删除（本地）", systemImage: "trash")
-            }
+            GlassInputBar(
+                text: $model.draft,
+                isStreaming: model.isStreaming,
+                placeholder: inputPlaceholder,
+                onSend: { model.send() },
+                onCancel: { model.cancel() },
+                onAddAttachment: { isPhotoPickerPresented = true }
+            )
         }
     }
 
-    /// 引用条（占位：引擎暂无 replyTo，发送时按普通消息发送并记录说明）
-    private func quoteBar(for message: ChatMessage) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "quote.bubble")
-                .font(.system(size: 13))
-                .foregroundStyle(GlassTokens.brandOrange)
-            Text("引用 \(message.side == .outgoing ? "我" : model.title)：\(message.text.replacingOccurrences(of: "\n", with: " ").prefix(40))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Button {
-                model.clearQuote()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("取消引用")
+    /// 错误条：实色面板 + 1.5pt 描边 + 危险红图标（无毛玻璃）。
+    private func errorBar(_ text: String) -> some View {
+        HStack(spacing: KnockTokens.spacingS) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(KnockTokens.dangerBright)
+            KnockText(text, role: .caption, color: KnockTokens.textPrimary, lineLimit: 2)
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockCloseButton(label: "关闭错误提示") { model.clearError() }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
+        .padding(.horizontal, KnockTokens.spacingM)
+        .padding(.vertical, KnockTokens.spacingS)
+        .background(KnockTokens.panel)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
+            Rectangle().fill(KnockTokens.stroke).frame(height: KnockTokens.hairline)
         }
+    }
+
+    /// 引用条：2pt 黄竖条 + 次文字说明（黄仅竖条 2pt，面积远小于 5%）。
+    private func quoteBar(for message: ChatMessage) -> some View {
+        HStack(spacing: KnockTokens.spacingS) {
+            Rectangle()
+                .fill(KnockTokens.electric)
+                .frame(width: 2, height: 26)
+                .accessibilityHidden(true)
+            KnockText(
+                "引用 \(message.side == .outgoing ? "我" : model.title)：\(quotePreview(message.text))",
+                role: .caption,
+                color: KnockTokens.textSecondary,
+                lineLimit: 1
+            )
+            Spacer(minLength: KnockTokens.spacingXS)
+            KnockCloseButton(label: "取消引用") { model.clearQuote() }
+        }
+        .padding(.horizontal, KnockTokens.spacingM)
+        .padding(.vertical, 6)
+        .background(KnockTokens.panel)
+        .overlay(alignment: .top) {
+            Rectangle().fill(KnockTokens.stroke).frame(height: KnockTokens.hairline)
+        }
+    }
+
+    private func quotePreview(_ text: String) -> String {
+        String(text.replacingOccurrences(of: "\n", with: " ").prefix(40))
     }
 
     private var deleteAlertBinding: Binding<Bool> {
@@ -314,52 +415,23 @@ struct ChatView: View {
         )
     }
 
-    // MARK: 背景（标准聊天外观：浅色浅灰 / 深色近黑，不用环境光斑）
+    // MARK: - 背景（固定敲敲黑底 + 斜切迷彩，无毛玻璃）
 
     private var chatBackground: some View {
         GlassTokens.chatBackground
-            .ignoresSafeArea()
     }
 
-    // MARK: 导航栏标题（角色名 + 在线/模式状态）
-
-    private var navTitle: some View {
-        VStack(spacing: 1) {
-            Text(model.title)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(model.isStreaming ? GlassTokens.brandOrange : GlassTokens.onlineDot)
-                    .frame(width: 6, height: 6)
-                Text(model.statusLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if model.isDemoMode {
-                    Text("演示")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(GlassTokens.brandOrange.opacity(0.16), in: Capsule())
-                }
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(model.title)，\(model.statusLine)")
-    }
-
-    // MARK: 时间线（LazyVStack，气泡非玻璃）
+    // MARK: - 时间线
 
     private var timeline: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    // 加载更早消息：仅在加载中显示小菊花（微信/QQ 同款，不显示说明性文案）
+                LazyVStack(spacing: 0) {
+                    // 加载更早消息：仅在加载中显示小菊花（不显示说明性文案）
                     if model.hasMoreHistory && model.isLoadingMore {
                         ProgressView()
                             .controlSize(.small)
+                            .tint(KnockTokens.electric)
                             .padding(.vertical, 10)
                     }
 
@@ -367,14 +439,20 @@ struct ChatView: View {
                         emptyState
                     } else {
                         // T59：渲染派生显示项（ai_json 一条消息按旁白/台词段展开成多条独立气泡）
-                        ForEach(model.displayItems) { item in
-                            if item.showsTimeSeparator {
-                                TimeSeparator(text: item.timeText)
+                        let items = model.displayItems
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            VStack(spacing: 0) {
+                                if item.showsTimeSeparator {
+                                    TimeSeparator(text: item.timeText)
+                                        .padding(.top, index == 0 ? 0 : 12)
+                                }
+                                displayRow(item)
+                                    .padding(.top, topSpacing(for: item, at: index, in: items))
                             }
-                            displayRow(item)
-                                .id(item.id)
-                                .onAppear { model.loadMoreIfNeeded(currentID: item.messageId) }
-                                .contextMenu { displayMenu(for: item) }
+                            .id(item.id)
+                            .onAppear { model.loadMoreIfNeeded(currentID: item.messageId) }
+                            // 长按菜单：敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）
+                            .knockContextMenu(actions: displayMenuActions(for: item))
                         }
                     }
 
@@ -388,6 +466,8 @@ struct ChatView: View {
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            // 计划书 7.1-9 / 第五章：iOS 26+ 关闭系统滚动边缘玻璃效果
+            .knockScrollEdgeEffectHidden()
             // 只在「末尾新增」时滚到底（发送/首屏），前插更早消息时不打断阅读位置；
             // T59：以最后一个显示项 id/文本为准（一条消息展开多段后仍能跟随打字机滚动）。
             .onChange(of: model.displayItems.last?.id) { _, _ in
@@ -420,40 +500,97 @@ struct ChatView: View {
         }
     }
 
+    /// 消息区间距（计划书 1.1）：同人 10pt / 换人 18pt；时间分隔后 8pt；旁白行 12pt。
+    private func topSpacing(for item: ChatDisplayItem, at index: Int, in items: [ChatDisplayItem]) -> CGFloat {
+        guard index > 0 else { return 0 }
+        if item.showsTimeSeparator { return 8 }
+        let previous = items[index - 1]
+        if item.type == .narration || previous.type == .narration { return 12 }
+        if item.type == .system || previous.type == .system { return 12 }
+        return previous.side == item.side ? 10 : 18
+    }
+
     // MARK: - T59 显示项渲染（旁白/台词交错，每段一个气泡）
 
     @ViewBuilder
     private func displayRow(_ item: ChatDisplayItem) -> some View {
         switch item.type {
         case .narration:
-            // 旁白：居中浅色卡片、无头像，与台词气泡按段顺序交错
+            // 旁白：漫画旁白（左 2pt 黄竖条 + 斜体灰白字），无头像
             NarrationBubble(text: item.text, isStreaming: item.isStreaming)
         case .system:
             MessageBubble(text: item.text, side: .system)
         case .image:
             imageRow(item)
         case .dialogue:
-            // 台词：角色侧头像 + 气泡（角色侧=接收方向）
-            HStack(alignment: .top, spacing: 8) {
-                RoleAvatar(avatarId: model.roleAvatarId, name: model.title, size: 34)
-                MessageBubble(
-                    text: item.text,
-                    side: .incoming,
-                    isStreaming: item.isStreaming,
-                    isRecalled: item.isRecalled
-                )
-            }
+            bubbleRow(item, side: .incoming)
         case .text:
-            let side: BubbleSide = item.side == .outgoing
-                ? .outgoing
-                : (item.side == .system ? .system : .incoming)
+            if item.side == .outgoing {
+                bubbleRow(item, side: .outgoing)
+            } else if item.side == .system {
+                MessageBubble(text: item.text, side: .system)
+            } else {
+                bubbleRow(item, side: .incoming)
+            }
+        }
+    }
+
+    /// 台词 / 图片气泡行：头像 36pt 每消息独立（接收在左、发送在右），气泡本身见 MessageBubble。
+    private func bubbleRow(
+        _ item: ChatDisplayItem,
+        side: BubbleSide,
+        isImageMessage: Bool = false,
+        imageURL: URL? = nil,
+        onImageTap: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+            if side == .incoming {
+                messageAvatar(for: side)
+            }
             MessageBubble(
                 text: item.text,
                 side: side,
                 isStreaming: item.isStreaming,
-                isRecalled: item.isRecalled
+                isRecalled: item.isRecalled,
+                imageURL: imageURL,
+                isImageMessage: isImageMessage,
+                onImageTap: onImageTap
             )
+            if side == .outgoing {
+                messageAvatar(for: side)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: side == .outgoing ? .trailing : .leading)
+    }
+
+    /// 聊天头像：角色侧走 `RoleAvatar`（敲敲素材/上传头像/首字占位），玩家侧首字占位。
+    /// 角色侧头像可点击 → 打开角色简介页（与「联系人」页同一个 RoleDetailView）。
+    @ViewBuilder
+    private func messageAvatar(for side: BubbleSide) -> some View {
+        if side == .outgoing {
+            KnockAvatar(name: "我", size: KnockTokens.chatAvatarSize)
+                .accessibilityHidden(true)
+        } else {
+            Button {
+                openRoleProfile()
+            } label: {
+                RoleAvatar(avatarId: model.roleAvatarId, name: model.title, size: KnockTokens.chatAvatarSize)
+            }
+            .buttonStyle(.plain)
+            .disabled(model.operatorId.isEmpty)
+            .accessibilityLabel("查看\(model.title)的档案")
+            .accessibilityHint("打开角色简介页")
+        }
+    }
+
+    /// 头像点击统一入口：push 到聊天 Tab 自己的导航栈，返回键回到私聊（不跳转联系人 Tab）。
+    private func openRoleProfile() {
+        guard !model.operatorId.isEmpty else {
+            SelfTestLog.add("chat avatar profile skipped (operatorId empty)")
+            return
+        }
+        router.chatPath.append(Route.roleDetail(roleId: model.operatorId))
+        SelfTestLog.add("chat avatar profile push roleId=\(model.operatorId) depth=\(router.chatPath.count)")
     }
 
     /// 图片消息行：仍按整条消息渲染（不拆段），点击全屏（T42 路径不变）
@@ -461,13 +598,11 @@ struct ChatView: View {
     private func imageRow(_ item: ChatDisplayItem) -> some View {
         let message = model.baseMessage(for: item)
         let side: BubbleSide = item.side == .outgoing ? .outgoing : .incoming
-        MessageBubble(
-            text: item.text,
+        bubbleRow(
+            item,
             side: side,
-            isStreaming: item.isStreaming,
-            isRecalled: item.isRecalled,
-            imageURL: message.flatMap { model.imageURL(for: $0) },
             isImageMessage: true,
+            imageURL: message.flatMap { model.imageURL(for: $0) },
             onImageTap: {
                 guard let message, model.imageURL(for: message) != nil else { return }
                 model.fullscreenImage = message
@@ -476,34 +611,120 @@ struct ChatView: View {
         )
     }
 
-    /// 长按菜单：复制当前段文本；其它操作按所属 messageId 落到整条消息（撤回/重说/删除等语义不变）。
+    /// 长按菜单动作（敲敲自绘 `KnockMenuAction` 列表；顺序与系统版完全一致）：
+    /// 复制当前段文本；其它操作按所属 messageId 落到整条消息（撤回/重说/删除等语义不变）。
     /// 旁白段与 Android 一致只给「复制」（旁白不属于可撤回的台词段）。
-    @ViewBuilder
-    private func displayMenu(for item: ChatDisplayItem) -> some View {
+    private func displayMenuActions(for item: ChatDisplayItem) -> [KnockMenuAction] {
         if item.type == .narration {
-            // 旁白段：只复制旁白本身（与 Android 旁白长按菜单一致）
-            Button {
-                model.copyText(item)
-            } label: {
-                Label("复制", systemImage: "doc.on.doc")
-            }
-        } else if let message = model.baseMessage(for: item) {
-            // 台词/图片/系统/纯文本：完整菜单，操作按所属 messageId 落到整条消息
-            messageMenu(for: message, copyText: item.text)
+            return [
+                KnockMenuAction("复制", systemImage: "doc.on.doc") {
+                    model.copyText(item)
+                }
+            ]
         }
+        guard let message = model.baseMessage(for: item) else { return [] }
+        return messageMenuActions(for: message, copyText: item.text)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("还没有消息")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
+    // MARK: - T42 消息长按菜单（对齐 Android MessageList.kt:532-563 的菜单项与条件）
+
+    /// 消息操作动作集合：复制 → 引用 → 撤回 → 重试 → 重说 → 继续说 → 删除（本地）。
+    /// 与系统 `.contextMenu` 版的文案 / 图标 / 顺序 / 条件 / destructive 标记逐一对应。
+    private func messageMenuActions(for message: ChatMessage, copyText: String? = nil) -> [KnockMenuAction] {
+        var actions: [KnockMenuAction] = []
+
+        actions.append(
+            KnockMenuAction("复制", systemImage: "doc.on.doc") {
+                if let copyText {
+                    model.copyText(copyText, messageId: message.id)
+                } else {
+                    model.copyText(message)
+                }
+            }
+        )
+        if message.side != .system {
+            actions.append(
+                KnockMenuAction("引用", systemImage: "quote.bubble") {
+                    model.quote(message)
+                }
+            )
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        // 撤回：自己的消息（系统提示除外）；引擎整条撤回 = 删行 + turn 终态
+        if message.side == .outgoing && message.id > 0 {
+            actions.append(
+                KnockMenuAction("撤回", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    model.recall(message)
+                }
+            )
+        }
+        // 重试：未送达 / 图片识别失败（引擎 retryFailedMessage / resumeImageReply）
+        if message.isSendFailed || message.isFailedImage {
+            actions.append(
+                KnockMenuAction("重试", systemImage: "arrow.clockwise") {
+                    model.retry(message)
+                }
+            )
+        }
+        if message.isAIMessage {
+            actions.append(
+                KnockMenuAction("重说", systemImage: "arrow.triangle.2.circlepath") {
+                    model.regenerate(message)
+                }
+            )
+            actions.append(
+                KnockMenuAction("继续说", systemImage: "forward.end") {
+                    model.continueGenerating(message)
+                }
+            )
+        }
+        if message.id > 0 {
+            actions.append(
+                KnockMenuAction("删除（本地）", systemImage: "trash", role: .destructive) {
+                    pendingDeleteMessage = message
+                }
+            )
+        }
+        return actions
+    }
+
+    // MARK: - 自绘菜单截图钩子（仅 --knock-menu-demo）
+
+    /// 演示 / 取证钩子：等首屏消息加载后，用**真实**动作集合弹出一次自绘长按菜单并保持，
+    /// 供 `xcrun simctl io <udid> screenshot` 定时截图（深/浅双主题）。
+    /// 只由启动参数触发，对用户路径零影响；动作点击后仍走真实的 ChatViewModel 方法。
+    private func runKnockMenuDemoIfNeeded() async {
+        let deadline = Date().addingTimeInterval(30)
+        while model.displayItems.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard !model.displayItems.isEmpty else {
+            SelfTestLog.add("knock-menu demo ABORT: no display items")
+            return
+        }
+        // 优先选动作最多的那一条（AI 消息：复制/引用/重说/继续说/删除 等，最能覆盖面板样式）
+        let best = model.displayItems
+            .map { (item: $0, actions: displayMenuActions(for: $0)) }
+            .max { $0.actions.count < $1.actions.count }
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        let actions = best?.actions ?? []
+        KnockMenuCenter.shared.present(
+            KnockMenuPresentation(title: "消息操作", showsChecker: true, actions: actions)
+        )
+        SelfTestLog.add(
+            "knock-menu demo presented actions=\(actions.count) titles=\(actions.map(\.title).joined(separator: "/"))"
+        )
+    }
+
+    // MARK: - 空态（敲敲 E M P T Y 面板）
+
+    private var emptyState: some View {
+        KnockEmptyState(
+            title: "还没有消息",
+            message: "发一条消息，开始和\(model.title)的对话。",
+            systemImage: "bubble.left.and.bubble.right"
+        )
+        .padding(.top, 80)
+        .padding(.horizontal, KnockTokens.spacingXS)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
@@ -518,18 +739,40 @@ struct ChatView: View {
     }
 }
 
-/// 时间分隔条（居中灰色小字，微信/QQ 同款）
+// MARK: - 时间分隔条（图 A：`- 一分钟前 -` 灰色居中）
+
+/// 时间分隔：13pt medium `#8A8A8E`，居中 `- … -`（计划书 1.1 / 7.1-7）。
 struct TimeSeparator: View {
     var text: String
 
     var body: some View {
-        Text(text)
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+        KnockText(
+            "- \(text) -",
+            role: .caption,
+            color: KnockTokens.timestampText,
+            alignment: .center
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .accessibilityHidden(true)
     }
 }
+
+// MARK: - 滚动边缘效果（iOS 26+ 条件编译）
+
+extension View {
+    /// 计划书第五章 / 7.1-9：关闭系统滚动边缘玻璃效果（仅 iOS 26+ 存在该 API）。
+    @ViewBuilder
+    func knockScrollEdgeEffectHidden() -> some View {
+        if #available(iOS 26.0, *) {
+            self.scrollEdgeEffectHidden()
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - T42 图片全屏查看
 
 /// T42 图片全屏查看：黑底 + 等比缩放 + 关闭按钮（本地文件走 UIImage，远程走 AsyncImage）。
 struct FullScreenImageView: View {
@@ -555,7 +798,7 @@ struct FullScreenImageView: View {
                     case .failure:
                         unavailable
                     default:
-                        ProgressView().tint(.white)
+                        ProgressView().tint(KnockTokens.electric)
                     }
                 }
             } else {
@@ -565,26 +808,22 @@ struct FullScreenImageView: View {
             VStack {
                 HStack {
                     Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(Color.white.opacity(0.18)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("关闭图片")
+                    KnockCloseButton(label: "关闭图片", action: onClose)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.top, KnockTokens.spacingS)
                 Spacer()
                 if !caption.isEmpty {
-                    Text(caption)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 24)
+                    KnockText(
+                        caption,
+                        role: .caption,
+                        color: KnockTokens.textOnDark,
+                        lineSpacing: 3,
+                        alignment: .center
+                    )
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
                 }
             }
         }
@@ -599,12 +838,11 @@ struct FullScreenImageView: View {
     }
 
     private var unavailable: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: KnockTokens.spacingS) {
             Image(systemName: "photo")
-                .font(.system(size: 40, weight: .light))
-            Text("图片无法显示")
-                .font(.footnote)
+                .font(.system(size: 40, weight: .heavy))
+            KnockText("图片无法显示", role: .caption, color: KnockTokens.textSecondary)
         }
-        .foregroundStyle(.white.opacity(0.7))
+        .foregroundStyle(KnockTokens.textTertiary)
     }
 }

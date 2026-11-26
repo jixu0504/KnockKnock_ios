@@ -527,7 +527,7 @@ class GroupChatEngine(
         // userMessage 注入文本（oracle :1304）。
         val userMessage = when {
             isAuto -> "（用户没有新发言。请只根据最近群聊自然延续话题，不要替用户发言。）"
-            autoSpeak -> "（群聊已空闲一段时间，干员们自然地闲聊起来，无需等待用户发言。）"
+            autoSpeak -> "（群聊已空闲一段时间，代理人自然地闲聊起来，无需等待用户发言。）"
             else -> requestText
         }
 

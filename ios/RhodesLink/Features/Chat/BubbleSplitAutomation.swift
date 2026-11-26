@@ -13,7 +13,7 @@
 //    5) 流式增量：部分字符已到达时前面的段完整、最后一段为前缀且仅末段 isStreaming；
 //    6) 线上模式过滤旁白（与 Android MessageParser 同口径）。
 //
-//  用法：`--selftest --bubble-split-selftest --open-url rhodes://chat/session_amiya`
+//  用法：`--selftest --bubble-split-selftest --open-url rhodes://chat/session_zzz008`
 //  证据：Documents/ios-shell-selftest.log + NSLog + 模拟器截图（ios-port/handoffs/evidence/t59-*）。
 //
 
@@ -25,7 +25,7 @@ enum BubbleSplitAutomation {
     private static var didRun = false
 
     /// 自检夹具：旁白 + 台词 + 旁白 + 台词（offline 模式才展示旁白段）。
-    static let fixtureJSON = #"{"emotion":"平静","state":"坐在窗边","location":"宿舍","continuity":"继续","segments":[{"type":"narration","content":"（夜色落在舷窗上，她合上终端。）"},{"type":"dialogue","content":"博士，这边。"},{"type":"narration","content":"（她把杯子推过来，杯壁还冒着热气。）"},{"type":"dialogue","content":"小心烫。"}]}"#
+    static let fixtureJSON = #"{"emotion":"平静","state":"坐在窗边","location":"宿舍","continuity":"继续","segments":[{"type":"narration","content":"（夜色落在舷窗上，她合上终端。）"},{"type":"dialogue","content":"绳匠，这边。"},{"type":"narration","content":"（她把杯子推过来，杯壁还冒着热气。）"},{"type":"dialogue","content":"小心烫。"}]}"#
 
     static func runIfNeeded(model: ChatViewModel) async {
         guard isEnabled, !didRun else { return }
@@ -201,7 +201,7 @@ enum BubbleSplitAutomation {
         )
         check(
             "db.texts",
-            liveItems.map(\.text) == ["（夜色落在舷窗上，她合上终端。）", "博士，这边。", "（她把杯子推过来，杯壁还冒着热气。）", "小心烫。"],
+            liveItems.map(\.text) == ["（夜色落在舷窗上，她合上终端。）", "绳匠，这边。", "（她把杯子推过来，杯壁还冒着热气。）", "小心烫。"],
             "texts=\(liveItems.map(\.text))"
         )
         let liveIds = liveItems.map(\.id)

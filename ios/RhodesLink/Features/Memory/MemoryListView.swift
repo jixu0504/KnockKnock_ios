@@ -12,6 +12,11 @@
 //  `AppGraphClient.loadMemoryPage/loadMemoryDetail`；写操作经 MemoryBridge 事务原语
 //  （删除传播/派生失效/向量清理复用 shared 仓库语义）。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 标题）；
+//  筛选 = 黄选中胶囊分段栏 + 胶囊搜索条 + 下拉胶囊；记忆行 = 胶囊卡片；
+//  空态 = E M P T Y 宽字距 pill；删除确认 = 自绘 `KnockDialog`；
+//  详情 = 面板（编辑区 / 锚点 / 隐私 / 危险操作）+ 黄主按钮。
+//
 
 import SwiftUI
 
@@ -24,6 +29,7 @@ extension Notification.Name {
 
 struct MemoryListView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     @State private var memories: [MemoryRecord] = []
     @State private var total = 0
@@ -43,6 +49,8 @@ struct MemoryListView: View {
 
     @State private var pendingDelete: MemoryRecord?
     @State private var actionError: String?
+    /// 行点击 → 详情（用 Button + navigationDestination 替代 List 内 NavigationLink 的系统箭头）
+    @State private var selectedMemory: MemoryRecord?
 
     private let pageSize = 30
 
@@ -73,84 +81,106 @@ struct MemoryListView: View {
         ZStack {
             AmbientBackground(parallax: scrollOffset, showsStandee: false)
 
-            List {
-                headerCard
-                    .listRowStyle()
-                filterCard
-                    .listRowStyle()
+            VStack(spacing: 0) {
+                KnockHeader(title: "记忆管理", showsBack: true, onBack: { dismiss() })
 
-                if let actionError {
-                    errorBanner(actionError)
-                        .listRowStyle()
-                }
+                List {
+                    headerPanel
+                        .memoryListRow()
+                    filterPanel
+                        .memoryListRow()
 
-                if let errorText, memories.isEmpty {
-                    EmptyStateView(title: "记忆读取失败", message: errorText, systemImage: "exclamationmark.triangle")
-                        .listRowStyle()
-                    retryButton
-                        .listRowStyle()
-                } else if isLoading && memories.isEmpty {
-                    ProgressView("读取记忆…")
-                        .padding(40)
-                        .listRowStyle()
-                } else if memories.isEmpty {
-                    emptyState
-                        .listRowStyle()
-                } else {
-                    ForEach(memories, id: \.identity) { memory in
-                        memoryRow(memory)
-                            .listRowStyle()
+                    if let actionError {
+                        errorBanner(actionError)
+                            .memoryListRow()
+                    }
+
+                    if let errorText, memories.isEmpty {
+                        KnockErrorPanel(title: "记忆读取失败", message: errorText) {
+                            Task { await reload() }
+                        }
+                        .memoryListRow()
+                    } else if isLoading && memories.isEmpty {
+                        KnockLoadingPanel("读取记忆…")
+                            .memoryListRow()
+                    } else if memories.isEmpty {
+                        emptyPanel
+                            .memoryListRow()
+                    } else {
+                        ForEach(memories, id: \.identity) { memory in
+                            Button {
+                                selectedMemory = memory
+                            } label: {
+                                memoryRow(memory)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    pendingDelete = memory
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
+                            // 长按菜单：敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）
+                            .knockContextMenu(actions: [
+                                KnockMenuAction("删除记忆", systemImage: "trash", role: .destructive) {
+                                    pendingDelete = memory
+                                }
+                            ])
+                            .memoryListRow()
                             .onAppear {
                                 if memory.identity == memories.last?.identity, hasMore, !isLoadingMore {
                                     Task { await loadMore() }
                                 }
                             }
-                    }
-                    if isLoadingMore {
-                        ProgressView("加载更多…")
-                            .padding(.vertical, 12)
-                            .listRowStyle()
-                    }
-                    if !hasMore {
-                        Text("共 \(total) 条记忆")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .listRowStyle()
+                        }
+                        if isLoadingMore {
+                            KnockLoadingPanel("加载更多…")
+                                .memoryListRow()
+                        }
+                        if !hasMore {
+                            KnockText("共 \(total) 条记忆", role: .caption, color: KnockTokens.textTertiary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, KnockTokens.spacingS)
+                                .memoryListRow()
+                        }
                     }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, 0)
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, newValue in
+                    scrollOffset = newValue
+                }
+                .refreshable { await reload() }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 0)
-            .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                scrollOffset = newValue
-            }
-            .refreshable { await reload() }
         }
-        .navigationTitle("记忆管理")
+        .knockHiddenNavigationBar()
+        .navigationDestination(item: $selectedMemory) { memory in
+            MemoryDetailView(memoryID: memory.id, sourceTable: memory.sourceTable)
+        }
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .memoryStoreDidChange)) { _ in
             Task { await reload() }
         }
-        .confirmationDialog(
-            "删除这条记忆？",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-            titleVisibility: .visible
+        .knockConfirmDialog(
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            title: "删除这条记忆？",
+            message: "删除后，这条记忆及由它形成的长期认知会停止被角色使用。此操作不能撤销。",
+            confirmTitle: "删除",
+            isDestructive: true
         ) {
-            Button("删除", role: .destructive) {
-                if let memory = pendingDelete {
-                    pendingDelete = nil
-                    Task { await performDelete(memory) }
-                }
+            if let memory = pendingDelete {
+                pendingDelete = nil
+                Task { await performDelete(memory) }
             }
-            Button("取消", role: .cancel) { pendingDelete = nil }
-        } message: {
-            Text("删除后，这条记忆及由它形成的长期认知会停止被角色使用。此操作不能撤销。")
         }
         .onChange(of: levelFilter) { _, _ in Task { await reload() } }
         .onChange(of: sourceFilter) { _, _ in Task { await reload() } }
@@ -171,23 +201,16 @@ struct MemoryListView: View {
 
     // MARK: 头部
 
-    private var headerCard: some View {
-        GlassPanel(style: .clear, cornerRadius: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "brain.head.profile.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("记忆")
-                        .font(.subheadline.weight(.semibold))
-                    Text(memoryHeaderSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var headerPanel: some View {
+        KnockPanel {
+            HStack(spacing: KnockTokens.spacingM) {
+                KnockRowGlyph(systemImage: "brain.head.profile.fill")
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockText("记忆", role: .rowTitle, lineLimit: 1)
+                    KnockText(memoryHeaderSummary, role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: KnockTokens.spacingS)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
         }
     }
 
@@ -198,248 +221,128 @@ struct MemoryListView: View {
 
     // MARK: 筛选
 
-    private var filterCard: some View {
-        VStack(spacing: 10) {
-            // 层级分段（全部 / 短期 L1 / 日常 L2 / 长期 L3）
-            Picker("层级", selection: $levelFilter) {
-                Text("全部").tag("")
-                Text("短期").tag("L1")
-                Text("日常").tag("L2")
-                Text("长期").tag("L3")
-            }
-            .pickerStyle(.segmented)
+    private var filterPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockSegmentedBar(
+                    items: [
+                        KnockSegmentItem(value: "", title: "全部"),
+                        KnockSegmentItem(value: "L1", title: "短期"),
+                        KnockSegmentItem(value: "L2", title: "日常"),
+                        KnockSegmentItem(value: "L3", title: "长期"),
+                    ],
+                    selection: $levelFilter,
+                    height: KnockTokens.segmentedSmallHeight,
+                    showsIcons: false
+                )
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                TextField("搜索内容 / 说话人", text: $keyword)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.search)
-                if !keyword.isEmpty {
-                    Button {
-                        keyword = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockSearchBar(placeholder: "搜索内容 / 说话人", text: $keyword)
+                    if !keyword.isEmpty {
+                        KnockCloseButton(label: "清空搜索") {
+                            keyword = ""
+                        }
                     }
-                    .buttonStyle(.plain)
+                }
+
+                KnockFlowLayout(spacing: KnockTokens.spacingS) {
+                    KnockDropdown(
+                        items: [
+                            KnockSegmentItem(value: "", title: "全部来源"),
+                            KnockSegmentItem(value: "PRIVATE_CHAT", title: "私聊"),
+                            KnockSegmentItem(value: "GROUP_CHAT", title: "群聊"),
+                            KnockSegmentItem(value: "MOMENT", title: "动态"),
+                            KnockSegmentItem(value: "MOMENT_COMMENT", title: "评论"),
+                            KnockSegmentItem(value: "DIARY", title: "日记"),
+                            KnockSegmentItem(value: "MANUAL_MEMORY", title: "手动添加"),
+                        ],
+                        selection: $sourceFilter
+                    )
+                    KnockDropdown(
+                        items: [
+                            KnockSegmentItem(value: "active", title: "正在使用"),
+                            KnockSegmentItem(value: "archived", title: "已归档"),
+                            KnockSegmentItem(value: "expired", title: "已过期"),
+                            KnockSegmentItem(value: "", title: "全部状态"),
+                        ],
+                        selection: $statusFilter
+                    )
+                    KnockDropdown(
+                        items: [
+                            KnockSegmentItem(value: "", title: "全部时间"),
+                            KnockSegmentItem(value: "7d", title: "近 7 天"),
+                            KnockSegmentItem(value: "30d", title: "近 30 天"),
+                        ],
+                        selection: $timeFilter
+                    )
+                    KnockDropdown(
+                        items: [
+                            KnockSegmentItem(value: "newest", title: "最新优先"),
+                            KnockSegmentItem(value: "oldest", title: "最早优先"),
+                            KnockSegmentItem(value: "importance", title: "重要度优先"),
+                        ],
+                        selection: $sortOrder
+                    )
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            HStack(spacing: 8) {
-                filterMenu(title: sourceTitle, systemImage: "tray.full", options: {
-                    Button("全部来源") { sourceFilter = "" }
-                    Button("私聊") { sourceFilter = "PRIVATE_CHAT" }
-                    Button("群聊") { sourceFilter = "GROUP_CHAT" }
-                    Button("动态") { sourceFilter = "MOMENT" }
-                    Button("评论") { sourceFilter = "MOMENT_COMMENT" }
-                    Button("日记") { sourceFilter = "DIARY" }
-                    Button("手动添加") { sourceFilter = "MANUAL_MEMORY" }
-                })
-                filterMenu(title: statusTitle, systemImage: "line.3.horizontal.decrease", options: {
-                    Button("正在使用") { statusFilter = "active" }
-                    Button("已归档") { statusFilter = "archived" }
-                    Button("已过期") { statusFilter = "expired" }
-                    Button("全部状态") { statusFilter = "" }
-                })
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: 8) {
-                filterMenu(title: timeTitle, systemImage: "clock", options: {
-                    Button("全部时间") { timeFilter = "" }
-                    Button("近 7 天") { timeFilter = "7d" }
-                    Button("近 30 天") { timeFilter = "30d" }
-                })
-                filterMenu(title: sortTitle, systemImage: "arrow.up.arrow.down", options: {
-                    Button("最新优先") { sortOrder = "newest" }
-                    Button("最早优先") { sortOrder = "oldest" }
-                    Button("重要度优先") { sortOrder = "importance" }
-                })
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(14)
-        .cardSurface(cornerRadius: 18)
-    }
-
-    private var sourceTitle: String {
-        switch sourceFilter {
-        case "PRIVATE_CHAT": return "私聊"
-        case "GROUP_CHAT": return "群聊"
-        case "MOMENT": return "动态"
-        case "MOMENT_COMMENT": return "评论"
-        case "DIARY": return "日记"
-        case "MANUAL_MEMORY": return "手动添加"
-        default: return "全部来源"
-        }
-    }
-
-    private var statusTitle: String {
-        switch statusFilter {
-        case "active": return "正在使用"
-        case "archived": return "已归档"
-        case "expired": return "已过期"
-        default: return "全部状态"
-        }
-    }
-
-    private var timeTitle: String {
-        switch timeFilter {
-        case "7d": return "近 7 天"
-        case "30d": return "近 30 天"
-        default: return "全部时间"
-        }
-    }
-
-    private var sortTitle: String {
-        switch sortOrder {
-        case "oldest": return "最早优先"
-        case "importance": return "重要度"
-        default: return "最新优先"
-        }
-    }
-
-    private func filterMenu<Content: View>(title: String, systemImage: String, @ViewBuilder options: () -> Content) -> some View {
-        Menu {
-            options()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: systemImage).font(.caption2)
-                Text(title).font(.caption.weight(.medium)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(GlassTokens.bubbleSystem, in: Capsule())
         }
     }
 
     // MARK: 行
 
     private func memoryRow(_ memory: MemoryRecord) -> some View {
-        NavigationLink {
-            MemoryDetailView(memoryID: memory.id, sourceTable: memory.sourceTable)
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    levelBadge(memory)
-                    Text(memory.typeText)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(GlassTokens.bubbleSystem, in: Capsule())
-                    if memory.isLegacy {
-                        Text("旧版")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(GlassTokens.bubbleSystem, in: Capsule())
-                    }
+        KnockCapsuleCard {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingXS) {
+                    KnockBadge(text: memory.levelBadgeText, variant: .neutral)
+                    KnockBadge(text: memory.typeText, variant: .neutral)
                     Spacer(minLength: 0)
-                    Text(memory.createdAtText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                    KnockText(memory.createdAtText, role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                    KnockChevron()
                 }
-                Text(memory.content)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 8) {
-                    Text("\(memory.sourceText) · \(memory.ownerText)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Text("重要度 \(memory.importanceText)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(memory.privacyText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(memory.privacy == "private" ? GlassTokens.brandOrange : .secondary)
+                KnockText(memory.content, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 3, lineLimit: 3)
+                    .font(.system(size: 15, weight: .medium))
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockText("\(memory.sourceText) · \(memory.ownerText)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                    Spacer(minLength: KnockTokens.spacingXS)
+                    KnockText("重要度 \(memory.importanceText)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                    KnockBadge(text: memory.privacyText, variant: .neutral)
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 20)
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("\(memory.levelText)记忆，\(memory.typeText)：\(memory.content)")
         .accessibilityHint("打开记忆详情；向左滑动可删除")
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                pendingDelete = memory
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-        }
-        .contextMenu {
-            Button(role: .destructive) {
-                pendingDelete = memory
-            } label: {
-                Label("删除记忆", systemImage: "trash")
-            }
-        }
-    }
-
-    private func levelBadge(_ memory: MemoryRecord) -> some View {
-        Text(memory.levelBadgeText)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(levelColor(memory.level))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(levelColor(memory.level).opacity(0.14), in: Capsule())
-    }
-
-    private func levelColor(_ level: String) -> Color {
-        switch level {
-        case "L1": return .blue
-        case "L2": return .orange
-        case "L3": return GlassTokens.brandOrange
-        default: return .gray
-        }
     }
 
     // MARK: 空态 / 错误态
 
-    private var emptyState: some View {
-        EmptyStateView(
+    private var emptyPanel: some View {
+        KnockEmptyState(
             title: hasActiveFilter ? "没有符合条件的记忆" : "还没有记忆",
             message: hasActiveFilter
                 ? "试试清空搜索词或切换层级/来源筛选。"
-                : "角色的记忆由私聊/群聊提取管线写入 memory_items（M1/L1→L2→L3），也可以手动添加。Memory V2 生成开关关闭时不会产生新记忆。",
-            systemImage: "brain.head.profile"
+                : "角色的记忆由私聊/群聊提取管线写入 memory_items（M1/L1→L2→L3），也可以手动添加。Memory V2 生成开关关闭时不会产生新记忆。"
         )
     }
 
-    private var retryButton: some View {
-        Button("重试") { Task { await reload() } }
-            .buttonStyle(.bordered)
-            .padding(.bottom, 8)
-    }
-
     private func errorBanner(_ text: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(text).font(.footnote).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            Button("关闭") { actionError = nil }
-                .font(.caption)
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(KnockTokens.dangerBright)
+                    .accessibilityHidden(true)
+                KnockText(text, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
+                Spacer(minLength: 0)
+                Button {
+                    actionError = nil
+                } label: {
+                    KnockText("关闭", role: .captionStrong, lineLimit: 1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭错误提示")
+            }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 14)
     }
 
     // MARK: 数据
@@ -523,281 +426,267 @@ struct MemoryDetailView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            ScrollView {
-                VStack(spacing: 14) {
-                    if isLoading {
-                        ProgressView("读取记忆…").padding(40)
-                    } else if let detail {
-                        contentCard(detail)
-                        anchorsCard(detail)
-                        privacyCard(detail)
-                        dangerCard(detail)
-                    } else {
-                        EmptyStateView(
-                            title: "记忆不存在",
-                            message: loadError ?? "shared DB 中未找到记忆 \(memoryID)。可能已被删除。",
-                            systemImage: "brain"
-                        )
+            VStack(spacing: 0) {
+                KnockHeader(
+                    title: "记忆详情",
+                    subtitle: "ID \(memoryID)",
+                    showsBack: true,
+                    onBack: { dismiss() }
+                )
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        if isLoading {
+                            KnockLoadingPanel("读取记忆…")
+                        } else if let detail {
+                            contentPanel(detail)
+                            anchorsPanel(detail)
+                            privacyPanel(detail)
+                            dangerPanel(detail)
+                        } else {
+                            KnockErrorPanel(
+                                title: "记忆不存在",
+                                message: loadError ?? "shared DB 中未找到记忆 \(memoryID)。可能已被删除。"
+                            )
+                        }
                     }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
             }
-            .scrollIndicators(.hidden)
         }
-        .navigationTitle("记忆详情")
-        .navigationBarTitleDisplayMode(.inline)
+        .knockHiddenNavigationBar()
         .task { await load() }
         .onReceive(NotificationCenter.default.publisher(for: .memoryStoreDidChange)) { _ in
             // 自动化/其他页面删除后，详情页同步刷新（若已不存在则显示空态）
             Task { await load() }
         }
-        .confirmationDialog("删除这条记忆？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
-                Task { await deleteCurrent() }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("删除后，这条记忆及由它形成的长期认知会停止被角色使用（派生认知归档 + 向量清理）。此操作不能撤销。")
+        .knockConfirmDialog(
+            isPresented: $showDeleteConfirm,
+            title: "删除这条记忆？",
+            message: "删除后，这条记忆及由它形成的长期认知会停止被角色使用（派生认知归档 + 向量清理）。此操作不能撤销。",
+            confirmTitle: "删除",
+            isDestructive: true
+        ) {
+            Task { await deleteCurrent() }
         }
     }
 
     // MARK: 内容编辑卡
 
-    private func contentCard(_ detail: MemoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text(detail.record.levelBadgeText)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                Text(detail.record.typeText)
-                    .font(.caption.weight(.bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                Spacer()
-                Text("ID \(detail.record.identity)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+    private func contentPanel(_ detail: MemoryDetail) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingXS) {
+                    KnockBadge(text: detail.record.levelBadgeText, variant: .neutral)
+                    KnockBadge(text: detail.record.typeText, variant: .neutral)
+                    Spacer(minLength: 0)
+                    KnockText("ID \(detail.record.identity)", role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                }
 
-            HStack(spacing: 8) {
-                Text(detail.record.ownerText)
-                Text("·")
-                Text(detail.record.sourceText)
-                Text("·")
-                Text(detail.record.createdAtText)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                KnockText(
+                    "\(detail.record.ownerText) · \(detail.record.sourceText) · \(detail.record.createdAtText)",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
 
-            if detail.canEditContent {
-                TextEditor(text: $editText)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 140)
-                    .padding(8)
-                    .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .accessibilityIdentifier("memory-detail-editor")
-                Text("\(editText.count) / 500 字")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                Text(detail.record.content)
-                    .font(.body)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("旧版长期印象（legacy memories 表）只读，仅支持删除。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 10) {
-                Text("重要度")
-                    .font(.caption.weight(.semibold))
-                if detail.canEditImportance {
-                    Slider(value: $editImportance, in: 0...100, step: 1)
-                        .accessibilityIdentifier("memory-detail-importance")
-                    Text("\(Int(editImportance))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .frame(width: 30, alignment: .trailing)
+                if detail.canEditContent {
+                    TextEditor(text: $editText)
+                        .knockFont(.body)
+                        .scrollContentBackground(.hidden)
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .tint(KnockTokens.electric)
+                        .frame(minHeight: 140)
+                        .padding(KnockTokens.spacingS)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(KnockTokens.row)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+                        }
+                        .accessibilityIdentifier("memory-detail-editor")
+                    KnockText("\(editText.count) / 500 字", role: .caption, color: KnockTokens.textTertiary)
                 } else {
-                    Text(detail.record.importanceText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                    KnockText(detail.record.content, role: .body, lineSpacing: 4)
+                        .fixedSize(horizontal: false, vertical: true)
+                    KnockText(
+                        "旧版长期印象（legacy memories 表）只读，仅支持删除。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
                 }
-            }
 
-            if let message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if detail.canEditContent {
-                Button {
-                    Task { await save() }
-                } label: {
-                    HStack {
-                        if isSaving { ProgressView().controlSize(.small) }
-                        Text(isSaving ? "保存中…" : "保存")
-                            .font(.subheadline.weight(.semibold))
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockText("重要度", role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                    if detail.canEditImportance {
+                        Slider(value: $editImportance, in: 0...100, step: 1)
+                            .tint(KnockTokens.electric)
+                            .accessibilityIdentifier("memory-detail-importance")
+                        KnockText("\(Int(editImportance))", role: .captionStrong, lineLimit: 1)
+                            .monospacedDigit()
+                            .frame(width: 30, alignment: .trailing)
+                    } else {
+                        KnockText(detail.record.importanceText, role: .caption, color: KnockTokens.textSecondary)
+                        Spacer()
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(GlassTokens.brandOrange)
-                .disabled(isSaving || editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("memory-detail-save")
+
+                if let message {
+                    KnockText(message, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2)
+                }
+
+                if detail.canEditContent {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        HStack(spacing: KnockTokens.spacingS) {
+                            if isSaving { ProgressView().controlSize(.small).tint(KnockTokens.onElectric) }
+                            Text(isSaving ? "保存中…" : "保存")
+                        }
+                    }
+                    .buttonStyle(KnockPrimaryButtonStyle())
+                    .disabled(isSaving || editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isSaving || editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.35 : 1)
+                    .accessibilityIdentifier("memory-detail-save")
+                }
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 22)
     }
 
     // MARK: 锚点卡
 
-    private func anchorsCard(_ detail: MemoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("锚点")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(detail.sourceAnchors.count) 个来源锚点\(detail.policyAnchors.isEmpty ? "" : " · \(detail.policyAnchors.count) 个六类锚点")")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            ForEach(detail.sourceAnchors) { anchor in
-                HStack(alignment: .top, spacing: 8) {
-                    Text(anchor.type)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 64, alignment: .leading)
-                    Text(anchor.content)
-                        .font(.caption)
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+    private func anchorsPanel(_ detail: MemoryDetail) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockText("锚点", role: .sectionTitle, lineLimit: 1)
+                    Spacer(minLength: 0)
+                    KnockText(
+                        "\(detail.sourceAnchors.count) 个来源锚点" +
+                        (detail.policyAnchors.isEmpty ? "" : " · \(detail.policyAnchors.count) 个六类锚点"),
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineLimit: 1
+                    )
                 }
-                .padding(.vertical, 3)
-            }
-            if !detail.policyAnchors.isEmpty {
-                Divider()
-                Text("旧版六类锚点（memory_anchors）")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                ForEach(detail.policyAnchors) { anchor in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(anchor.typeText)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(GlassTokens.brandOrange)
-                            .frame(width: 44, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(anchor.content)
-                                .font(.caption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if !anchor.knownFrom.isEmpty {
-                                Text(anchor.knownFrom)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        Text(anchor.importanceText + (anchor.isPrivate ? " · 私密" : ""))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                ForEach(detail.sourceAnchors) { anchor in
+                    HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                        KnockBadge(text: anchor.type, variant: .neutral)
+                            .frame(width: 64, alignment: .leading)
+                        KnockText(anchor.content, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.vertical, 3)
+                    .padding(.vertical, KnockTokens.spacingXXS)
+                }
+                if !detail.policyAnchors.isEmpty {
+                    KnockDivider()
+                    KnockText("旧版六类锚点（memory_anchors）", role: .captionStrong, color: KnockTokens.textSecondary)
+                    ForEach(detail.policyAnchors) { anchor in
+                        HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                            KnockText(anchor.typeText, role: .captionStrong, lineLimit: 1)
+                                .frame(width: 44, alignment: .leading)
+                            VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                                KnockText(anchor.content, role: .caption, lineSpacing: 2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if !anchor.knownFrom.isEmpty {
+                                    KnockText(anchor.knownFrom, role: .caption, color: KnockTokens.textTertiary)
+                                }
+                            }
+                            KnockText(
+                                anchor.importanceText + (anchor.isPrivate ? " · 私密" : ""),
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineLimit: 1
+                            )
+                        }
+                        .padding(.vertical, KnockTokens.spacingXXS)
+                    }
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     // MARK: 隐私说明卡
 
-    private func privacyCard(_ detail: MemoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "lock.shield")
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text("隐私说明")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("当前：\(detail.record.privacyText)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(detail.record.privacy == "private" ? GlassTokens.brandOrange : .secondary)
-            }
-            ForEach(detail.privacyLines, id: \.self) { line in
-                Text("• \(line)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if sensitiveHit {
-                Text("本条内容命中敏感词 → MemoryPrivacyPolicy 判定为私密来源（private）。")
-                    .font(.caption2)
-                    .foregroundStyle(GlassTokens.brandOrange)
-            }
-            Divider()
-            Toggle(isOn: Binding(
-                get: { privacy.distinguishPrivateMemory },
-                set: { newValue in
-                    environment.bridge.setMemoryPrivacyFlag(key: "distinguish_private_memory", value: newValue)
-                    privacy = environment.bridge.memoryPrivacySettings()
-                    SelfTestLog.add("memory mgmt privacy distinguish_private_memory=\(newValue)")
+    private func privacyPanel(_ detail: MemoryDetail) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .accessibilityHidden(true)
+                    KnockText("隐私说明", role: .sectionTitle, lineLimit: 1)
+                    Spacer(minLength: 0)
+                    KnockBadge(text: "当前：\(detail.record.privacyText)", variant: .neutral)
                 }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("区分私密记忆")
-                        .font(.caption.weight(.semibold))
-                    Text("键 distinguish_private_memory：关闭后公开/私密锚点不再区分来源可见性。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                ForEach(detail.privacyLines, id: \.self) { line in
+                    KnockText("• \(line)", role: .caption, color: KnockTokens.textSecondary, lineSpacing: 3)
                 }
+                if sensitiveHit {
+                    KnockText(
+                        "本条内容命中敏感词 → MemoryPrivacyPolicy 判定为私密来源（private）。",
+                        role: .caption,
+                        color: KnockTokens.textPrimary,
+                        lineSpacing: 2
+                    )
+                }
+                KnockDivider()
+                Toggle(isOn: Binding(
+                    get: { privacy.distinguishPrivateMemory },
+                    set: { newValue in
+                        environment.bridge.setMemoryPrivacyFlag(key: "distinguish_private_memory", value: newValue)
+                        privacy = environment.bridge.memoryPrivacySettings()
+                        SelfTestLog.add("memory mgmt privacy distinguish_private_memory=\(newValue)")
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("区分私密记忆", role: .captionStrong, lineLimit: 1)
+                        KnockText(
+                            "键 distinguish_private_memory：关闭后公开/私密锚点不再区分来源可见性。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                    }
+                }
+                .tint(KnockTokens.electric)
+                KnockText(
+                    "敏感词（\(privacy.sensitiveWords.count) 条）：" + privacy.sensitiveWords.joined(separator: "、"),
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 2
+                )
             }
-            Text("敏感词（\(privacy.sensitiveWords.count) 条）：" + privacy.sensitiveWords.joined(separator: "、"))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     // MARK: 危险操作卡
 
-    private func dangerCard(_ detail: MemoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                Label("删除这条记忆", systemImage: "trash")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-            }
-            .buttonStyle(.bordered)
-            .tint(.red)
-            .disabled(!detail.canDelete)
-            .accessibilityIdentifier("memory-detail-delete")
-            if !detail.canDelete {
-                Text("旧版短期/日常记录不支持逐条删除。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+    private func dangerPanel(_ detail: MemoryDetail) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("删除这条记忆", systemImage: "trash")
+                }
+                .buttonStyle(KnockDangerButtonStyle())
+                .disabled(!detail.canDelete)
+                .opacity(detail.canDelete ? 1 : 0.35)
+                .accessibilityIdentifier("memory-detail-delete")
+                if !detail.canDelete {
+                    KnockText("旧版短期/日常记录不支持逐条删除。", role: .caption, color: KnockTokens.textTertiary)
+                }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     // MARK: 数据
@@ -879,14 +768,18 @@ struct MemoryDetailView: View {
     }
 }
 
-
-// MARK: - 列表行样式
+// MARK: - List 行样式
 
 private extension View {
-    /// List 行：去分隔线/底色/默认内边距，保持玻璃卡片外观。
-    func listRowStyle() -> some View {
+    /// List 行：去分隔线/底色/默认内边距，保持胶囊卡片外观。
+    func memoryListRow() -> some View {
         listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+            .listRowInsets(EdgeInsets(
+                top: 5,
+                leading: KnockTokens.screenPadding,
+                bottom: 5,
+                trailing: KnockTokens.screenPadding
+            ))
     }
 }

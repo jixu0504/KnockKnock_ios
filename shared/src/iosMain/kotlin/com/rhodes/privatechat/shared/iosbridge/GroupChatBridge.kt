@@ -133,7 +133,7 @@ class GroupChatBridge internal constructor(
      * 群列表：`chat_sessions` 过滤 `operatorId LIKE 'group_%'`，含群名 / 成员数 / 禁言数 /
      * 最后消息 / 未读 / 置顶 / 自动互动开关状态。
      *
-     * 首次调用若一个群都没有，会幂等播种预设角色 + 预设群（`group_elite`，Android
+     * 首次调用若一个群都没有，会幂等播种预设角色 + 预设阵营群（`group_f01`~`group_f21`，Android
      * SessionRepository.initPresetGroups 等价语义），保证全新安装也能进入群聊。
      */
     fun listGroups(onResult: (List<GroupSummaryDto>, String?) -> Unit) {
@@ -797,7 +797,7 @@ private class DemoGroupStreamingClient : StreamingClient {
         val userText = Regex("【用户本轮消息】\\s*\\n?\\s*用户[：:]\\s*([^\\n]*)")
             .find(promptText)?.groupValues?.get(1)?.trim()?.take(80)?.ifBlank { null }
             ?: "大家好啊"
-        val picked = members.take(2).ifEmpty { listOf("阿米娅" to "amiya") }
+        val picked = members.take(2).ifEmpty { listOf("妮可" to "zzz058") }
         return buildString {
             append("【群聊回合状态】\n")
             append("【当前主线】演示模式下的群聊寒暄\n")

@@ -410,10 +410,11 @@ class IosAppGraph internal constructor() {
         workScope.launch {
             try {
                 chatRepo.operators.ensurePresetOperators()
-                var session = chatRepo.sessions.getAllSessionsSync().firstOrNull()
+                chatRepo.initPresetGroups()
+                var session = chatRepo.sessions.getAllSessionsSync().firstOrNull { !it.id.startsWith("group_") }
                 if (session == null) {
                     val operators = chatRepo.operators.getAllOperatorsSync()
-                    val operator = operators.firstOrNull { it.id == "amiya" } ?: operators.firstOrNull()
+                    val operator = operators.firstOrNull()
                     if (operator != null) {
                         session = chatRepo.getOrCreateSession(operator.id, operator.name, operator.avatarUri)
                     }
@@ -424,7 +425,7 @@ class IosAppGraph internal constructor() {
                             sessionId = session.id,
                             operatorId = session.operatorId,
                             type = MemoryType.LONG_TERM,
-                            content = "演示记忆（真实 DB 写入）：博士与${session.operatorName}在罗德岛走廊第一次说话。",
+                            content = "演示记忆（真实 DB 写入）：绳匠与${session.operatorName}在新艾利都的街头第一次说话。",
                             createdAt = Clock.System.now().toEpochMilliseconds(),
                         ),
                     )

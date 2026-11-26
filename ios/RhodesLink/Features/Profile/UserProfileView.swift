@@ -8,6 +8,10 @@
 //  - 身份值进入 T45 私聊提示词（USER_NAME / USER_GENDER / USER_BIO），保存后下一轮聊天生效。
 //  - 截图钩子（仅启动参数）：`--identity-demo` 由设置页自动推入本页。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回胶囊 + 右侧黄主按钮「保存」）；
+//  身份头像走 `KnockAvatar`（黑底 + 蓝圈 + 白首字）；表单 = 面板 + 胶囊输入框；
+//  统计 = 面板内灰阶计数格；Toast = 实色胶囊；保存失败改页面内错误面板（不再用系统 alert）。
+//
 
 import SwiftUI
 
@@ -31,76 +35,76 @@ struct UserProfileView: View {
         return nickname != profile.nickname || gender != profile.gender || signature != profile.signature
     }
 
+    private var canSave: Bool {
+        !isSaving && isDirty && !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            Group {
-                if isLoading && profile == nil {
-                    ProgressView("读取身份信息…").padding(40)
-                } else if let errorText, profile == nil {
-                    EmptyStateView(
-                        title: "身份读取失败",
-                        message: errorText,
-                        systemImage: "exclamationmark.triangle",
-                        actionTitle: "重试",
-                        action: { Task { await load() } }
-                    )
-                } else {
-                    content
-                }
-            }
-        }
-        .navigationTitle("我的身份")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button(isSaving ? "保存中…" : "保存") {
-                    Task { await save() }
-                }
-                .disabled(isSaving || !isDirty || nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("保存身份")
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if let toast {
-                Text(toast)
-                    .font(.footnote)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                    .padding(.bottom, 18)
-                    .transition(.opacity)
-                    .onAppear {
-                        Task {
-                            try? await Task.sleep(nanoseconds: 2_400_000_000)
-                            withAnimation { self.toast = nil }
-                        }
+            VStack(spacing: 0) {
+                KnockHeader(title: "我的身份", showsBack: true, onBack: { dismiss() }, trailing: {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        Text(isSaving ? "保存中…" : "保存")
                     }
+                    .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 34))
+                    .opacity(canSave ? 1 : 0.35)
+                    .disabled(!canSave)
+                    .accessibilityLabel("保存身份")
+                })
+
+                Group {
+                    if isLoading && profile == nil {
+                        KnockLoadingPanel("读取身份信息…")
+                            .padding(.horizontal, KnockTokens.screenPadding)
+                            .padding(.top, KnockTokens.spacingL)
+                    } else if let errorText, profile == nil {
+                        KnockErrorPanel(
+                            title: "身份读取失败",
+                            message: errorText
+                        ) {
+                            Task { await load() }
+                        }
+                        .padding(.horizontal, KnockTokens.screenPadding)
+                        .padding(.top, KnockTokens.spacingL)
+                    } else {
+                        content
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+
+            if let toast {
+                VStack {
+                    KnockToast(text: toast)
+                        .padding(.top, KnockTokens.spacingS)
+                        .transition(.opacity)
+                    Spacer()
+                }
             }
         }
-        .alert("保存失败", isPresented: Binding(
-            get: { saveError != nil },
-            set: { if !$0 { saveError = nil } }
-        )) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(saveError ?? "")
-        }
+        .knockHiddenNavigationBar()
+        .knockScrollEdgeHidden()
         .task { await load() }
     }
 
     private var content: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
                 identityCard
+                if let saveError {
+                    KnockErrorPanel(title: "保存失败", message: saveError, retryTitle: nil)
+                }
                 editCard
                 statsCard
                 aboutCard
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 24)
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.top, KnockTokens.spacingS)
+            .padding(.bottom, KnockTokens.spacingXL)
         }
         .scrollIndicators(.hidden)
         .refreshable { await load() }
@@ -109,155 +113,154 @@ struct UserProfileView: View {
     // MARK: - 身份卡
 
     private var identityCard: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [GlassTokens.brandOrange, Color(hex: 0xE8A33D)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 72, height: 72)
-                Text(displayNickname.prefix(1).uppercased())
-                    .font(.title.weight(.bold))
-                    .foregroundStyle(.white)
+        KnockPanel {
+            VStack(spacing: KnockTokens.spacingM) {
+                KnockAvatar(
+                    avatarId: profile?.avatarId ?? "",
+                    name: displayNickname,
+                    size: 84
+                )
+                KnockText(displayNickname, role: .pageTitle, alignment: .center)
+                    .frame(maxWidth: .infinity)
+                if !signature.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    KnockText(
+                        signature,
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 3,
+                        alignment: .center
+                    )
+                    .frame(maxWidth: .infinity)
+                } else {
+                    KnockText(
+                        "这个身份会出现在聊天中，也会用于代理人对你的称呼。",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineSpacing: 3,
+                        alignment: .center
+                    )
+                    .frame(maxWidth: .infinity)
+                }
             }
-            Text(displayNickname)
-                .font(.title3.weight(.semibold))
-            if !signature.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(signature)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("这个身份会出现在聊天中，也会用于干员对你的称呼。")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-            }
+            .frame(maxWidth: .infinity)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity)
-        .cardSurface(cornerRadius: 24)
     }
 
     private var displayNickname: String {
         let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "博士" : trimmed
+        return trimmed.isEmpty ? "绳匠" : trimmed
     }
 
     // MARK: - 编辑卡
 
     private var editCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(text: "编辑身份", systemImage: "person.crop.circle")
-            VStack(spacing: 0) {
-                fieldRow(title: "昵称", placeholder: "必填，聊天中的称呼", text: $nickname, required: true)
-                Divider().padding(.leading, 14).opacity(0.4)
-                fieldRow(title: "性别", placeholder: "选填", text: $gender, required: false)
-                Divider().padding(.leading, 14).opacity(0.4)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 4) {
-                        Text("个性签名")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockGroupTitle(title: "编辑身份", systemImage: "person.crop.circle")
+
+                KnockInputField(
+                    title: "昵称",
+                    placeholder: "必填，聊天中的称呼",
+                    text: $nickname
+                )
+                if nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    KnockBadge(text: "昵称不能为空", variant: .danger)
+                }
+                KnockInputField(
+                    title: "性别",
+                    placeholder: "选填",
+                    text: $gender
+                )
+
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                    KnockText("个性签名", role: .captionStrong, color: KnockTokens.textSecondary)
                     TextField("写一句介绍自己（选填）", text: $signature, axis: .vertical)
                         .lineLimit(1...4)
-                        .font(.body)
+                        .textFieldStyle(KnockTextFieldStyle())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                 }
-                .padding(14)
-            }
-            .cardSurface(cornerRadius: 18)
-            Text("保存后立即写入本机设置，并在下一轮聊天中生效；昵称不能为空。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
-    }
 
-    private func fieldRow(title: String, placeholder: String, text: Binding<String>, required: Bool) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
-            TextField(placeholder, text: text)
-                .font(.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-            if required && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("必填")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.red)
+                KnockText(
+                    "保存后立即写入本机设置，并在下一轮聊天中生效；昵称不能为空。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 3
+                )
             }
         }
-        .padding(14)
     }
 
     // MARK: - 统计卡
 
     private var statsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "chart.bar.fill")
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text("互动统计")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("本机真实数据")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            if let profile {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    ForEach(profile.statRows) { row in
-                        VStack(spacing: 3) {
-                            HStack(spacing: 4) {
-                                Image(systemName: row.systemImage)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(row.title)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textSecondary)
+                        .accessibilityHidden(true)
+                    KnockText("互动统计", role: .sectionTitle, lineLimit: 1)
+                    Spacer(minLength: KnockTokens.spacingS)
+                    KnockText("本机真实数据", role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                }
+                if let profile {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: KnockTokens.spacingS),
+                            GridItem(.flexible(), spacing: KnockTokens.spacingS),
+                            GridItem(.flexible(), spacing: KnockTokens.spacingS),
+                        ],
+                        spacing: KnockTokens.spacingS
+                    ) {
+                        ForEach(profile.statRows) { row in
+                            VStack(spacing: KnockTokens.spacingXXS) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: row.systemImage)
+                                        .font(.system(size: 10, weight: .heavy))
+                                        .foregroundStyle(KnockTokens.textSecondary)
+                                        .accessibilityHidden(true)
+                                    KnockText(row.title, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                                }
+                                KnockText("\(row.value)", role: .pageTitle, lineLimit: 1)
+                                    .monospacedDigit()
                             }
-                            Text("\(row.value)")
-                                .font(.title3.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, KnockTokens.spacingS)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(KnockTokens.rowIconWell)
+                            )
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(row.title) \(row.value)")
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
+                KnockText(
+                    "原版没有用户等级/经验值设定，这里展示你在本机的真实互动数据。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 3
+                )
             }
-            Text("原版没有用户等级/经验值设定，这里展示你在本机的真实互动数据。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     // MARK: - 说明
 
     private var aboutCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: "关于身份", systemImage: "info.circle")
-            Text("昵称、性别与签名会作为你的用户档案进入聊天提示词，影响干员如何称呼你与理解你的自述。它们只保存在本机，并随完整备份一起导出。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "关于身份", systemImage: "info.circle")
+                KnockText(
+                    "昵称、性别与签名会作为你的用户档案进入聊天提示词，影响代理人如何称呼你与理解你的自述。它们只保存在本机，并随完整备份一起导出。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 3
+                )
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 18)
     }
 
     // MARK: - 数据

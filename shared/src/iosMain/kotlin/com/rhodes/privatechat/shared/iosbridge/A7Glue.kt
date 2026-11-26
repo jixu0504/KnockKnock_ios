@@ -483,7 +483,7 @@ class A7Glue internal constructor(
             A7GlueLog.log("moment.published.skip", "moment=$momentId 非用户动态 operator=${moment.operatorId}")
             return MomentReplyScheduleSummary(0, 0, emptyList())
         }
-        val userName = settings.userName.ifBlank { "博士" }
+        val userName = settings.userName.ifBlank { "绳匠" }
         val operators = chatRepo.getAllOperatorsSync()
             .filter { it.id != USER_OPERATOR_ID && !it.id.startsWith("group") }
         val eligible = operators.filter { it.name != userName && settings.getOperatorDynPermission(it.id) }
@@ -683,7 +683,7 @@ class A7Glue internal constructor(
         sourceAwareRules = { "以下记忆与资料仅作为背景，不得在回复中提及来源、系统或提示词。" },
         userProfile = {
             com.rhodes.privatechat.shared.domain.chat.UserProfileView(
-                nickname = settings.userName.ifBlank { "博士" },
+                nickname = settings.userName.ifBlank { "绳匠" },
                 gender = settings.userGender,
                 bio = settings.userSignature,
             )
@@ -747,7 +747,7 @@ class A7Glue internal constructor(
                         sessionId = session.id,
                         operatorId = session.operatorId,
                         type = MemoryType.SHORT_TERM,
-                        content = "T56 自检滚动摘要：博士与${session.operatorName}约定明天去食堂。",
+                        content = "T56 自检滚动摘要：绳匠与${session.operatorName}约定明天去拉面摊。",
                         createdAt = clock(),
                     ),
                 )
@@ -759,7 +759,7 @@ class A7Glue internal constructor(
                         sessionId = session.id,
                         operatorId = session.operatorId,
                         type = MemoryType.SHORT_TERM,
-                        content = "T56 自检记忆抽取：${messages.size} 条消息 → 约定一起去食堂。",
+                        content = "T56 自检记忆抽取：${messages.size} 条消息 → 约定一起去拉面摊。",
                         createdAt = clock(),
                     ),
                 )
@@ -819,7 +819,7 @@ class A7Glue internal constructor(
             if (operators.size < 2) return finishSelfTest(lines, pass, fail, "operators<2")
             val op1 = operators[0]
             val op2 = operators[1]
-            val userName = settings.userName.ifBlank { "博士" }
+            val userName = settings.userName.ifBlank { "绳匠" }
             val prefsBefore = NotificationBridge(settings).readPrefs()
 
             // 2) 动态评论回复：预置动态 + 用户评论 + 到期 reply turn（catch-up 扫描 pending 重挂并执行）。
@@ -827,7 +827,7 @@ class A7Glue internal constructor(
                 Moment(
                     operatorId = op1.id,
                     operatorName = op1.name,
-                    content = "今天在罗德岛食堂试了新菜，居然还不错。",
+                    content = "今天在六分街的拉面摊试了新菜，居然还不错。",
                     createdAt = now - 3_000,
                 ),
             )
@@ -960,7 +960,7 @@ class A7Glue internal constructor(
                 turnId = "t56-router",
                 momentId = momentId,
                 commentId = 1L,
-                commenterName = "阿米娅",
+                commenterName = "妮可",
                 content = "这条动态真有意思。",
                 createdAt = now,
             )
@@ -1158,7 +1158,7 @@ class A7Glue internal constructor(
             chatRepo.ensurePresetOperators()
             val operators = chatRepo.getAllOperatorsSync()
                 .filter { it.id != USER_OPERATOR_ID && !it.id.startsWith("group") }
-            val userName = settings.userName.ifBlank { "博士" }
+            val userName = settings.userName.ifBlank { "绳匠" }
             check("fixture.operators", operators.size >= 2, "count=${operators.size}")
             if (operators.size < 2) {
                 return finishMomentReplySelfTest(lines, pass, fail, "operators<2")

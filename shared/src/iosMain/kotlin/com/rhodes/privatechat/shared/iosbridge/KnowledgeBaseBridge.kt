@@ -281,7 +281,7 @@ class KnowledgeBaseBridge internal constructor(
                 }
                 mainScope.launch { onResult(dtos, null) }
             } catch (t: Throwable) {
-                mainScope.launch { onResult(emptyList(), errorText(t, "读取干员列表失败")) }
+                mainScope.launch { onResult(emptyList(), errorText(t, "读取代理人列表失败")) }
             }
         }
     }
@@ -410,7 +410,7 @@ class KnowledgeBaseBridge internal constructor(
     private fun recallReasonText(reason: String, hitCount: Int): String = when (reason) {
         "" -> if (hitCount > 0) "命中 $hitCount 条相关块" else "未命中"
         "blank_query" -> "请输入召回测试的查询内容"
-        "no_assignment" -> "该知识库尚未关联到所选干员：请在详情页「关联干员」中勾选后再测试"
+        "no_assignment" -> "该知识库尚未关联到所选代理人：请在详情页「关联代理人」中勾选后再测试"
         "embedding_unavailable" -> "向量模型不可用：请检查设置中的本地/远程向量配置"
         "index_not_ready" -> "索引未就绪：请先执行「索引 / 重建」并等待状态变为已索引"
         "no_match" -> "没有匹配到相关块（可换更贴近正文的关键词）"

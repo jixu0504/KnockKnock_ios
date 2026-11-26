@@ -41,12 +41,14 @@ enum AppTab: String, CaseIterable, Hashable, Identifiable {
         }
     }
 
+    /// 敲敲 Tab 图标：SF Symbols **单色线性**（无 `.fill`，选中态由 KnockTabBar 的黄胶囊表达，
+    /// 不再依赖系统填充/着色），统一 `.heavy` 字重在 KnockSegmentedBar 内施加。
     var systemImage: String {
         switch self {
-        case .chat: return "bubble.left.and.bubble.right.fill"
-        case .contacts: return "person.2.fill"
-        case .features: return "square.grid.2x2.fill"
-        case .settings: return "gearshape.fill"
+        case .chat: return "bubble.left.and.bubble.right"
+        case .contacts: return "person.2"
+        case .features: return "square.grid.2x2"
+        case .settings: return "gearshape"
         }
     }
 
@@ -70,6 +72,9 @@ enum Route: Hashable {
     case impressions
     case ranking
     case memoryList
+    /// T48 知识库列表（导入/切块/索引/召回）。P5 收口补齐：此前只能从「功能」Tab 的
+    /// `NavigationLink { KnowledgeListView() }` 直达、无路由无深链，截图/回归无法稳定复现。
+    case knowledgeList
     case settingsAppearance
     case settingsAccessibility
     /// T37 模型供应商（11 家 + 自定义端点 + Keychain 配置）
@@ -99,6 +104,7 @@ enum Route: Hashable {
         case .impressions: return "impressions"
         case .ranking: return "ranking"
         case .memoryList: return "memoryList"
+        case .knowledgeList: return "knowledgeList"
         case .settingsAppearance: return "settingsAppearance"
         case .settingsAccessibility: return "settingsAccessibility"
         case .settingsProviders: return "settingsProviders"
@@ -128,6 +134,13 @@ final class AppRouter: ObservableObject {
 
     init() {
         selectedTab = Self.initialTab()
+        // 截图/调试钩子：`--deep-link rhodes://features/ranking` 启动时直接应用深链
+        // （simctl openurl 会弹系统确认框，截图不可用）；无参数零影响
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--deep-link"), index + 1 < args.count,
+           let url = URL(string: args[index + 1]) {
+            _ = handle(url: url)
+        }
     }
 
     /// `--tab chat|contacts|features|settings` 启动参数用于验证四 Tab（截图脚本使用）
@@ -210,7 +223,8 @@ final class AppRouter: ObservableObject {
     /// 处理 rhodes:// 深链；返回是否命中已注册路由。
     @discardableResult
     func handle(url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(), scheme == "rhodes" else {
+        // 同时接受新 scheme `knock` 与旧 `rhodes`（Info.plist 已改名 knock；旧链接保持兼容）
+        guard let scheme = url.scheme?.lowercased(), scheme == "knock" || scheme == "rhodes" else {
             return false
         }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -273,6 +287,8 @@ final class AppRouter: ObservableObject {
             case "impressions": featuresPath.append(Route.impressions)
             case "ranking": featuresPath.append(Route.ranking)
             case "memory": featuresPath.append(Route.memoryList)
+            case "knowledge", "knowledge-base", "knowledgebase":
+                featuresPath.append(Route.knowledgeList)
             case .some(let section):
                 featuresPath.append(Route.placeholder(
                     title: "功能 / \(section)",

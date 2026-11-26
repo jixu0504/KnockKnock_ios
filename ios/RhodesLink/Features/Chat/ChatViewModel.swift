@@ -16,6 +16,7 @@
 
 import Foundation
 import UIKit
+import Combine
 
 @MainActor
 final class ChatViewModel: ObservableObject {
@@ -48,6 +49,10 @@ final class ChatViewModel: ObservableObject {
     /// 图片媒体 ID → 本机 URL 缓存
     private var imageURLCache: [String: URL] = [:]
     private var feedbackTask: Task<Void, Never>?
+    /// 外部数据变更通知（导入聊天记录 / 备份恢复）→ 已打开的聊天页刷新
+    private var notificationCancellables: Set<AnyCancellable> = []
+    /// 正在进行中的外部变更刷新（避免导入完成通知与页面 load 并发重复载入）
+    private var externalRefreshTask: Task<Void, Never>?
 
     // 历史分页状态
     @Published private(set) var isLoadingHistory = false
@@ -58,6 +63,13 @@ final class ChatViewModel: ObservableObject {
     /// 前插更早一页后用于保持滚动位置的锚点（原最早一条消息 id）
     @Published private(set) var lastPrependAnchor: Int64?
     @Published private(set) var prependGeneration = 0
+
+    /// 自检专用：复现修复前的合并逻辑（olderKept 只按 id、操作成功不做本地精确变更），
+    /// 仅启动参数 `--chat-legacy-merge` 启用（配合 `--chat-refresh-selftest` 出 FAIL 基线证据），
+    /// 正常运行路径恒为 false，零影响。
+    static var isLegacyMergeSimulationEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("--chat-legacy-merge")
+    }
 
     private let bridge: AppGraphClient
     private let sessionId: String
@@ -76,6 +88,66 @@ final class ChatViewModel: ObservableObject {
     init(sessionId: String, bridge: AppGraphClient = AppGraphClient.shared) {
         self.sessionId = sessionId
         self.bridge = bridge
+        observeExternalDataChanges()
+    }
+
+    /// 外部数据变更（聊天记录导入 / 备份恢复）监听：
+    /// - 聊天页在导航栈/Tab 切换时**不会被销毁**（hasLoaded 守卫会挡住二次 load），
+    ///   导入完成后必须由通知主动刷新，否则用户回到聊天页看到的仍是导入前的旧时间线；
+    /// - 会话列表（ChatListView）也监听同一通知刷新预览/时间。
+    private func observeExternalDataChanges() {
+        NotificationCenter.default
+            .publisher(for: .chatDataDidChangeExternally)
+            .sink { [weak self] note in
+                Task { @MainActor [weak self] in
+                    await self?.handleExternalDataChange(note)
+                }
+            }
+            .store(in: &notificationCancellables)
+    }
+
+    /// 通知处理：只处理本会话（无 sessionId 的全局变更也刷新），带导入 id 区间时立即定位导入块。
+    private func handleExternalDataChange(_ note: Notification) async {
+        let changedSessionId = note.userInfo?[ChatExternalChangeKey.sessionId] as? String ?? ""
+        guard changedSessionId.isEmpty || changedSessionId == sessionId else {
+            SelfTestLog.add("chat external change ignored session=\(changedSessionId) current=\(sessionId)")
+            return
+        }
+        let info = ChatExternalChangeInfo(userInfo: note.userInfo)
+        SelfTestLog.add(
+            "chat external change session=\(sessionId) source=\(info.source) imported=\(info.importedCount) " +
+            "hasLoaded=\(hasLoaded) firstImportedId=\(info.firstImportedId)"
+        )
+        guard hasLoaded else { return }
+        await reloadAfterExternalDataChange(importInfo: info)
+    }
+
+    /// 外部变更后的权威刷新（不受 hasLoaded 守卫限制）：
+    /// 1) 会话元数据（列表预览同源）；2) 最新一页（含更早已加载消息的合并）；
+    /// 3) 导入记录的 id 区间 → 直接取回并并入时间线（导入记录时间戳通常早于首屏窗口，
+    ///    仅刷新首屏在长会话里根本看不到它们），同时设置前插锚点让时间线滚动到导入块。
+    func reloadAfterExternalDataChange(importInfo: ChatExternalChangeInfo) async {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            if let item = await self.bridge.findSession(id: self.sessionId) {
+                self.session = item
+                self.mode = item.mode.lowercased()
+                if !self.isStreaming { self.statusLine = "\(item.modeText) · 私聊" }
+            }
+            await self.refreshAfterSend()
+            if importInfo.importedCount > 0 {
+                await self.mergeImportedMessages(
+                    firstImportedId: importInfo.firstImportedId,
+                    importedCount: importInfo.importedCount,
+                    source: importInfo.source
+                )
+            }
+            // 应用后清除「待定位」标记，避免下次进入重复插入
+            self.clearPendingImportFocus()
+        }
+        externalRefreshTask?.cancel()
+        externalRefreshTask = task
+        await task.value
     }
 
     var title: String { session?.title ?? "会话" }
@@ -98,6 +170,8 @@ final class ChatViewModel: ObservableObject {
 
     /// 角色侧头像值（语句气泡头像用；会话元数据未加载时为空 → 首字占位）。
     var roleAvatarId: String { session?.avatarId ?? "" }
+    /// 当前私聊对应的角色 id（点对方头像进角色简介）。
+    var operatorId: String { session?.operatorId ?? "" }
 
     /// 自检/自动化钩子用（sessionId 为 init 注入的会话绑定，不随会话切换变化）
     var sessionIdForAutomation: String { sessionId }
@@ -162,6 +236,15 @@ final class ChatViewModel: ObservableObject {
             "chat loaded session=\(sessionId) title=\(session?.title ?? "-") messages=\(messages.count) " +
             "total=\(totalCount) hasMore=\(hasMoreHistory) stress=\(TimelineStress.isEnabled)"
         )
+
+        // 导入聊天记录后首次进入会话：把导入块并入时间线并定位
+        // （导入记录通常时间戳更早、不在首屏窗口内，不处理会给人「导入没生效」的错觉）。
+        await applyPendingImportFocusIfNeeded()
+
+        // 消息操作/外部变更刷新自检钩子（仅 --chat-refresh-selftest；对用户路径零影响）
+        if ChatRefreshAutomation.isEnabled {
+            Task { await ChatRefreshAutomation.runIfNeeded(model: self) }
+        }
     }
 
     /// 首屏历史（最新 pageSize 条）；乐观占位（负数 id）保留在末尾。
@@ -205,6 +288,89 @@ final class ChatViewModel: ObservableObject {
         }
         await loadFirstPage()
         SelfTestLog.add("chat refresh messages=\(messages.count) total=\(totalCount)")
+    }
+
+    // MARK: - 外部数据变更（导入聊天记录 / 备份恢复）→ 立即刷新
+
+    /// 「待定位导入块」在用户设置里的键（导入成功后由设置页写入，聊天页应用后清除）。
+    /// 值格式 `<firstImportedId>:<count>`（见 [ChatExternalChangeInfo.markerValue]）。
+    static func pendingImportFocusKey(sessionId: String) -> String {
+        "chat_import_focus_\(sessionId)"
+    }
+
+    /// 清除待定位标记（已应用或数据非法时）。
+    private func clearPendingImportFocus() {
+        let key = Self.pendingImportFocusKey(sessionId: sessionId)
+        if !bridge.settingsString(key: key).isEmpty {
+            bridge.setSettingsString(key: key, value: "")
+        }
+    }
+
+    /// 首次进入会话时消费「待定位导入块」标记：导入发生在聊天页未打开时（设置页导入 → 再进入私聊），
+    /// 首屏只取最新 50 条，而导入记录时间戳通常更早 → 用户会以为导入没生效。
+    func applyPendingImportFocusIfNeeded() async {
+        let key = Self.pendingImportFocusKey(sessionId: sessionId)
+        let raw = bridge.settingsString(key: key)
+        guard !raw.isEmpty else { return }
+        guard let info = ChatExternalChangeInfo(markerValue: raw) else {
+            SelfTestLog.add("chat import focus marker INVALID session=\(sessionId) value=\(raw)")
+            clearPendingImportFocus()
+            return
+        }
+        SelfTestLog.add(
+            "chat import focus pending session=\(sessionId) firstImportedId=\(info.firstImportedId) count=\(info.importedCount)"
+        )
+        await mergeImportedMessages(
+            firstImportedId: info.firstImportedId,
+            importedCount: info.importedCount,
+            source: "marker"
+        )
+        clearPendingImportFocus()
+    }
+
+    /// 把导入块并入时间线（不改分页/流式语义）：
+    /// - 只取最多 [ChatExternalChangeInfo.maxImportedMerge] 条「最新的导入记录」；
+    /// - 按 (createdAt,id) 排序去重合并，负数乐观占位始终留在末尾；
+    /// - 设置 `lastPrependAnchor` / `prependGeneration`，复用 ChatView 已有的前插锚点滚动逻辑把
+    ///   时间线滚到导入块（无需改视图代码）；
+    /// - 历史游标不变：上滑分页照旧按游标取页，并以 id 去重避免重复。
+    func mergeImportedMessages(firstImportedId: Int64, importedCount: Int, source: String) async {
+        guard firstImportedId > 0, importedCount > 0, !TimelineStress.isEnabled else { return }
+        let take = min(importedCount, ChatExternalChangeInfo.maxImportedMerge)
+        let fromId = firstImportedId + Int64(importedCount - take)
+        let result = await bridge.loadMessagesByIdRange(sessionId: sessionId, fromId: fromId, count: take)
+        guard case .success(let items) = result, !items.isEmpty else {
+            SelfTestLog.add("chat import merge FAILED session=\(sessionId) fromId=\(fromId) take=\(take)")
+            return
+        }
+        let imported = items.map(ChatMessage.init(item:))
+        let existingIds = Set(messages.map(\.id))
+        let newOnes = imported.filter { !existingIds.contains($0.id) }
+        guard !newOnes.isEmpty else {
+            SelfTestLog.add(
+                "chat import merge noop session=\(sessionId) source=\(source) fetched=\(imported.count) (already in timeline)"
+            )
+            return
+        }
+        let pending = messages.filter { $0.id < 0 }
+        let reals = (messages.filter { $0.id > 0 } + newOnes)
+            .uniqued(by: \.id)
+            .sorted { lhs, rhs in
+                if lhs.createdAt == rhs.createdAt { return lhs.id < rhs.id }
+                return lhs.createdAt < rhs.createdAt
+            }
+        messages = reals + pending
+        loadedCount = reals.count
+        totalCount = max(totalCount, loadedCount)
+        lastPrependAnchor = newOnes.map(\.id).min()
+        prependGeneration += 1
+        let firstText = String(newOnes.first?.text.prefix(24) ?? "")
+        SelfTestLog.add(
+            "chat import merge ok session=\(sessionId) source=\(source) fetched=\(imported.count) inserted=\(newOnes.count) " +
+            "messages=\(messages.count) total=\(totalCount) anchor=\(lastPrependAnchor ?? 0) " +
+            "firstTime=\(newOnes.first?.timeText ?? "-") firstText=\(firstText)"
+        )
+        showFeedback("已载入 \(newOnes.count) 条导入聊天记录")
     }
 
     // MARK: 模式切换（T55：线上 / 线下 / 导演）
@@ -420,15 +586,17 @@ final class ChatViewModel: ObservableObject {
         SelfTestLog.add("chat ops quote cleared")
     }
 
+    /// 撤回整条消息（引擎语义 = 删行；DB 行消失，时间线气泡应即时消失）。
     func recall(_ message: ChatMessage) {
-        runOperation("撤回") { [weak self] in
+        runOperation("撤回", mutation: .remove(message.id)) { [weak self] in
             guard let self else { return "已取消" }
             return await self.bridge.recallMessage(sessionId: self.sessionId, messageId: message.id)
         }
     }
 
+    /// 撤回 AI 消息的单个分段（引擎改写 content 的 recalled 标记；行仍在，时间线需就地换成撤回态）。
     func recallSegment(_ message: ChatMessage, segmentIndex: Int32 = 0) {
-        runOperation("撤回分段") { [weak self] in
+        runOperation("撤回分段", mutation: .reload(message.id)) { [weak self] in
             guard let self else { return "已取消" }
             return await self.bridge.recallMessage(
                 sessionId: self.sessionId,
@@ -439,7 +607,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func retry(_ message: ChatMessage) {
-        runOperation("重试") { [weak self] in
+        runOperation("重试", mutation: .reload(message.id)) { [weak self] in
             guard let self else { return "已取消" }
             if message.isFailedImage {
                 return await self.bridge.retryImageMessage(sessionId: self.sessionId, messageId: message.id)
@@ -449,7 +617,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func regenerate(_ message: ChatMessage) {
-        runOperation("重说") { [weak self] in
+        runOperation("重说", mutation: .reload(message.id)) { [weak self] in
             guard let self else { return "已取消" }
             return await self.bridge.regenerateMessage(sessionId: self.sessionId, messageId: message.id)
         }
@@ -462,15 +630,44 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// 本地删除（仅删本机 DB 行）：时间线气泡应即时消失。
     func deleteLocal(_ message: ChatMessage) {
-        runOperation("删除") { [weak self] in
+        runOperation("删除", mutation: .remove(message.id)) { [weak self] in
             guard let self else { return "已取消" }
             return await self.bridge.deleteMessageLocal(sessionId: self.sessionId, messageId: message.id)
         }
     }
 
-    /// 统一操作执行：Main 队列回调 → 轻提示/错误 → 刷新最新一页（DB 为唯一事实来源）。
-    private func runOperation(_ name: String, _ operation: @escaping () async -> String?) {
+    /// 操作成功后对本地时间线的精确变更（DB 行已由 shared 落地）：
+    /// - `.remove`：撤回整条/本地删除 → 行已删除；
+    /// - `.reload`：分段撤回/重试/重说 → 行仍在但内容/type 变了。
+    /// 仅靠 `refreshAfterSend` 的首屏合并是**不够**的：比最新一页更早的已加载消息走
+    /// `olderKept` 原样保留，被删/被改的行不会消失，必须按 messageId 精确落变更。
+    private enum LocalMutation {
+        case remove(Int64)
+        case reload(Int64)
+
+        var messageIds: Set<Int64> {
+            switch self {
+            case .remove(let id): return [id]
+            case .reload(let id): return [id]
+            }
+        }
+
+        var removedIds: Set<Int64> {
+            switch self {
+            case .remove(let id): return [id]
+            case .reload: return []
+            }
+        }
+    }
+
+    /// 统一操作执行：Main 队列回调 → 轻提示/错误 → 本地精确变更（即时 UI）→ 刷新最新一页（DB 为唯一事实来源）。
+    private func runOperation(
+        _ name: String,
+        mutation: LocalMutation? = nil,
+        _ operation: @escaping () async -> String?
+    ) {
         guard !isActionBusy else { return }
         isActionBusy = true
         Task {
@@ -483,8 +680,48 @@ final class ChatViewModel: ObservableObject {
             } else {
                 showFeedback("\(name)完成")
                 SelfTestLog.add("chat ops \(name) ok")
+                // 先按 messageId 精确落变更：不等下一次网络/分页刷新，气泡立即变（撤回/删除即时生效）。
+                if let mutation, !Self.isLegacyMergeSimulationEnabled {
+                    await applyLocalMutation(mutation, operation: name)
+                }
             }
-            await refreshAfterSend()
+            await refreshAfterSend(dropping: mutation?.removedIds ?? [])
+        }
+    }
+
+    /// 操作成功后的本地时间线精确同步（同步读 DB 单条，O(1)）：
+    /// - remove：行已删 → 从时间线删除（撤回/删除即时生效，覆盖 olderKept 残留场景）；
+    /// - reload：行还在但内容变化 → 用 DB 最新值替换（撤回态/新回复即时生效）。
+    private func applyLocalMutation(_ mutation: LocalMutation, operation: String) async {
+        switch mutation {
+        case .remove(let messageId):
+            let before = messages.count
+            messages.removeAll { $0.id == messageId }
+            let removed = before - messages.count
+            loadedCount = messages.filter { $0.id > 0 }.count
+            if removed > 0 { totalCount = max(totalCount - removed, loadedCount) }
+            SelfTestLog.add(
+                "chat ops local remove operation=\(operation) messageId=\(messageId) removed=\(removed) " +
+                "messages=\(messages.count) loaded=\(loadedCount)/\(totalCount)"
+            )
+        case .reload(let messageId):
+            let fresh = await bridge.findMessage(id: messageId)
+            if let index = messages.firstIndex(where: { $0.id == messageId }) {
+                if let fresh {
+                    messages[index] = ChatMessage(item: fresh)
+                } else {
+                    messages.remove(at: index)
+                }
+            } else if let fresh {
+                // 不在当前已加载窗口（极少见）：不做插入，交给 refreshAfterSend 的 DB 刷新
+                SelfTestLog.add("chat ops local reload not-loaded operation=\(operation) messageId=\(messageId)")
+            }
+            let recalled = fresh?.isRecalled ?? false
+            let segments = fresh?.segments.count ?? 0
+            SelfTestLog.add(
+                "chat ops local reload operation=\(operation) messageId=\(messageId) " +
+                "exists=\(fresh != nil) recalled=\(recalled) segments=\(segments) messages=\(messages.count)"
+            )
         }
     }
 
@@ -690,13 +927,38 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// 发送后刷新最新一页；保留比最新页更早的已加载消息，避免时间线跳变。
-    private func refreshAfterSend() async {
+    /// 发送/操作后刷新最新一页；保留比最新页更早的已加载消息，避免时间线跳变。
+    /// - Parameter dropping: 本次操作已从 DB 删除的消息 id。`olderKept` 只按「id 小于最新页最早一条」
+    ///   判断保留，被删的**更早消息**（已通过上滑分页加载过）会残留在这里永不消失——
+    ///   这正是真机上「撤回/删除旧消息后气泡还在，必须退出重进」的根因，必须按 id 剔除。
+    private func refreshAfterSend(dropping removedIds: Set<Int64> = []) async {
         guard !TimelineStress.isEnabled else { return }
         switch await bridge.loadMessagePage(sessionId: sessionId, beforeId: 0, limit: Self.pageSize) {
         case .success(let page):
             let fresh = page.items.reversed().map(ChatMessage.init(item:))
-            let oldestFresh = fresh.first?.id ?? Int64.max
-            let olderKept = messages.filter { $0.id > 0 && $0.id < oldestFresh }
+            // 更早已加载消息的保留条件用**时间**而不是 id：最新一页按 timestamp 倒序取 50 条，
+            // 而导入的聊天记录 id 更大（MAX(id)+1 起分配）但 timestamp 更早（历史时间），
+            // 用 id 比较会把整块导入记录当成「比最新页新」而丢弃。
+            let oldestFreshTime = fresh.first?.createdAt ?? .distantFuture
+            let oldestFreshId = fresh.first?.id ?? Int64.max
+            let freshIds = Set(fresh.map(\.id))
+            let legacy = Self.isLegacyMergeSimulationEnabled
+            var olderKept = messages.filter { message in
+                guard message.id > 0, !freshIds.contains(message.id) else { return false }
+                if legacy {
+                    // 修复前实现：只按「id 小于最新页最早一条」保留（已删的旧消息残留 = 真机 bug）。
+                    return message.id < oldestFreshId
+                }
+                guard !removedIds.contains(message.id) else { return false }
+                return message.createdAt <= oldestFreshTime
+            }
+            if !removedIds.isEmpty {
+                let before = messages.filter { $0.id > 0 }.count - fresh.count
+                SelfTestLog.add(
+                    "chat merge drop removedIds=\(removedIds.sorted()) olderKept=\(max(before, 0))->\(olderKept.count) " +
+                    "stillPresent=\(messages.filter { removedIds.contains($0.id) && !freshIds.contains($0.id) }.map(\.id))"
+                )
+            }
             // 只保留仍在流式中的乐观气泡；已完成的那一轮已由 DB 真实行替代，
             // 残留的乐观用户气泡/占位气泡必须丢弃，否则同一条消息会显示两次。
             let pending = messages.filter { $0.id < 0 && $0.isStreaming }
@@ -721,6 +983,88 @@ final class ChatViewModel: ObservableObject {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: Date())
+    }
+}
+
+// MARK: - 聊天数据外部变更（导入聊天记录 / 备份恢复）
+
+extension Notification.Name {
+    /// 聊天数据被页面外的流程改写（设置页导入 Markdown 聊天记录、恢复备份等）。
+    /// 已打开的聊天页（ChatViewModel）与会话列表（ChatListView）监听后刷新；
+    /// userInfo 见 [ChatExternalChangeKey]（可选，缺失时按「全局变更」刷新）。
+    static let chatDataDidChangeExternally = Notification.Name("rhodeslink.chat.dataChangedExternally")
+}
+
+enum ChatExternalChangeKey {
+    static let source = "source"
+    static let sessionId = "sessionId"
+    static let operatorId = "operatorId"
+    /// 本次新增（导入）条数；0/缺失 = 无新增消息，只刷新。
+    static let importedCount = "importedCount"
+    /// 本次新增消息的第一个 id（导入器连续分配，见 MarkdownChatImportBridge.insertedIds）。
+    static let firstImportedId = "firstImportedId"
+}
+
+/// 聊天数据外部变更载荷（通知 userInfo 或设置项「待定位导入块」标记的统一解析）。
+struct ChatExternalChangeInfo {
+    /// 单次最多并入时间线的导入条数（避免一次插入上万条历史拖慢 LazyVStack；其余走上滑分页）。
+    static let maxImportedMerge = 500
+
+    var source: String = ""
+    var sessionId: String = ""
+    var operatorId: String = ""
+    var importedCount: Int = 0
+    var firstImportedId: Int64 = 0
+
+    init() {}
+
+    init(source: String, sessionId: String, operatorId: String, importedCount: Int, firstImportedId: Int64) {
+        self.source = source
+        self.sessionId = sessionId
+        self.operatorId = operatorId
+        self.importedCount = importedCount
+        self.firstImportedId = firstImportedId
+    }
+
+    init(userInfo: [AnyHashable: Any]?) {
+        guard let userInfo else { return }
+        source = userInfo[ChatExternalChangeKey.source] as? String ?? "notification"
+        sessionId = userInfo[ChatExternalChangeKey.sessionId] as? String ?? ""
+        operatorId = userInfo[ChatExternalChangeKey.operatorId] as? String ?? ""
+        importedCount = (userInfo[ChatExternalChangeKey.importedCount] as? NSNumber)?.intValue
+            ?? (userInfo[ChatExternalChangeKey.importedCount] as? Int) ?? 0
+        firstImportedId = (userInfo[ChatExternalChangeKey.firstImportedId] as? NSNumber)?.int64Value
+            ?? (userInfo[ChatExternalChangeKey.firstImportedId] as? Int64) ?? 0
+    }
+
+    /// 设置项持久化格式 `<firstImportedId>:<count>`（导入时聊天页未打开 → 下次进入消费）。
+    init?(markerValue: String) {
+        let parts = markerValue.split(separator: ":")
+        guard parts.count >= 2,
+              let first = Int64(parts[0]),
+              let count = Int(parts[1]),
+              first > 0,
+              count > 0 else { return nil }
+        source = "marker"
+        firstImportedId = first
+        importedCount = count
+    }
+
+    var markerValue: String { "\(firstImportedId):\(importedCount)" }
+}
+
+// MARK: - 数组去重（保持首次出现顺序）
+
+extension Array {
+    /// 按 keyPath 去重（保持首次出现顺序）。导入消息并入时间线时用于避免与已加载行重复。
+    func uniqued<Key: Hashable>(by keyPath: KeyPath<Element, Key>) -> [Element] {
+        var seen = Set<Key>()
+        var result: [Element] = []
+        result.reserveCapacity(count)
+        for element in self where seen.insert(element[keyPath: keyPath]).inserted {
+            result.append(element)
+        }
+        return result
     }
 }
 

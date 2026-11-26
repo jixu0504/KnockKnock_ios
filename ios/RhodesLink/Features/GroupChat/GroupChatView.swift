@@ -1,12 +1,17 @@
 //
 //  GroupChatView.swift
-//  T43 群聊页：多发言人气泡（senderName）+ 群标题/成员数头部 + 成员列表 Sheet（成员/禁言/权限/
-//  自动互动开关）+ 复用 GlassInputBar + 真实 GroupChatEngine 发送。
+//  T43 群聊页（P1 视觉重写，业务逻辑零改动）。
 //
-//  与私聊 ChatView 的差异：
-//  - 导航栏副标题显示成员数与禁言数，右侧「成员」按钮打开成员 Sheet；
-//  - AI 行按发言人拆成多个气泡（旁白单独一行中文叙述，不套气泡）；
-//  - 长按 AI 气泡可「撤回分段」，未送达消息可「重试」；无「重说/继续说」（群聊引擎无此入口，差异白名单）。
+//  设计依据：docs/敲敲UI改版计划书-v1.1.md 图 A + 第 2.3 / 7.1 节：
+//  - 顶栏换 44pt 自绘 `KnockHeader`（返回胶囊 + 群名/成员数副标题 + 成员按钮），隐藏系统导航栏；
+//  - 纯黑底 + 斜切迷彩；消息区间距同人 10pt / 换人 18pt；时间分隔 `- … -` 灰色居中；
+//  - 旁白使用漫画旁白（左 2pt 黄竖条 + 斜体灰白字）；系统消息灰色小字居中；
+//  - 成员 Sheet 换敲敲面板 + 胶囊行 + 黄色开关，背景实色（无毛玻璃）。
+//
+//  能力保留（T43）：
+//  - 多发言人气泡（senderName）+ 群标题/成员数头部 + 成员列表 Sheet（成员/禁言/权限/自动互动开关）；
+//  - 长按 AI 气泡「撤回分段」、未送达「重试」；无「重说/继续说」（群聊引擎无此入口，差异白名单）；
+//  - 自检钩子 `--group-selftest` / `--group-unread-selftest` / `--group-open-members` 全部保留。
 //
 
 import SwiftUI
@@ -14,6 +19,7 @@ import SwiftUI
 struct GroupChatView: View {
     @StateObject private var model: GroupChatViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
     @State private var pendingRecall: GroupBubbleRow?
 
     init(sessionId: String) {
@@ -21,24 +27,10 @@ struct GroupChatView: View {
     }
 
     var body: some View {
-        timeline
-            .background(chatBackground)
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) { navTitle }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        model.openMembers()
-                    } label: {
-                        Image(systemName: "person.2.fill")
-                    }
-                    .accessibilityLabel("群成员")
-                    .accessibilityHint("查看成员、禁言状态与自动互动开关")
-                }
-            }
-            .toolbar(.hidden, for: .tabBar)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+        VStack(spacing: 6) {
+            header
+            VStack(spacing: 0) {
+                timeline
                 GlassInputBar(
                     text: $model.draft,
                     isStreaming: model.isStreaming,
@@ -47,105 +39,151 @@ struct GroupChatView: View {
                     onCancel: { model.cancel() }
                 )
             }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-            .task {
-                await model.load()
-                // 自动化证据钩子：`--group-open-members` 启动参数直接展开成员 Sheet（无触控环境截图用）
-                if ProcessInfo.processInfo.arguments.contains("--group-open-members") {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    model.openMembers()
-                    GroupSelfTestLog.add("group view members auto-opened (launch arg)")
-                }
-            }
-            .onDisappear { model.onDisappear() }
-            .sheet(isPresented: $model.showMembers) {
-                GroupMembersSheet(
-                    detail: model.detail,
-                    isBusy: model.isAutoBusy,
-                    onToggleAuto: { enabled in model.toggleAutoChat(enabled) }
-                )
-            }
-            .alert("撤回这一段？", isPresented: recallAlertBinding) {
-                Button("撤回", role: .destructive) {
-                    if let row = pendingRecall { model.recallSegment(row: row) }
-                    pendingRecall = nil
-                }
-                Button("取消", role: .cancel) { pendingRecall = nil }
-            } message: {
-                Text("只撤回这一位成员的发言段；全部段撤回时整条消息会消失。")
-            }
-            .alert("操作失败", isPresented: errorAlertBinding) {
-                Button("好", role: .cancel) { model.clearError() }
-            } message: {
-                Text(model.errorText ?? "")
-            }
-            .overlay(alignment: .top) {
-                if let feedback = model.actionFeedback {
-                    Text(feedback)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(Color.black.opacity(0.72)))
-                        .padding(.top, 8)
-                        .transition(.opacity)
-                        .accessibilityLabel("操作结果：\(feedback)")
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .groupSelfTestRefresh)) { _ in
-                Task { await model.refresh() }
-            }
-    }
-
-    // MARK: 导航栏标题
-
-    private var navTitle: some View {
-        VStack(spacing: 1) {
-            Text(model.title)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                Image(systemName: "person.2.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-                Text(model.subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if model.isDemo {
-                    Text("演示")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(GlassTokens.brandOrange)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(GlassTokens.brandOrange.opacity(0.16), in: Capsule())
-                }
+            .background(KnockTokens.chatPanel)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.bottom, 4)
+        }
+        .background(GlassTokens.chatBackground)
+        // 计划书 2.3 / 7.1-9：隐藏系统导航栏与 TabBar
+        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .task {
+            await model.load()
+            // 自动化证据钩子：`--group-open-members` 启动参数直接展开成员 Sheet（无触控环境截图用）
+            if ProcessInfo.processInfo.arguments.contains("--group-open-members") {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                model.openMembers()
+                GroupSelfTestLog.add("group view members auto-opened (launch arg)")
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(model.title)，\(model.subtitle)")
+        .onDisappear { model.onDisappear() }
+        .sheet(isPresented: $model.showMembers) {
+            GroupMembersSheet(
+                detail: model.detail,
+                isBusy: model.isAutoBusy,
+                onToggleAuto: { enabled in model.toggleAutoChat(enabled) }
+            )
+        }
+        .alert("撤回这一段？", isPresented: recallAlertBinding) {
+            Button("撤回", role: .destructive) {
+                if let row = pendingRecall { model.recallSegment(row: row) }
+                pendingRecall = nil
+            }
+            Button("取消", role: .cancel) { pendingRecall = nil }
+        } message: {
+            Text("只撤回这一位成员的发言段；全部段撤回时整条消息会消失。")
+        }
+        .alert("操作失败", isPresented: errorAlertBinding) {
+            Button("好", role: .cancel) { model.clearError() }
+        } message: {
+            Text(model.errorText ?? "")
+        }
+        // 操作结果轻提示：敲敲黑底胶囊
+        .overlay(alignment: .top) {
+            if let feedback = model.actionFeedback {
+                KnockText(feedback, role: .captionStrong, color: KnockTokens.textOnDark, lineLimit: 1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule(style: .continuous).fill(KnockTokens.panelInset))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                    }
+                    .padding(.top, 8)
+                    .transition(.opacity)
+                    .accessibilityLabel("操作结果：\(feedback)")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .groupSelfTestRefresh)) { _ in
+            Task { await model.refresh() }
+        }
     }
 
-    // MARK: 时间线
+    // MARK: - 顶栏
+
+    /// 参考图聊天顶栏（群聊版）：浮动圆角黑条 = 返回 + 黄色手机标识 + 群名 + 成员胶囊。
+    private var header: some View {
+        HStack(spacing: KnockTokens.spacingS) {
+            backButton
+            Image("KnockPhone")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 34, height: 34)
+                .accessibilityHidden(true)
+            KnockText(model.title, role: .pageTitle, lineLimit: 1, minimumScaleFactor: 0.7)
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockCapsuleIconButton(
+                systemImage: "person.2.fill",
+                variant: .neutral,
+                accessibilityLabel: "群成员"
+            ) {
+                model.openMembers()
+            }
+            .accessibilityHint("查看成员、禁言状态与自动互动开关")
+        }
+        .padding(.horizontal, KnockTokens.spacingM)
+        .frame(height: 50)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(KnockTokens.chatHeaderBar)
+        )
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .padding(.top, KnockTokens.spacingXS)
+    }
+
+    /// 返回胶囊（左侧操作槽；不参与标题居中计算）。
+    private var backButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(KnockTokens.textPrimary)
+                .frame(width: 30, height: 30)
+                .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("返回")
+    }
+
+    private var headerSubtitle: String {
+        model.isDemo ? "\(model.subtitle) · 演示" : model.subtitle
+    }
+
+    // MARK: - 时间线
 
     private var timeline: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 8) {
+                LazyVStack(spacing: 0) {
                     if model.hasMore && model.isLoadingMore {
-                        ProgressView().controlSize(.small).padding(.vertical, 10)
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(KnockTokens.electric)
+                            .padding(.vertical, 10)
                     }
 
                     if model.rows.isEmpty && !model.isLoading {
                         emptyState
                     } else {
-                        ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                            if showsTimeSeparator(at: index, row: row) {
-                                TimeSeparator(text: row.timeText)
+                        let rows = model.rows
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            VStack(spacing: 0) {
+                                if showsTimeSeparator(at: index, row: row) {
+                                    TimeSeparator(text: row.timeText)
+                                        .padding(.top, index == 0 ? 0 : 12)
+                                }
+                                rowView(row)
+                                    .padding(.top, topSpacing(at: index, row: row, in: rows))
                             }
-                            rowView(row)
-                                .id(row.id)
-                                .onAppear { model.loadMoreIfNeeded(currentRowID: row.id) }
+                            .id(row.id)
+                            .onAppear { model.loadMoreIfNeeded(currentRowID: row.id) }
                         }
                     }
 
@@ -157,6 +195,7 @@ struct GroupChatView: View {
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            .knockScrollEdgeEffectHidden()
             .onChange(of: model.rows.last?.id) { _, _ in
                 scrollToBottom(proxy)
             }
@@ -170,14 +209,36 @@ struct GroupChatView: View {
     private func rowView(_ row: GroupBubbleRow) -> some View {
         switch row.kind {
         case .narration:
-            narrationRow(row)
+            // 旁白：漫画旁白（左 2pt 黄竖条 + 斜体灰白字），无头像
+            NarrationBubble(text: row.text)
         case .system:
             MessageBubble(text: row.text, side: .system)
-        case .incoming, .outgoing:
+        case .incoming:
+            bubbleRow(
+                row,
+                side: .incoming,
+                avatarName: row.senderName.isEmpty ? "成员" : row.senderName
+            )
+        case .outgoing:
+            bubbleRow(row, side: .outgoing, avatarName: "我")
+        }
+    }
+
+    /// 气泡行：头像 36pt 每消息独立（接收在左 / 发送在右），气泡本身见 MessageBubble。
+    private func bubbleRow(
+        _ row: GroupBubbleRow,
+        side: BubbleSide,
+        avatarName: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+            if side == .incoming {
+                groupAvatar(name: avatarName)
+            }
             MessageBubble(
                 text: row.text,
-                side: row.bubbleSide,
+                side: side,
                 isStreaming: row.type == "streaming",
+                isRecalled: row.isRecalled,
                 imageURL: row.imageId.isEmpty ? nil : model.imageURL(for: row),
                 isImageMessage: !row.imageId.isEmpty,
                 onImageTap: row.imageId.isEmpty ? nil : {
@@ -186,44 +247,55 @@ struct GroupChatView: View {
                 },
                 senderName: row.kind == .incoming ? row.senderName : ""
             )
-            .contextMenu { messageMenu(for: row) }
-        }
-    }
-
-    /// 旁白：居中的第三人称叙述（群聊线下/导演模式；线上模式引擎会过滤掉）
-    private func narrationRow(_ row: GroupBubbleRow) -> some View {
-        Text(row.text)
-            .font(.footnote)
-            .italic()
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 2)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel("旁白：\(row.text)")
-    }
-
-    @ViewBuilder
-    private func messageMenu(for row: GroupBubbleRow) -> some View {
-        Button {
-            model.copy(row: row)
-        } label: {
-            Label("复制", systemImage: "doc.on.doc")
-        }
-        if row.kind == .incoming && row.type == "ai_json" {
-            Button(role: .destructive) {
-                pendingRecall = row
-            } label: {
-                Label("撤回这一段", systemImage: "arrow.uturn.backward")
+            if side == .outgoing {
+                groupAvatar(name: avatarName)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: side == .outgoing ? .trailing : .leading)
+        // 长按菜单：敲敲自绘面板（替代系统 `.contextMenu` 的 iOS 26 液态玻璃）
+        .knockContextMenu(actions: messageMenuActions(for: row))
+    }
+
+    private func groupAvatar(name: String) -> some View {
+        KnockAvatar(name: name, size: KnockTokens.chatAvatarSize)
+            .accessibilityHidden(true)
+    }
+
+    /// 行间距（计划书 1.1）：同人 10pt / 换人 18pt；时间分隔后 8pt；旁白/系统 12pt。
+    private func topSpacing(at index: Int, row: GroupBubbleRow, in rows: [GroupBubbleRow]) -> CGFloat {
+        guard index > 0 else { return 0 }
+        if showsTimeSeparator(at: index, row: row) { return 8 }
+        let previous = rows[index - 1]
+        if row.kind == .narration || previous.kind == .narration { return 12 }
+        if row.kind == .system || previous.kind == .system { return 12 }
+        if row.kind != previous.kind { return 18 }
+        if row.senderName != previous.senderName { return 18 }
+        return 10
+    }
+
+    /// 群消息操作动作集合：复制 → 撤回这一段（destructive）→ 重试。
+    /// 与系统 `.contextMenu` 版的文案 / 图标 / 顺序 / 条件 / destructive 标记逐一对应。
+    private func messageMenuActions(for row: GroupBubbleRow) -> [KnockMenuAction] {
+        var actions: [KnockMenuAction] = [
+            KnockMenuAction("复制", systemImage: "doc.on.doc") {
+                model.copy(row: row)
+            }
+        ]
+        if row.kind == .incoming && row.type == "ai_json" {
+            actions.append(
+                KnockMenuAction("撤回这一段", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    pendingRecall = row
+                }
+            )
         }
         if row.type == "send_failed" || row.type == "gift_reply_failed" {
-            Button {
-                model.retry(row: row)
-            } label: {
-                Label("重试", systemImage: "arrow.clockwise")
-            }
+            actions.append(
+                KnockMenuAction("重试", systemImage: "arrow.clockwise") {
+                    model.retry(row: row)
+                }
+            )
         }
+        return actions
     }
 
     private func showsTimeSeparator(at index: Int, row: GroupBubbleRow) -> Bool {
@@ -234,19 +306,13 @@ struct GroupChatView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("群里还没有消息")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text("说句话，让群成员依次回应你。")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        KnockEmptyState(
+            title: "群里还没有消息",
+            message: "说句话，让群成员依次回应你。",
+            systemImage: "person.3.fill"
+        )
+        .padding(.top, 80)
+        .padding(.horizontal, KnockTokens.spacingXS)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -258,10 +324,6 @@ struct GroupChatView: View {
                 proxy.scrollTo("group-timeline-bottom", anchor: .bottom)
             }
         }
-    }
-
-    private var chatBackground: some View {
-        Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
     }
 
     private var recallAlertBinding: Binding<Bool> {
@@ -292,109 +354,185 @@ struct GroupMembersSheet: View {
     @State private var detent: PresentationDetent = .large
 
     var body: some View {
-        NavigationStack {
-            List {
-                if let detail {
-                    Section {
-                        LabeledContent("群名", value: detail.name)
-                        LabeledContent("模式", value: detail.modeText)
-                        LabeledContent("成员", value: "\(detail.memberCount) 人")
-                        LabeledContent("禁言", value: detail.mutedCount == 0 ? "无" : "\(detail.mutedCount) 人")
-                        if !detail.rules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("群规则").font(.caption).foregroundStyle(.secondary)
-                                Text(detail.rules).font(.footnote)
-                            }
-                        }
-                    } header: {
-                        Text("群资料（真实 chat_sessions）")
+        VStack(spacing: 0) {
+            header
+            ScrollView {
+                VStack(spacing: KnockTokens.spacingL) {
+                    if let detail {
+                        infoPanel(detail)
+                        autoPanel(detail)
+                        membersPanel(detail)
+                    } else {
+                        loadingRow
                     }
-
-                    Section {
-                        Toggle(isOn: Binding(
-                            get: { autoEnabled },
-                            set: { value in
-                                autoEnabled = value
-                                onToggleAuto(value)
-                            }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("自动互动")
-                                Text(detail.autoEnabled ? detail.autoStatus : "本群已关闭")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .disabled(isBusy)
-                        LabeledContent("总自动内容开关", value: detail.autoMasterEnabled ? "已开启" : "已关闭")
-                        LabeledContent("轮数上限", value: "\(detail.autoMaxRounds) 轮")
-                        if !detail.autoMasterEnabled {
-                            Text("总自动内容开关关闭时，即使群开关打开也不会自动产生轮次。")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    } header: {
-                        Text("自动互动")
-                    } footer: {
-                        Text("自动互动在前台或系统允许的后台时机运行，可能不是准点触发。")
-                            .font(.caption2)
-                    }
-
-                    Section {
-                        ForEach(detail.members) { member in
-                            HStack(spacing: 10) {
-                                RoleAvatar(avatarId: member.avatarId, name: member.name, size: 34)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(member.name)
-                                        .font(.subheadline.weight(.medium))
-                                    if !member.title.isEmpty {
-                                        Text(member.title)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                Text(member.permissionText)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(member.isMuted ? Color.red : Color.green)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(
-                                        (member.isMuted ? Color.red : Color.green).opacity(0.12),
-                                        in: Capsule()
-                                    )
-                                if !member.isResolved {
-                                    Text("资料未同步")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                        }
-                    } header: {
-                        Text("成员（\(detail.memberCount) 人 · 禁言=权限）")
-                    } footer: {
-                        Text("成员权限：「禁言」或「可发言」。")
-                            .font(.caption2)
-                    }
-                } else {
-                    ProgressView("读取群成员…")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
                 }
+                .padding(.horizontal, KnockTokens.screenPadding)
+                .padding(.vertical, KnockTokens.spacingM)
             }
-            .navigationTitle("群成员")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+            .scrollIndicators(.hidden)
+            .knockScrollEdgeEffectHidden()
+        }
+        .background(KnockTokens.canvas)
+        .toolbar(.hidden, for: .navigationBar)
+        .presentationDetents([.large, .medium], selection: $detent)
+        .presentationBackground(KnockTokens.canvas)
+        .onAppear { autoEnabled = detail?.autoEnabled ?? false }
+        .onChange(of: detail?.autoEnabled) { _, newValue in
+            autoEnabled = newValue ?? false
+        }
+    }
+
+    // MARK: 顶栏
+
+    private var header: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            KnockText("群成员", role: .pageTitle, lineLimit: 1)
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockCloseButton(label: "关闭群成员") { dismiss() }
+        }
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .frame(minHeight: KnockTokens.headerHeight)
+        .background(KnockTokens.canvas)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(KnockTokens.stroke)
+                .frame(height: KnockTokens.hairline)
+        }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            ProgressView().controlSize(.small).tint(KnockTokens.electric)
+            KnockText("读取群成员…", role: .caption, color: KnockTokens.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(KnockTokens.spacingL)
+        .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+        }
+    }
+
+    // MARK: 群资料
+
+    private func infoPanel(_ detail: GroupDetailItem) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockGroupTitle(title: "群资料", systemImage: "person.3.fill")
+                infoRow("群名", detail.name)
+                infoRow("模式", detail.modeText)
+                infoRow("成员", "\(detail.memberCount) 人")
+                infoRow("禁言", detail.mutedCount == 0 ? "无" : "\(detail.mutedCount) 人")
+                if !detail.rules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                        KnockText("群规则", role: .caption, color: KnockTokens.textSecondary)
+                        KnockText(detail.rules, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 3)
+                    }
                 }
-            }
-            .onAppear { autoEnabled = detail?.autoEnabled ?? false }
-            .onChange(of: detail?.autoEnabled) { _, newValue in
-                autoEnabled = newValue ?? false
             }
         }
-        .presentationDetents([.large, .medium], selection: $detent)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            KnockText(label, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockText(value, role: .captionStrong, lineLimit: 1)
+        }
+        .frame(minHeight: 24)
+    }
+
+    // MARK: 自动互动
+
+    private func autoPanel(_ detail: GroupDetailItem) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockGroupTitle(title: "自动互动", systemImage: "bolt.fill")
+                Toggle(isOn: Binding(
+                    get: { autoEnabled },
+                    set: { value in
+                        autoEnabled = value
+                        onToggleAuto(value)
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText("自动互动", role: .rowTitle, lineLimit: 1)
+                        KnockText(
+                            detail.autoEnabled ? detail.autoStatus : "本群已关闭",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineLimit: 2
+                        )
+                    }
+                }
+                .tint(KnockTokens.electric)
+                .disabled(isBusy)
+
+                infoRow("总自动内容开关", detail.autoMasterEnabled ? "已开启" : "已关闭")
+                infoRow("轮数上限", "\(detail.autoMaxRounds) 轮")
+                if !detail.autoMasterEnabled {
+                    KnockText(
+                        "总自动内容开关关闭时，即使群开关打开也不会自动产生轮次。",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineSpacing: 2
+                    )
+                }
+                KnockText(
+                    "自动互动在前台或系统允许的后台时机运行，可能不是准点触发。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 2
+                )
+            }
+        }
+    }
+
+    // MARK: 成员
+
+    private func membersPanel(_ detail: GroupDetailItem) -> some View {
+        VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+            KnockGroupTitle(title: "成员（\(detail.memberCount) 人 · 禁言=权限）")
+                .padding(.horizontal, KnockTokens.spacingXS)
+            ForEach(detail.members) { member in
+                memberRow(member)
+            }
+            KnockText("成员权限：「禁言」或「可发言」。", role: .caption, color: KnockTokens.textTertiary)
+                .padding(.horizontal, KnockTokens.spacingXS)
+        }
+    }
+
+    private func memberRow(_ member: GroupMemberItem) -> some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            KnockAvatar(avatarId: member.avatarId, name: member.name, size: KnockTokens.rowIconSize)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                KnockText(member.name, role: .rowTitle, lineLimit: 1)
+                if !member.title.isEmpty {
+                    KnockText(member.title, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                }
+                if !member.isResolved {
+                    KnockText("资料未同步", role: .caption, color: KnockTokens.textTertiary, lineLimit: 1)
+                }
+            }
+            Spacer(minLength: KnockTokens.spacingS)
+            KnockBadge(text: member.permissionText, variant: member.isMuted ? .danger : .neutral)
+        }
+        .padding(.horizontal, KnockTokens.rowPaddingLeading)
+        .padding(.trailing, KnockTokens.rowPaddingTrailing)
+        .padding(.vertical, KnockTokens.spacingS)
+        .frame(minHeight: KnockTokens.rowHeight)
+        .background {
+            Capsule(style: .continuous)
+                .fill(KnockTokens.row)
+                .overlay(KnockCheckerOverlay())
+                .clipShape(Capsule(style: .continuous))
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+        }
     }
 }
 

@@ -496,6 +496,8 @@ struct MarkdownChatImportInfo {
     let totalMessages: Int
     let createdSession: Bool
     let warning: String
+    /// 本次新增消息 id（严格升序连续；零新增为空）。用于让私聊页立即并入/定位导入记录。
+    let insertedIds: [Int64]
 
     var summaryText: String {
         let base = "新增 \(insertedMessages) 条 · 去重 \(skippedDuplicates) 条 · 共解析 \(totalMessages) 条"
@@ -557,7 +559,8 @@ extension AppGraphClient {
                         skippedDuplicates: Int(info.skippedDuplicates),
                         totalMessages: Int(info.totalMessages),
                         createdSession: info.createdSession,
-                        warning: info.warning
+                        warning: info.warning,
+                        insertedIds: info.insertedIds.map { $0.int64Value }
                     )))
                 } else {
                     continuation.resume(returning: .failure(BridgeError(message: "Markdown 导入失败")))

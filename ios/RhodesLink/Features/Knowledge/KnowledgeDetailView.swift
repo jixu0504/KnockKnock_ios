@@ -6,6 +6,10 @@
 //  所有数据来自真实 Shared.framework（knowledge_bases / knowledge_base_chunks /
 //  operator_knowledge_bases / vector_memories）。
 //
+//  敲敲视觉（P3）：隐藏系统导航栏 → `KnockHeader`（返回 + 名称 + 右上操作菜单胶囊）；
+//  各分区 = 面板 + 分组标题；切块 / 召回命中 = 胶囊卡片；主操作 = 黄胶囊，危险操作 = 红胶囊；
+//  重命名/删除/远程索引确认/失败提示全部走自绘 `KnockDialog`（无系统玻璃弹窗）。
+//
 
 import SwiftUI
 
@@ -47,136 +51,172 @@ struct KnowledgeDetailView: View {
     @State private var didAutoRecall = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if let errorText, book == nil {
-                    EmptyStateView(title: "读取失败", message: errorText, systemImage: "exclamationmark.triangle")
-                } else if book == nil {
-                    ProgressView("读取知识库…").padding(40)
-                } else {
-                    headerCard
-                    indexCard
-                    recallCard
-                    assignmentCard
-                    chunksCard
-                    dangerCard
+        ZStack {
+            AmbientBackground(parallax: 0, showsStandee: false)
+
+            VStack(spacing: 0) {
+                KnockHeader(title: book?.name ?? "知识库", showsBack: true, onBack: { dismiss() }, trailing: {
+                    knowledgeMenu
+                })
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                        if let errorText, book == nil {
+                            KnockErrorPanel(title: "读取失败", message: errorText) {
+                                Task { await reloadAll() }
+                            }
+                        } else if book == nil {
+                            KnockLoadingPanel("读取知识库…")
+                        } else {
+                            headerPanel
+                            indexPanel
+                            recallPanel
+                            assignmentPanel
+                            chunksPanel
+                            dangerPanel
+                        }
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .padding(.top, KnockTokens.spacingS)
+                    .padding(.bottom, KnockTokens.spacingXL)
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle(book?.name ?? "知识库")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                knowledgeMenu
+                .scrollIndicators(.hidden)
+                .knockScrollEdgeHidden()
             }
         }
+        .knockHiddenNavigationBar()
         .task {
             guard !loadedOnce else { return }
             loadedOnce = true
             await reloadAll()
             await runAutoRecallIfNeeded()
         }
-        .alert("确认远程向量化", isPresented: $showRemoteIndexConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("继续索引") { Task { await performIndex() } }
-        } message: {
-            Text("将调用远程嵌入模型，预计 \(plan?.chunkCount ?? 0) 次请求并产生费用。")
+        .knockConfirmDialog(
+            isPresented: $showRemoteIndexConfirm,
+            title: "确认远程向量化",
+            message: "将调用远程嵌入模型，预计 \(plan?.chunkCount ?? 0) 次请求并产生费用。",
+            confirmTitle: "继续索引"
+        ) {
+            Task { await performIndex() }
         }
-        .alert("重命名知识库", isPresented: $showRename) {
-            TextField("知识库名称", text: $renameText)
-            Button("保存") { Task { await rename() } }
-            Button("取消", role: .cancel) {}
+        .knockConfirmDialog(
+            isPresented: $showDeleteConfirm,
+            title: "删除知识库？",
+            message: "「\(book?.name ?? "")」的切块、代理人关联与已建向量会一并删除，不可恢复。",
+            confirmTitle: "删除",
+            isDestructive: true
+        ) {
+            Task { await deleteBook() }
         }
-        .confirmationDialog("删除知识库「\(book?.name ?? "")」？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("删除（含切块与关联，不可恢复）", role: .destructive) { Task { await deleteBook() } }
-            Button("取消", role: .cancel) {}
+        .knockTextPromptDialog(
+            isPresented: $showRename,
+            title: "重命名知识库",
+            placeholder: "知识库名称",
+            text: $renameText,
+            confirmTitle: "保存"
+        ) {
+            Task { await rename() }
         }
-        .alert("操作失败", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("知道了", role: .cancel) { actionError = nil }
-        } message: {
-            Text(actionError ?? "")
-        }
+        .knockNoticeDialog(
+            isPresented: Binding(
+                get: { actionError != nil },
+                set: { if !$0 { actionError = nil } }
+            ),
+            title: "操作失败",
+            message: actionError ?? ""
+        )
     }
 
     private var knowledgeMenu: some View {
-        Menu {
-            Button {
-                renameText = book?.name ?? ""
-                showRename = true
-            } label: {
-                Label("重命名", systemImage: "pencil")
-            }
-            Button {
-                Task { await reloadAll() }
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
-            }
+        // 知识库操作菜单：敲敲自绘面板（替代系统 `Menu` 的 iOS 26 液态玻璃）
+        Button {
+            KnockMenuCenter.shared.present(
+                KnockMenuPresentation(actions: [
+                    KnockMenuAction("重命名", systemImage: "pencil") {
+                        renameText = book?.name ?? ""
+                        showRename = true
+                    },
+                    KnockMenuAction("刷新", systemImage: "arrow.clockwise") {
+                        Task { await reloadAll() }
+                    }
+                ])
+            )
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(KnockTokens.textPrimary)
+                .frame(width: 34, height: 26)
+                .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("知识库操作")
     }
 
     // MARK: - 头部
 
-    private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "books.vertical.fill")
-                    .foregroundStyle(GlassTokens.brandOrange)
-                Text(book?.name ?? "")
-                    .font(.headline)
-                    .lineLimit(2)
-                Spacer(minLength: 6)
-                statusBadge
+    private var headerPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .accessibilityHidden(true)
+                    KnockText(book?.name ?? "", role: .rowTitle, lineLimit: 2)
+                    Spacer(minLength: KnockTokens.spacingXS)
+                    statusBadge
+                }
+                HStack(spacing: KnockTokens.spacingM) {
+                    label("\(book?.chunkCount ?? 0) 块", systemImage: "square.stack.3d.up")
+                    label("\(book?.indexedChunkCount ?? 0) 已索引", systemImage: "checkmark.circle")
+                    label("\(book?.assignedOperatorCount ?? assignedOperatorIds.count) 位代理人", systemImage: "person.2")
+                }
+                if let preview = book?.rawContentPreview, !preview.isEmpty {
+                    KnockText(
+                        preview.replacingOccurrences(of: "\n", with: " "),
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 3,
+                        lineLimit: 3
+                    )
+                }
+                KnockText(
+                    "格式：\(formatText) · 正文 \(book?.rawContentLength ?? 0) 字" +
+                    ((book?.updatedAtText.isEmpty == false) ? " · 更新 \(book?.updatedAtText ?? "")" : ""),
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 2
+                )
             }
-            HStack(spacing: 12) {
-                Label("\(book?.chunkCount ?? 0) 块", systemImage: "square.stack.3d.up")
-                Label("\(book?.indexedChunkCount ?? 0) 已索引", systemImage: "checkmark.circle")
-                Label("\(book?.assignedOperatorCount ?? assignedOperatorIds.count) 位干员", systemImage: "person.2")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            if let preview = book?.rawContentPreview, !preview.isEmpty {
-                Text(preview.replacingOccurrences(of: "\n", with: " "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            HStack(spacing: 12) {
-                Text("格式：\(formatText)")
-                Text("正文 \(book?.rawContentLength ?? 0) 字")
-                if let updated = book?.updatedAtText, !updated.isEmpty { Text("更新 \(updated)") }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
+    }
+
+    private func label(_ text: String, systemImage: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(KnockTokens.textSecondary)
+                .accessibilityHidden(true)
+            KnockText(text, role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+        }
     }
 
     private var statusBadge: some View {
-        Text(book?.indexStatusText ?? "")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(statusColor.opacity(0.12), in: Capsule())
-    }
-
-    private var statusColor: Color {
-        guard let book else { return .secondary }
-        if book.isIndexing { return .orange }
-        if book.isIndexed { return .green }
-        if book.hasFailures { return .red }
-        return .secondary
+        let variant: KnockBadgeVariant
+        if book?.hasFailures == true {
+            variant = .danger
+        } else if book?.isIndexing == true {
+            variant = .accent
+        } else {
+            variant = .neutral
+        }
+        return KnockBadge(text: book?.indexStatusText ?? "", variant: variant)
     }
 
     private var formatText: String {
@@ -187,71 +227,74 @@ struct KnowledgeDetailView: View {
 
     // MARK: - 索引
 
-    private var indexCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "索引与重建", systemImage: "bolt.badge.clock")
-            Text("状态：\(book?.indexStatusText ?? "-") · \(book?.indexedChunkCount ?? 0)/\(book?.chunkCount ?? 0) 块已索引")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let plan {
-                Text(plan.requiresUserConfirmation
-                     ? "远程向量嵌入：预计 \(plan.chunkCount) 次 API 请求（会产生费用，需确认）"
-                     : "本地哈希嵌入：预计 \(plan.chunkCount) 块，离线免费")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            if isIndexing {
-                ProgressView(value: progressFraction)
-                Text(progressText.isEmpty ? "索引中…" : progressText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                Button {
-                    Task { await runIndex() }
-                } label: {
-                    Label(book?.isIndexed == true ? "重建索引" : "开始索引", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption.weight(.semibold))
+    private var indexPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "索引与重建", systemImage: "bolt.badge.clock")
+                KnockText(
+                    "状态：\(book?.indexStatusText ?? "-") · \(book?.indexedChunkCount ?? 0)/\(book?.chunkCount ?? 0) 块已索引",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                if let plan {
+                    KnockText(
+                        plan.requiresUserConfirmation
+                            ? "远程向量嵌入：预计 \(plan.chunkCount) 次 API 请求（会产生费用，需确认）"
+                            : "本地哈希嵌入：预计 \(plan.chunkCount) 块，离线免费",
+                        role: .caption,
+                        color: KnockTokens.textTertiary,
+                        lineSpacing: 2
+                    )
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(GlassTokens.brandOrange)
-                .disabled(isIndexing)
-
-                if (book?.failedChunkCount ?? 0) > 0 {
+                if isIndexing {
+                    ProgressView(value: progressFraction)
+                        .tint(KnockTokens.electric)
+                    KnockText(progressText.isEmpty ? "索引中…" : progressText, role: .caption, color: KnockTokens.textSecondary)
+                }
+                KnockFlowLayout(spacing: KnockTokens.spacingS) {
                     Button {
-                        Task { await retryFailed() }
+                        Task { await runIndex() }
                     } label: {
-                        Label("重试失败块（\(book?.failedChunkCount ?? 0)）", systemImage: "arrow.clockwise.circle")
-                            .font(.caption.weight(.semibold))
+                        Label(book?.isIndexed == true ? "重建索引" : "开始索引", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
                     .disabled(isIndexing)
-                }
+                    .opacity(isIndexing ? 0.35 : 1)
 
-                if book?.isIndexed == true || (book?.indexedChunkCount ?? 0) > 0 {
-                    Button(role: .destructive) {
-                        Task { await invalidate() }
-                    } label: {
-                        Text("清除索引").font(.caption.weight(.semibold))
+                    if (book?.failedChunkCount ?? 0) > 0 {
+                        Button {
+                            Task { await retryFailed() }
+                        } label: {
+                            Label("重试失败块（\(book?.failedChunkCount ?? 0)）", systemImage: "arrow.clockwise.circle")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 36))
+                        .disabled(isIndexing)
+                        .opacity(isIndexing ? 0.35 : 1)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(isIndexing)
+
+                    if book?.isIndexed == true || (book?.indexedChunkCount ?? 0) > 0 {
+                        Button {
+                            Task { await invalidate() }
+                        } label: {
+                            Text("清除索引")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(KnockDangerButtonStyle(fullWidth: false, height: 36))
+                        .disabled(isIndexing)
+                        .opacity(isIndexing ? 0.35 : 1)
+                    }
                 }
-            }
-            if let indexResultText {
-                Text(indexResultText)
-                    .font(.caption2)
-                    .foregroundStyle(.green)
-            }
-            if let indexErrorText {
-                Text(indexErrorText)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+                if let indexResultText {
+                    KnockText(indexResultText, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 2)
+                }
+                if let indexErrorText {
+                    KnockText(indexErrorText, role: .caption, color: KnockTokens.dangerBright, lineSpacing: 2)
+                }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     private var progressFraction: Double {
@@ -264,202 +307,185 @@ struct KnowledgeDetailView: View {
 
     // MARK: - 召回测试
 
-    private var recallCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(text: "召回测试（与聊天注入同链路）", systemImage: "magnifyingglass")
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(operators) { item in
-                        Button {
-                            recallOperatorId = item.id
-                        } label: {
-                            if item.id == recallOperatorId {
-                                Label(item.name, systemImage: "checkmark")
-                            } else {
-                                Text(item.name)
+    private var recallPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "召回测试（与聊天注入同链路）", systemImage: "magnifyingglass")
+
+                HStack(spacing: KnockTokens.spacingS) {
+                    if operators.isEmpty {
+                        KnockText("代理人列表为空", role: .caption, color: KnockTokens.textSecondary)
+                    } else {
+                        KnockDropdown(
+                            items: operators.map { KnockSegmentItem(value: $0.id, title: $0.name) },
+                            selection: $recallOperatorId
+                        )
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                KnockSearchBar(
+                    placeholder: "输入查询，如：紧急通讯频道的确认时限",
+                    text: $recallQuery,
+                    onSubmit: { Task { await runRecall() } }
+                )
+
+                HStack(spacing: KnockTokens.spacingM) {
+                    Button {
+                        Task { await runRecall() }
+                    } label: {
+                        Label("召回测试", systemImage: "sparkle.magnifyingglass")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 36))
+                    .disabled(isRecalling || recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isRecalling || recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.35 : 1)
+
+                    if isRecalling {
+                        ProgressView().controlSize(.small).tint(KnockTokens.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                    if !assignedOperatorIds.contains(recallOperatorId) {
+                        KnockText("该代理人未关联本知识库", role: .caption, color: KnockTokens.textSecondary)
+                    }
+                }
+
+                if let recallError {
+                    KnockText(recallError, role: .caption, color: KnockTokens.dangerBright, lineSpacing: 2)
+                }
+                if let result = recallResult {
+                    KnockText(
+                        result.reasonText,
+                        role: .caption,
+                        color: result.isHit ? KnockTokens.textPrimary : KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
+                    ForEach(result.hits) { hit in
+                        KnockCapsuleCard(padding: KnockTokens.spacingS) {
+                            VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                                HStack(spacing: KnockTokens.spacingXS) {
+                                    KnockText(hit.book, role: .captionStrong, lineLimit: 1)
+                                    Spacer(minLength: 0)
+                                    Text("分数 \(hit.scoreText)")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(KnockTokens.textSecondary)
+                                }
+                                KnockText(hit.snippet, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2, lineLimit: 4)
                             }
                         }
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person.crop.circle")
-                        Text(currentOperatorName).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.caption2)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                }
-                TextField("输入查询，如：紧急通讯频道的确认时限", text: $recallQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .submitLabel(.search)
-                    .onSubmit { Task { await runRecall() } }
-            }
-            HStack(spacing: 8) {
-                Button {
-                    Task { await runRecall() }
-                } label: {
-                    Label("召回测试", systemImage: "sparkle.magnifyingglass")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(GlassTokens.brandOrange)
-                .disabled(isRecalling || recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                if isRecalling {
-                    ProgressView().controlSize(.small)
-                }
-                Spacer(minLength: 0)
-                if !assignedOperatorIds.contains(recallOperatorId) {
-                    Text("该干员未关联本知识库")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-            }
-            if let recallError {
-                Text(recallError).font(.caption2).foregroundStyle(.red)
-            }
-            if let result = recallResult {
-                Text(result.reasonText)
-                    .font(.caption2)
-                    .foregroundStyle(result.isHit ? .green : .orange)
-                ForEach(result.hits) { hit in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(hit.book)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(GlassTokens.brandOrange)
-                            Spacer(minLength: 0)
-                            Text("分数 \(hit.scoreText)")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(hit.snippet)
-                            .font(.caption)
-                            .lineLimit(4)
-                    }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(GlassTokens.bubbleSystem, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
-    }
-
-    private var currentOperatorName: String {
-        operators.first(where: { $0.id == recallOperatorId })?.name ?? (recallOperatorId.isEmpty ? "选择干员" : recallOperatorId)
     }
 
     // MARK: - 关联干员
 
-    private var assignmentCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: "关联干员（召回范围）", systemImage: "person.2.badge.gearshape")
-            Text("只有勾选的干员在私聊/群聊时会召回这本知识库；关联语义与 Android 角色知识库绑定一致。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            if operators.isEmpty {
-                Text("干员列表为空（operators 表无数据）")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(operators) { item in
-                    Button {
-                        Task { await toggleAssignment(item) }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: assignedOperatorIds.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(assignedOperatorIds.contains(item.id) ? GlassTokens.brandOrange : .secondary)
-                            Text(item.name).font(.callout).foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                            if item.id == recallOperatorId {
-                                Text("当前测试对象")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+    private var assignmentPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "关联代理人（召回范围）", systemImage: "person.2.badge.gearshape")
+                KnockText(
+                    "只有勾选的代理人在私聊/群聊时会召回这本知识库；关联语义与 Android 角色知识库绑定一致。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 3
+                )
+                if operators.isEmpty {
+                    KnockText("代理人列表为空（operators 表无数据）", role: .caption, color: KnockTokens.textSecondary)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(operators.enumerated()), id: \.element.id) { index, item in
+                            assignmentRow(item)
+                            if index < operators.count - 1 {
+                                KnockDivider()
                             }
                         }
-                        .contentShape(Rectangle())
-                        .padding(.vertical, 2)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
+    }
+
+    private func assignmentRow(_ item: KnowledgeOperatorItem) -> some View {
+        let assigned = assignedOperatorIds.contains(item.id)
+        return Button {
+            Task { await toggleAssignment(item) }
+        } label: {
+            HStack(spacing: KnockTokens.spacingS) {
+                Image(systemName: assigned ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15, weight: .heavy))
+                    .foregroundStyle(assigned ? KnockTokens.electric : KnockTokens.textTertiary)
+                KnockText(item.name, role: .body, lineLimit: 1)
+                Spacer(minLength: KnockTokens.spacingS)
+                if item.id == recallOperatorId {
+                    KnockBadge(text: "当前测试对象", variant: .neutral)
+                }
+            }
+            .padding(.vertical, KnockTokens.spacingS)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(item.name)\(assigned ? "，已关联" : "，未关联")")
+        .accessibilityAddTraits(assigned ? [.isSelected] : [])
     }
 
     // MARK: - 切块预览
 
-    private var chunksCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: "切块预览（前 \(chunks.count)/\(totalChunks) 块）", systemImage: "square.stack.3d.up")
-            if chunks.isEmpty {
-                Text("暂无切块").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(chunks) { chunk in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text("#\(chunk.ordinal)")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            Text(chunk.titleText)
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
-                            Image(systemName: chunk.isIndexed ? "checkmark.seal.fill" : "circle.dashed")
-                                .font(.caption2)
-                                .foregroundStyle(chunk.isIndexed ? .green : .secondary)
-                        }
-                        Text(chunk.content)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(5)
-                            .multilineTextAlignment(.leading)
-                        if !chunk.indexError.isEmpty {
-                            Text("索引错误：\(chunk.indexError)")
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                                .lineLimit(2)
+    private var chunksPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "切块预览（前 \(chunks.count)/\(totalChunks) 块）", systemImage: "square.stack.3d.up")
+                if chunks.isEmpty {
+                    KnockText("暂无切块", role: .caption, color: KnockTokens.textSecondary)
+                } else {
+                    ForEach(chunks) { chunk in
+                        KnockCapsuleCard(padding: KnockTokens.spacingS) {
+                            VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                                HStack(spacing: KnockTokens.spacingXS) {
+                                    Text("#\(chunk.ordinal)")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(KnockTokens.textSecondary)
+                                    KnockText(chunk.titleText, role: .captionStrong, lineLimit: 1)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: chunk.isIndexed ? "checkmark.seal.fill" : "circle.dashed")
+                                        .font(.system(size: 11, weight: .heavy))
+                                        .foregroundStyle(KnockTokens.textSecondary)
+                                        .accessibilityLabel(chunk.isIndexed ? "已索引" : "未索引")
+                                }
+                                KnockText(chunk.content, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2, lineLimit: 5)
+                                if !chunk.indexError.isEmpty {
+                                    KnockText("索引错误：\(chunk.indexError)", role: .caption, color: KnockTokens.dangerBright, lineSpacing: 2, lineLimit: 2)
+                                }
+                            }
                         }
                     }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     // MARK: - 删除
 
-    private var dangerCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: "危险操作", systemImage: "exclamationmark.triangle")
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                Label("删除这本知识库", systemImage: "trash")
-                    .font(.callout.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+    private var dangerPanel: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockGroupTitle(title: "危险操作", systemImage: "exclamationmark.triangle")
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("删除这本知识库", systemImage: "trash")
+                }
+                .buttonStyle(KnockDangerButtonStyle())
+                KnockText(
+                    "删除会同时移除切块、代理人关联与已建向量；不可恢复。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 2
+                )
             }
-            .buttonStyle(.bordered)
-            Text("删除会同时移除切块、干员关联与已建向量；不可恢复。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     // MARK: - 数据加载
@@ -498,7 +524,7 @@ struct KnowledgeDetailView: View {
         indexResultText = nil
         indexErrorText = nil
         if plan?.requiresUserConfirmation == true {
-            // 远程嵌入需确认（避免产生意外费用）；确认弹窗由 body 中的 alert 呈现
+            // 远程嵌入需确认（避免产生意外费用）；确认弹窗由 body 中的自绘弹窗呈现
             showRemoteIndexConfirm = true
             return
         }

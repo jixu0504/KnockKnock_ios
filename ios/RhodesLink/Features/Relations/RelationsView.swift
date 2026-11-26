@@ -8,12 +8,20 @@
 //  - 数据全部来自 shared `RelationBridge`（relationships 表），无 mock。
 //  - 截图/演示钩子（仅启动参数）：`--relations-demo-add` 自动打开添加 Sheet。
 //
+//  P2「敲敲」改版（docs/敲敲UI改版计划书-v1.1.md）：
+//  - 自绘 44pt 顶栏（返回胶囊 + 标题 + 黄色「添加关系」胶囊），隐藏系统导航栏 + iOS 26+ 滚动边缘玻璃；
+//  - 汇总卡 / 添加 Sheet 全部走 `KnockPanel`；行 = 胶囊行（蓝圈头像 + 灰色说明 + 中性类型角标）；
+//  - 「黄选中」只在添加 Sheet 的关系对象 / 24 类型选择上（选中黄胶囊 + 浅蓝外圈）；
+//  - 删除确认改自绘 `knockConfirmDialog`（避开系统玻璃背景）；
+//  - 布局逻辑（List 分组 / 滑动删除 / 单向语义 / 数据调用 / 自检钩子）不动。
+//
 
 import SwiftUI
 
 @MainActor
 struct RelationsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
 
     let operatorId: String
     let operatorName: String
@@ -36,37 +44,30 @@ struct RelationsView: View {
         ZStack {
             AmbientBackground(parallax: 0, showsStandee: false)
 
-            Group {
-                if isLoading && entries.isEmpty {
-                    ProgressView("读取关系网…")
-                        .padding(40)
-                } else if let errorText {
-                    EmptyStateView(
-                        title: "关系网读取失败",
-                        message: errorText,
-                        systemImage: "exclamationmark.triangle",
-                        actionTitle: "重试",
-                        action: { Task { await reload() } }
-                    )
-                } else if entries.isEmpty {
-                    emptyState
-                } else {
-                    relationList
+            VStack(spacing: 0) {
+                header
+
+                Group {
+                    if isLoading && entries.isEmpty {
+                        loadingCard
+                    } else if let errorText {
+                        KnockEmptyState(
+                            title: "关系网读取失败",
+                            message: errorText,
+                            systemImage: "exclamationmark.triangle",
+                            actionTitle: "重试",
+                            action: { Task { await reload() } }
+                        )
+                    } else if entries.isEmpty {
+                        emptyState
+                    } else {
+                        relationList
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
-        .navigationTitle("\(operatorName)的关系网")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showAddSheet = true
-                } label: {
-                    Label("添加关系", systemImage: "plus")
-                }
-                .accessibilityLabel("添加关系")
-            }
-        }
+        .knockHideSystemChrome()
         .sheet(isPresented: $showAddSheet) {
             RelationAddSheet(
                 operatorId: operatorId,
@@ -82,42 +83,27 @@ struct RelationsView: View {
                 }
             )
         }
-        .confirmationDialog(
-            "删除这条关系？",
+        .knockConfirmDialog(
             isPresented: $showDeleteConfirm,
-            presenting: pendingDelete
-        ) { entry in
-            Button("删除（\(entry.typeLabel)）", role: .destructive) {
+            title: "删除这条关系？",
+            message: deleteConfirmMessage,
+            confirmTitle: "删除",
+            cancelTitle: "取消",
+            isDestructive: true
+        ) {
+            if let entry = pendingDelete {
                 Task { await delete(entry) }
             }
-            Button("取消", role: .cancel) {}
-        } message: { entry in
-            Text("将删除「\(entry.sourceOperatorId == operatorId ? operatorName : entry.relatedOperatorName) → \(entry.targetOperatorId == operatorId ? operatorName : entry.relatedOperatorName)」的【\(entry.typeLabel)】关系；反向关系不会自动删除（与原版单向语义一致）。")
         }
         .overlay(alignment: .bottom) {
             if let toast {
-                Text(toast)
-                    .font(.footnote)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-                    .padding(.bottom, 18)
-                    .transition(.opacity)
-                    .onAppear {
-                        Task {
-                            try? await Task.sleep(nanoseconds: 2_600_000_000)
-                            withAnimation { self.toast = nil }
-                        }
-                    }
+                toastView(toast)
             }
         }
-        .alert("删除失败", isPresented: Binding(
-            get: { removeError != nil },
-            set: { if !$0 { removeError = nil } }
-        )) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(removeError ?? "")
+        .overlay {
+            if let removeError {
+                deleteErrorOverlay(removeError)
+            }
         }
         .task { await reload() }
         .task {
@@ -131,14 +117,53 @@ struct RelationsView: View {
         }
     }
 
-    // MARK: - 列表
+    // MARK: - 顶栏
+
+    private var header: some View {
+        KnockRoleHeader(
+            title: "\(operatorName)的关系网",
+            subtitle: "共 \(entries.count) 条 · 单向语义",
+            showsBack: true,
+            onBack: { dismiss() }
+        ) {
+            KnockCapsuleIconButton(
+                systemImage: "plus",
+                variant: .accent,
+                accessibilityLabel: "添加关系"
+            ) {
+                showAddSheet = true
+            }
+        }
+    }
+
+    private var deleteConfirmMessage: String {
+        guard let entry = pendingDelete else { return "" }
+        let source = entry.sourceOperatorId == operatorId ? operatorName : entry.relatedOperatorName
+        let target = entry.targetOperatorId == operatorId ? operatorName : entry.relatedOperatorName
+        return "将删除「\(source) → \(target)」的【\(entry.typeLabel)】关系；反向关系不会自动删除（与原版单向语义一致）。"
+    }
+
+    private var loadingCard: some View {
+        KnockPanel {
+            HStack(spacing: KnockTokens.spacingM) {
+                ProgressView()
+                    .tint(KnockTokens.electric)
+                KnockText("读取关系网…", role: .caption, color: KnockTokens.textSecondary)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .padding(.top, KnockTokens.spacingM)
+    }
+
+    // MARK: - 列表（布局与原版一致：汇总卡 + 我对对方 / 对方对我 两段）
 
     private var relationList: some View {
         List {
             summaryCard
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14))
+                .listRowInsets(EdgeInsets(top: 6, leading: KnockTokens.screenPadding, bottom: 6, trailing: KnockTokens.screenPadding))
 
             if !outgoing.isEmpty {
                 sectionHeader("我对对方", count: outgoing.count)
@@ -159,92 +184,94 @@ struct RelationsView: View {
     }
 
     private var summaryCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Label("关系网", systemImage: "person.3.sequence.fill")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("共 \(entries.count) 条")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Text("关系是单向的：A 把 B 当朋友，不代表 B 也把 A 当朋友。可在添加时勾选创建双向互补关系。亲密度越高，越容易传递公开印象。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingS) {
+                    Image(systemName: "person.3.sequence.fill")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textSecondary)
+                        .accessibilityHidden(true)
+                    KnockText("关系网", role: .sectionTitle, lineLimit: 1)
+                    KnockBadge(text: "共 \(entries.count) 条", variant: .neutral)
+                    Spacer(minLength: KnockTokens.spacingS)
+                }
+                .accessibilityAddTraits(.isHeader)
+
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockBadge(text: "我对对方 \(outgoing.count)", variant: .neutral)
+                    KnockBadge(text: "对方对我 \(incoming.count)", variant: .neutral)
+                }
+
+                KnockText(
+                    "关系是单向的：A 把 B 当朋友，不代表 B 也把 A 当朋友。可在添加时勾选创建双向互补关系。亲密度越高，越容易传递公开印象。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
                 .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     private func sectionHeader(_ title: String, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text("\(count)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-            Spacer()
+        HStack(spacing: KnockTokens.spacingS) {
+            KnockText(title, role: .sectionTitle, lineLimit: 1)
+            KnockBadge(text: "\(count)", variant: .neutral)
+            Spacer(minLength: 0)
         }
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 2, leading: 18, bottom: 2, trailing: 14))
+        .listRowInsets(EdgeInsets(top: 8, leading: KnockTokens.screenPadding + KnockTokens.spacingXS, bottom: 2, trailing: KnockTokens.screenPadding))
+        .accessibilityAddTraits(.isHeader)
     }
 
     private func row(_ entry: RelationEntryItem) -> some View {
-        let type = typeOptions.first { $0.code == entry.type }
-        return HStack(spacing: 10) {
-            RoleAvatar(avatarId: entry.relatedAvatarId, name: entry.relatedOperatorName, size: 40)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(entry.relatedOperatorName)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text(entry.directionLabel)
-                        .font(.system(size: 9).weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(GlassTokens.bubbleSystem, in: Capsule())
+        HStack(spacing: KnockTokens.spacingM) {
+            RoleAvatar(avatarId: entry.relatedAvatarId, name: entry.relatedOperatorName, size: KnockTokens.rowIconSize)
+
+            VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                HStack(spacing: KnockTokens.spacingXS) {
+                    KnockText(entry.relatedOperatorName, role: .rowTitle, lineLimit: 1)
+                    KnockBadge(text: entry.directionLabel, variant: .neutral)
+                    Spacer(minLength: KnockTokens.spacingXXS)
+                    KnockBadge(text: entry.typeLabel, variant: .neutral)
                 }
-                Text(entry.relationDescription)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if !entry.note.isEmpty {
-                    Text(entry.note)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                HStack(spacing: 8) {
-                    Text(entry.reverseLabelText)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                    ProgressView(value: min(max(Double(entry.intimacy), 0), 100), total: 100)
-                        .tint((type?.tint ?? GlassTokens.brandOrange))
+
+                KnockText(
+                    entry.note.isEmpty ? entry.relationDescription : "\(entry.relationDescription) · \(entry.note)",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineLimit: 1
+                )
+
+                HStack(spacing: KnockTokens.spacingS) {
+                    KnockText(entry.reverseLabelText, role: .badge, color: KnockTokens.textTertiary, lineLimit: 1)
+                    KnockProgressBar(progress: Double(entry.intimacy) / 100, height: 5)
                         .frame(width: 56)
-                    Text("\(entry.intimacy)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    KnockText("\(entry.intimacy)", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                    Spacer(minLength: 0)
+                    KnockChevron()
                 }
             }
-            Spacer(minLength: 0)
-            Text(entry.typeLabel)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background((type?.tint ?? GlassTokens.brandOrange), in: Capsule())
         }
-        .padding(12)
-        .background(Color.clear)
-        .contentShape(Rectangle())
+        .padding(.horizontal, KnockTokens.rowPaddingLeading)
+        .padding(.trailing, KnockTokens.rowPaddingTrailing - KnockTokens.rowPaddingLeading)
+        .padding(.vertical, KnockTokens.spacingS)
+        .frame(minHeight: KnockTokens.rowMinHeight)
+        .background {
+            Capsule(style: .continuous)
+                .fill(KnockTokens.row)
+                .overlay(KnockCheckerOverlay())
+                .clipShape(Capsule(style: .continuous))
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+        }
+        .contentShape(Capsule(style: .continuous))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 3, leading: 14, bottom: 3, trailing: 14))
+        .listRowInsets(EdgeInsets(top: 3, leading: KnockTokens.screenPadding, bottom: 3, trailing: KnockTokens.screenPadding))
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 pendingDelete = entry
@@ -253,17 +280,63 @@ struct RelationsView: View {
                 Label("删除", systemImage: "trash")
             }
         }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.relatedOperatorName)，\(entry.typeLabel)，亲密度 \(entry.intimacy)")
     }
 
     private var emptyState: some View {
-        EmptyStateView(
+        KnockEmptyState(
             title: "暂无关系",
             message: "\(operatorName)的关系网还是空的。添加关系后，关系会影响群聊称呼、日记素材与公开印象的传递。",
             systemImage: "person.3.sequence",
             actionTitle: "添加关系",
             action: { showAddSheet = true }
         )
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .padding(.top, KnockTokens.spacingM)
+    }
+
+    // MARK: - Toast / 错误
+
+    private func toastView(_ text: String) -> some View {
+        KnockText(text, role: .caption, color: KnockTokens.textPrimary, lineLimit: 2)
+            .padding(.horizontal, KnockTokens.spacingL)
+            .padding(.vertical, KnockTokens.spacingS)
+            .background(Capsule(style: .continuous).fill(KnockTokens.panel))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.stroke, lineWidth: KnockTokens.strokeWidth)
+            }
+            .padding(.horizontal, KnockTokens.screenPadding)
+            .padding(.bottom, 18)
+            .transition(.opacity)
+            .onAppear {
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_600_000_000)
+                    withAnimation { self.toast = nil }
+                }
+            }
+    }
+
+    private func deleteErrorOverlay(_ text: String) -> some View {
+        ZStack {
+            Color.black.opacity(0.62)
+                .ignoresSafeArea()
+                .onTapGesture { removeError = nil }
+                .accessibilityHidden(true)
+
+            KnockDialogPanel(title: "删除失败") {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXL) {
+                    KnockText(text, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("好") { removeError = nil }
+                        .buttonStyle(KnockPrimaryButtonStyle())
+                }
+            }
+            .padding(.horizontal, KnockTokens.spacingXXL)
+        }
+        .transition(.opacity)
+        .accessibilityAddTraits(.isModal)
     }
 
     // MARK: - 数据
@@ -302,7 +375,7 @@ struct RelationsView: View {
     }
 }
 
-// MARK: - 添加关系 Sheet
+// MARK: - 添加关系 Sheet（敲敲表单：黄选中 + 蓝圈头像 + 灰色说明）
 
 @MainActor
 private struct RelationAddSheet: View {
@@ -331,102 +404,258 @@ private struct RelationAddSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("关系对象") {
-                    if candidates.isEmpty {
-                        Text("所有角色都已建立关系，或暂无其他角色。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("选择角色", selection: $targetId) {
-                            Text("请选择").tag("")
-                            ForEach(candidates) { candidate in
-                                Text(candidate.title.isEmpty ? candidate.name : "\(candidate.name) · \(candidate.title)")
-                                    .tag(candidate.id)
+            ZStack {
+                AmbientBackground(parallax: 0, showsStandee: false)
+
+                VStack(spacing: 0) {
+                    header
+
+                    ScrollView {
+                        VStack(spacing: KnockTokens.spacingM) {
+                            targetCard
+                            typeCard
+                            intimacyCard
+                            reciprocalCard
+                            if let errorText {
+                                errorCard(errorText)
                             }
                         }
+                        .padding(.horizontal, KnockTokens.screenPadding)
+                        .padding(.top, KnockTokens.spacingS)
+                        .padding(.bottom, KnockTokens.spacingXXL)
                     }
-                }
-
-                Section {
-                    Picker("关系类型", selection: $typeCode) {
-                        ForEach(typeOptions) { option in
-                            Text(option.label).tag(option.code)
-                        }
-                    }
-                    if let type = selectedType {
-                        LabeledContent("关系描述") {
-                            Text("\(operatorName)是\(selectedTarget?.name ?? "对方")的【\(type.label)】")
-                                .font(.caption)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("亲密度")
-                            Spacer()
-                            Text("\(Int(intimacy))")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(value: $intimacy, in: 0...100, step: 1)
-                    }
-                    TextField("备注（选填）", text: $note, axis: .vertical)
-                        .lineLimit(1...3)
-                } header: {
-                    Text("关系设定")
-                } footer: {
-                    Text("亲密度会决定对方在私聊中能从 \(operatorName) 处自然知道多少用户近况。")
-                }
-
-                Section {
-                    if let reciprocal = reciprocalType, let target = selectedTarget {
-                        Toggle(isOn: $createReciprocal) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("同时创建双向互补关系")
-                                Text("\(target.name) → \(operatorName)：【\(reciprocal.label)】")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } else {
-                        Text(selectedType?.hasReverse == false
-                             ? "【\(selectedType?.label ?? "")】没有互补类型，只能建立单向关系。"
-                             : "选择关系对象与类型后可创建双向互补关系。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } footer: {
-                    Text("默认只建立单向关系；与 Android 原版一致，双向需要勾选此开关。")
-                }
-
-                if let errorText {
-                    Section {
-                        Label(errorText, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
+                    .scrollIndicators(.hidden)
                 }
             }
-            .navigationTitle("添加关系")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "保存中…" : "保存") {
-                        Task { await save() }
-                    }
-                    .disabled(isSaving || targetId.isEmpty)
-                }
-            }
+            .knockHideSystemChrome()
             .task {
                 if targetId.isEmpty { targetId = candidates.first?.id ?? "" }
                 if typeOptions.contains(where: { $0.code == typeCode }) == false {
                     typeCode = typeOptions.first?.code ?? "FRIEND"
                 }
                 SelfTestLog.add("relations add sheet opened candidates=\(candidates.count) types=\(typeOptions.count)")
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            Button("取消") { dismiss() }
+                .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 38))
+                .accessibilityLabel("取消添加关系")
+
+            KnockText("添加关系", role: .pageTitle, lineLimit: 1)
+
+            Spacer(minLength: KnockTokens.spacingS)
+
+            Button(isSaving ? "保存中…" : "保存") {
+                Task { await save() }
+            }
+            .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 38))
+            .disabled(isSaving || targetId.isEmpty)
+            .opacity(targetId.isEmpty ? 0.45 : 1)
+            .accessibilityLabel("保存关系")
+        }
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .frame(minHeight: KnockTokens.headerHeight)
+        .background(KnockTokens.canvas)
+    }
+
+    // MARK: 关系对象（黄选中胶囊）
+
+    private var targetCard: some View {
+        KnockFormCard(title: "关系对象", systemImage: "person.crop.circle") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                if candidates.isEmpty {
+                    KnockText("所有角色都已建立关系，或暂无其他角色。", role: .caption, color: KnockTokens.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // 候选角色较多时内部滚动（上限 240pt），保证下方 24 类型 / 亲密度 / 双向开关可达
+                    ScrollView {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: KnockTokens.spacingS), count: 4),
+                            spacing: KnockTokens.spacingS
+                        ) {
+                            ForEach(candidates) { candidate in
+                                candidateCell(candidate)
+                            }
+                        }
+                        .padding(.vertical, KnockTokens.spacingXXS)
+                    }
+                    .frame(maxHeight: 240)
+                    .scrollIndicators(.hidden)
+                    .accessibilityLabel("候选角色，共 \(candidates.count) 位")
+                }
+            }
+        }
+    }
+
+    private func candidateCell(_ candidate: RelationOperatorItem) -> some View {
+        let isSelected = candidate.id == targetId
+        return Button {
+            targetId = candidate.id
+        } label: {
+            VStack(spacing: KnockTokens.spacingXS) {
+                RoleAvatar(avatarId: candidate.avatarId, name: candidate.name, size: 44)
+                KnockText(
+                    candidate.name,
+                    role: .badge,
+                    color: isSelected ? KnockTokens.onElectric : KnockTokens.textSecondary,
+                    lineLimit: 1
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, KnockTokens.spacingS)
+            .background {
+                RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                    .fill(isSelected ? KnockTokens.electric : KnockTokens.row)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? KnockTokens.electricRing : KnockTokens.strokeSecondary,
+                        lineWidth: KnockTokens.strokeWidth
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(candidate.title.isEmpty ? candidate.name : "\(candidate.name)，\(candidate.title)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    // MARK: 关系类型（24 种 Chip，黄选中）
+
+    private var typeCard: some View {
+        KnockFormCard(title: "关系类型", systemImage: "link") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 86), spacing: KnockTokens.spacingXS)],
+                    alignment: .leading,
+                    spacing: KnockTokens.spacingXS
+                ) {
+                    ForEach(typeOptions) { option in
+                        KnockChip(
+                            title: option.label,
+                            isSelected: option.code == typeCode
+                        ) {
+                            typeCode = option.code
+                        }
+                    }
+                }
+
+                if let type = selectedType {
+                    KnockText(
+                        "\(operatorName)是\(selectedTarget?.name ?? "对方")的【\(type.label)】",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    // MARK: 亲密度 + 备注
+
+    private var intimacyCard: some View {
+        KnockFormCard(title: "关系设定", systemImage: "slider.horizontal.3") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(spacing: KnockTokens.spacingM) {
+                    KnockCapsuleIconButton(
+                        systemImage: "minus",
+                        variant: .neutral,
+                        accessibilityLabel: "降低亲密度"
+                    ) {
+                        adjustIntimacy(-1)
+                    }
+
+                    VStack(spacing: KnockTokens.spacingXXS) {
+                        KnockText("\(Int(intimacy))", role: .brand, lineLimit: 1)
+                        KnockText("亲密度", role: .badge, color: KnockTokens.textTertiary, lineLimit: 1)
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    KnockCapsuleIconButton(
+                        systemImage: "plus",
+                        variant: .neutral,
+                        accessibilityLabel: "提高亲密度"
+                    ) {
+                        adjustIntimacy(1)
+                    }
+                }
+
+                KnockProgressBar(progress: intimacy / 100, height: 6)
+
+                KnockTextArea("备注（选填）", text: $note, minHeight: 72, accessibilityLabel: "关系备注")
+
+                KnockText(
+                    "亲密度会决定对方在私聊中能从 \(operatorName) 处自然知道多少用户近况。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func adjustIntimacy(_ delta: Double) {
+        intimacy = min(max(intimacy + delta, 0), 100)
+    }
+
+    // MARK: 双向互补开关（自绘黄色开关）
+
+    private var reciprocalCard: some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                if let reciprocal = reciprocalType, let target = selectedTarget {
+                    Toggle(isOn: $createReciprocal) {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                            KnockText("同时创建双向互补关系", role: .rowTitle, lineLimit: 1)
+                            KnockText(
+                                "\(target.name) → \(operatorName)：【\(reciprocal.label)】",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineLimit: 2
+                            )
+                        }
+                    }
+                    .toggleStyle(KnockSwitchToggleStyle())
+                    .accessibilityLabel("同时创建双向互补关系")
+                } else {
+                    KnockText(
+                        selectedType?.hasReverse == false
+                            ? "【\(selectedType?.label ?? "")】没有互补类型，只能建立单向关系。"
+                            : "选择关系对象与类型后可创建双向互补关系。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                KnockText(
+                    "默认只建立单向关系；与 Android 原版一致，双向需要勾选此开关。",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineSpacing: 2
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func errorCard(_ text: String) -> some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(KnockTokens.dangerBright)
+                    .accessibilityHidden(true)
+                KnockText(text, role: .caption, color: KnockTokens.dangerBright, lineLimit: 4)
+                Spacer(minLength: 0)
             }
         }
     }

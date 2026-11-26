@@ -22,3 +22,9 @@ xcuserdata/
 # 临时与本地环境
 /tmp/
 *.swiftpm
+# 本地构建/归档目录（体积大，不入库）
+.build-device/
+.build-device-sign/
+.build-*/
+*.xcarchive/
+DerivedData*/

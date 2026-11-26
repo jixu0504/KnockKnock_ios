@@ -1,7 +1,7 @@
 //
 //  RoleEditView.swift
 //  角色人设编辑（A2 / T49，新建/编辑共用）：姓名（必填）、标签、简介、人设描述、
-//  初始关系（20+ 关系类型，值域取 Android RelationshipType）、头像（内置 147 网格 +
+//  初始关系（20+ 关系类型，值域取 Android RelationshipType）、头像（敲敲占位头像选择 +
 //  相册 PhotosPicker → 方形裁剪 ≤1024 → MediaRepository 入库）、高级区（折叠：提示词槽位覆盖）。
 //
 //  数据：`OperatorBridge`（shared/iosMain，真实 SQLite：operators + settings 槽位 + 媒体目录）。
@@ -9,6 +9,15 @@
 //  - 编辑：OperatorBridge.update（含 prompt 槽位键 operator_prompt_slot_* 覆盖）
 //  - 删除：OperatorBridge.delete（对齐 Android deleteOperators：清私聊会话/记忆/关系/知识库关联）
 //  保存成功后回调上层刷新列表/详情；新建可选「保存后直接进入聊天」。
+//
+//  P2「敲敲」改版（docs/敲敲UI改版计划书-v1.1.md 第 2.1 / 6 章）：
+//  - 全部表单控件换 Knock 体系：`KnockFormCard` 面板、`KnockInputField`/`KnockTextFieldStyle`、
+//    `KnockTextArea`（行底 + 1.5pt 描边）、自绘开关 `KnockSwitchToggleStyle`、
+//    `KnockSegmentedBar`（槽位 1/2/3）、`KnockMenuRow`（关系选择器）、`KnockChip`（24 关系类型，黄选中）；
+//  - 头像选择器接 `KnockAvatar` 占位（黑底 + 1.5pt 蓝圈 + 白色 heavy 首字）；原 147 内置头像
+//    默认不展示（资源与解析兼容保留在 `RoleAvatar` 解析层），上传头像保留；
+//  - 自绘 44pt 顶栏（取消 / 标题 / 黄主按钮保存），隐藏系统导航栏 + iOS 26+ 关闭滚动边缘玻璃；
+//  - 保留全部字段、校验、槽位逻辑、保存/删除/入库回调与 SelfTestLog 打点。
 //
 
 import PhotosUI
@@ -62,7 +71,8 @@ struct RoleEditView: View {
     @State private var isSaving = false
     @State private var errorText: String?
     @State private var showAdvanced = false
-    @State private var showBuiltinAvatarPicker = false
+    /// 敲敲头像选择 Sheet（原内置 147 头像网格已停用展示）
+    @State private var showKnockAvatarPicker = false
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingAvatarFileURL: URL?
     @State private var pendingAvatarImage: UIImage?
@@ -79,262 +89,325 @@ struct RoleEditView: View {
             ZStack {
                 AmbientBackground(parallax: 0)
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            if let errorText {
-                                errorBanner(errorText)
+                VStack(spacing: 0) {
+                    header
+
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: KnockTokens.spacingM) {
+                                if let errorText {
+                                    errorBanner(errorText)
+                                }
+                                avatarCard
+                                basicCard
+                                personaCard
+                                relationCard
+                                advancedCard.id("advanced")
+                                if isNew {
+                                    enterChatCard
+                                } else {
+                                    deleteCard
+                                }
                             }
-                            avatarCard
-                            basicCard
-                            personaCard
-                            relationCard
-                            advancedCard.id("advanced")
-                            if isNew {
-                                enterChatCard
-                            } else {
-                                deleteCard
-                            }
+                            .padding(.horizontal, KnockTokens.screenPadding)
+                            .padding(.top, KnockTokens.spacingS)
+                            .padding(.bottom, KnockTokens.spacingXXL)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 28)
-                    }
-                    .scrollIndicators(.hidden)
-                    .onChange(of: scrollToAdvanced) { _, target in
-                        guard target else { return }
-                        withAnimation(.easeInOut(duration: 0.35)) {
-                            proxy.scrollTo("advanced", anchor: .top)
+                        .scrollIndicators(.hidden)
+                        .onChange(of: scrollToAdvanced) { _, target in
+                            guard target else { return }
+                            withAnimation(.easeInOut(duration: 0.35)) {
+                                proxy.scrollTo("advanced", anchor: .top)
+                            }
                         }
                     }
                 }
 
                 if isLoading {
-                    ProgressView("读取角色资料…")
-                        .padding(24)
-                        .cardSurface(cornerRadius: 16)
+                    loadingOverlay
                 }
             }
-            .navigationTitle(isNew ? "新建角色" : "编辑角色")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
-                        .accessibilityLabel("取消编辑")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if isSaving {
-                        ProgressView()
-                    } else {
-                        Button("保存") {
-                            Task { await save() }
-                        }
-                        .fontWeight(.semibold)
-                        .accessibilityLabel("保存角色")
-                    }
-                }
-            }
+            .knockHideSystemChrome()
             .task { await load() }
-            .sheet(isPresented: $showBuiltinAvatarPicker) { builtinAvatarSheet }
+            .fullScreenCover(isPresented: $showKnockAvatarPicker) { knockAvatarSheet }
             .onChange(of: photoItem) { _, newItem in
                 guard let newItem else { return }
                 Task { await loadPickedPhoto(newItem) }
             }
-            .alert("删除角色", isPresented: $showDeleteConfirm) {
-                Button("取消", role: .cancel) {}
-                Button("确认删除", role: .destructive) {
-                    Task { await deleteRole() }
-                }
-            } message: {
-                Text("确定要删除「\(name)」吗？删除后该角色的私聊会话、记忆、关系与知识库关联将永久丢失（聊天消息文件保留）。")
+            .knockConfirmDialog(
+                isPresented: $showDeleteConfirm,
+                title: "删除角色",
+                message: "确定要删除「\(name)」吗？删除后该角色的私聊会话、记忆、关系与知识库关联将永久丢失（聊天消息文件保留）。",
+                confirmTitle: "确认删除",
+                cancelTitle: "取消",
+                isDestructive: true
+            ) {
+                Task { await deleteRole() }
             }
         }
     }
 
-    // MARK: - 卡片
+    // MARK: - 顶栏（隐藏系统导航栏后的自绘 44pt 顶栏）
 
-    private var avatarCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("头像")
-            HStack(alignment: .center, spacing: 16) {
-                avatarPreview
-                VStack(alignment: .leading, spacing: 8) {
-                    Button {
-                        showBuiltinAvatarPicker = true
-                    } label: {
-                        Label("内置头像（1-147）", systemImage: "square.grid.3x3.fill")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(GlassTokens.brandOrange)
-                    .accessibilityLabel("选择内置头像")
+    private var header: some View {
+        HStack(spacing: KnockTokens.spacingM) {
+            Button("取消") { dismiss() }
+                .buttonStyle(KnockSecondaryButtonStyle(fullWidth: false, height: 38))
+                .accessibilityLabel("取消编辑")
 
-                    PhotosPicker(selection: $photoItem, matching: .images) {
-                        Label("从相册上传", systemImage: "photo.on.rectangle")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(GlassTokens.brandOrange)
-                    }
-                    .accessibilityLabel("从相册上传头像")
+            KnockText(isNew ? "新建角色" : "编辑角色", role: .pageTitle, lineLimit: 1)
 
-                    Text(avatarHintText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+            Spacer(minLength: KnockTokens.spacingS)
+
+            if isSaving {
+                ProgressView()
+                    .tint(KnockTokens.electric)
+                    .frame(width: 56, height: 38)
+            } else {
+                Button("保存") {
+                    Task { await save() }
                 }
+                .buttonStyle(KnockPrimaryButtonStyle(fullWidth: false, height: 38))
+                .accessibilityLabel("保存角色")
+            }
+        }
+        .padding(.horizontal, KnockTokens.screenPadding)
+        .frame(minHeight: KnockTokens.headerHeight)
+        .background(KnockTokens.canvas)
+    }
+
+    private var loadingOverlay: some View {
+        KnockPanel(padding: KnockTokens.spacingL) {
+            HStack(spacing: KnockTokens.spacingM) {
+                ProgressView()
+                    .tint(KnockTokens.electric)
+                KnockText("读取角色资料…", role: .caption, color: KnockTokens.textSecondary)
                 Spacer(minLength: 0)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
+        .padding(.horizontal, KnockTokens.spacingXXL)
     }
+
+    // MARK: - 头像
+
+    private var avatarCard: some View {
+        KnockFormCard(title: "头像", systemImage: "person.crop.circle") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                HStack(alignment: .center, spacing: KnockTokens.spacingL) {
+                    avatarPreview
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                        KnockText(avatarPreviewTitle, role: .rowTitle, lineLimit: 1)
+                        KnockText(avatarHintText, role: .caption, color: KnockTokens.textSecondary, lineSpacing: 2, lineLimit: 3)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                KnockDashedButton(
+                    title: "选择敲敲头像",
+                    systemImage: "square.grid.3x3.fill"
+                ) {
+                    showKnockAvatarPicker = true
+                }
+                .accessibilityLabel("选择敲敲头像")
+
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 13, weight: .heavy))
+                        KnockText("从相册上传", role: .sectionTitle, lineLimit: 1)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(KnockTokens.textPrimary)
+                    .padding(.horizontal, KnockTokens.spacingL)
+                    .frame(maxWidth: .infinity, minHeight: KnockTokens.buttonHeight)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+                    }
+                    .contentShape(Capsule(style: .continuous))
+                }
+                .accessibilityLabel("从相册上传头像")
+
+                if !avatarId.isEmpty && pendingAvatarFileURL == nil {
+                    Button {
+                        avatarId = ""
+                        pendingAvatarFileURL = nil
+                        pendingAvatarImage = nil
+                        SelfTestLog.add("persona edit avatar reset to placeholder")
+                    } label: {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 11, weight: .heavy))
+                            KnockText("恢复首字占位", role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                        }
+                        .frame(minHeight: 32)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("恢复首字占位")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var avatarPreview: some View {
+        if let image = pendingAvatarImage {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 84, height: 84)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().strokeBorder(KnockTokens.electricRing, lineWidth: KnockTokens.strokeWidth)
+                }
+                .accessibilityHidden(true)
+        } else {
+            RoleAvatar(avatarId: avatarId, name: name.isEmpty ? "新" : name, size: 84)
+        }
+    }
+
+    // MARK: - 基础信息
 
     private var basicCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("基础信息")
-            labeledField("姓名（必填）") {
-                textField($name, placeholder: "如：新干员")
-            }
-            labeledField("标签（逗号分隔）") {
-                textField($tags, placeholder: "如：罗德岛干员,医疗,温和")
-            }
-            labeledField("简介") {
-                textField($intro, placeholder: "一句话介绍（留空自动生成）", axis: .vertical)
-            }
-            labeledField("性别（选填）") {
-                textField($gender, placeholder: "如：女 / 男 / 无性别")
+        KnockFormCard(title: "基础信息", systemImage: "person.text.rectangle") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockInputField(title: "姓名（必填）", placeholder: "如：新代理人", text: $name)
+                KnockInputField(title: "标签（逗号分隔）", placeholder: "如：新艾利都代理人,支援,温和", text: $tags)
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXS) {
+                    KnockText("简介", role: .captionStrong, color: KnockTokens.textSecondary)
+                    KnockTextArea("一句话介绍（留空自动生成）", text: $intro, minHeight: 88, accessibilityLabel: "简介")
+                }
+                KnockInputField(title: "性别（选填）", placeholder: "如：女 / 男 / 无性别", text: $gender)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
+
+    // MARK: - 人设描述
 
     private var personaCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                sectionTitle("人设描述")
-                Spacer(minLength: 4)
-                Text("私聊槽位 \(privateActiveSlot)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(GlassTokens.brandOrange)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(GlassTokens.bubbleSystem, in: Capsule())
-            }
-            TextEditor(text: $persona)
-                .font(.subheadline)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 150)
-                .padding(8)
-                .background(
-                    GlassTokens.bubbleSystem,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        KnockFormCard(
+            title: "人设描述",
+            systemImage: "text.quote",
+            accessory: "私聊槽位 \(privateActiveSlot)"
+        ) {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                KnockTextArea(
+                    "角色的人格设定 / 说话风格 / 背景…",
+                    text: $persona,
+                    minHeight: 150,
+                    accessibilityLabel: "私聊人设描述"
                 )
-                .accessibilityLabel("私聊人设描述")
-            Text("角色的人格设定 / 说话风格 / 背景。保存后写入当前私聊槽位（operators.privatePrompt）。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                KnockText(
+                    "角色的人格设定 / 说话风格 / 背景。保存后写入当前私聊槽位（operators.privatePrompt）。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
+
+    // MARK: - 初始关系
 
     private var relationCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("初始关系")
-            HStack(spacing: 10) {
-                Menu {
-                    Button("未设定") { relationType = "" }
-                    Divider()
-                    ForEach(relationOptions) { option in
-                        Button(option.label) { relationType = option.label }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "link")
-                            .font(.caption)
-                        Text(relationDisplayLabel)
-                            .font(.subheadline.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                    }
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(
-                        GlassTokens.bubbleSystem,
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    )
-                }
-                .accessibilityLabel("选择初始关系")
-            }
-            if !relationOptions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(relationOptions) { option in
-                            Button(option.label) {
-                                relationType = option.label
+        KnockFormCard(title: "初始关系", systemImage: "link") {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                KnockMenuRow(
+                    systemImage: "link",
+                    valueText: relationDisplayLabel,
+                    accessibilityLabel: "选择初始关系",
+                    actions: relationMenuActions
+                )
+
+                if !relationOptions.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: KnockTokens.spacingXS) {
+                            ForEach(relationOptions) { option in
+                                KnockChip(
+                                    title: option.label,
+                                    isSelected: relationType == option.label
+                                ) {
+                                    relationType = option.label
+                                }
                             }
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(relationType == option.label ? .white : .secondary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(
-                                relationType == option.label
-                                    ? GlassTokens.brandOrange
-                                    : GlassTokens.bubbleSystem,
-                                in: Capsule()
-                            )
-                            .buttonStyle(.plain)
                         }
+                        .padding(.vertical, KnockTokens.spacingXXS)
                     }
+                    .accessibilityLabel("关系类型快捷选择")
                 }
+
+                KnockText(
+                    "关系类型值域与 Android RelationshipType 枚举一致（24 种）。写入 operators.userRelation。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                .fixedSize(horizontal: false, vertical: true)
             }
-            Text("关系类型值域与 Android RelationshipType 枚举一致（24 种）。写入 operators.userRelation。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
+    // MARK: - 高级（提示词槽位覆盖）
+
     private var advancedCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                VStack(alignment: .leading, spacing: 14) {
-                    promptSlotEditor(
-                        title: "私聊人设槽位",
-                        activeSlot: privateActiveSlot,
-                        slots: slotValues(private: true),
-                        text: $persona,
-                        onSelectSlot: selectPrivateSlot
-                    )
-                    Divider().opacity(0.3)
-                    promptSlotEditor(
-                        title: "群聊人设槽位",
-                        activeSlot: groupActiveSlot,
-                        slots: slotValues(private: false),
-                        text: $groupPersona,
-                        onSelectSlot: selectGroupSlot
-                    )
-                    Text("槽位键：operator_prompt_slot_<id>_{private,group}_{1..3}；保存时 DB 记录当前槽位内容。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showAdvanced.toggle()
+                    }
+                } label: {
+                    HStack(spacing: KnockTokens.spacingS) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textSecondary)
+                            .accessibilityHidden(true)
+                        KnockText("高级：提示词槽位覆盖", role: .sectionTitle, lineLimit: 1)
+                        Spacer(minLength: KnockTokens.spacingS)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(KnockTokens.textSecondary)
+                            .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
                 }
-                .padding(.top, 8)
-            } label: {
-                Label("高级：提示词槽位覆盖", systemImage: "slider.horizontal.3")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                .buttonStyle(.plain)
+                .accessibilityLabel("高级：提示词槽位覆盖")
+                .accessibilityValue(showAdvanced ? "已展开" : "已折叠")
+
+                if showAdvanced {
+                    VStack(alignment: .leading, spacing: KnockTokens.spacingL) {
+                        promptSlotEditor(
+                            title: "私聊人设槽位",
+                            activeSlot: privateActiveSlot,
+                            slots: slotValues(private: true),
+                            text: $persona,
+                            onSelectSlot: selectPrivateSlot
+                        )
+                        KnockDivider()
+                        promptSlotEditor(
+                            title: "群聊人设槽位",
+                            activeSlot: groupActiveSlot,
+                            slots: slotValues(private: false),
+                            text: $groupPersona,
+                            onSelectSlot: selectGroupSlot
+                        )
+                        KnockText(
+                            "槽位键：operator_prompt_slot_<id>_{private,group}_{1..3}；保存时 DB 记录当前槽位内容。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 2
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, KnockTokens.spacingXS)
+                }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(cornerRadius: 20)
     }
 
     private func promptSlotEditor(
@@ -344,207 +417,268 @@ struct RoleEditView: View {
         text: Binding<String>,
         onSelectSlot: @escaping (Int) -> Void
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                ForEach(1...3, id: \.self) { slot in
-                    Button("\(slot)号") { onSelectSlot(slot) }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(activeSlot == slot ? .white : .secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            activeSlot == slot ? GlassTokens.brandOrange : GlassTokens.bubbleSystem,
-                            in: Capsule()
-                        )
-                        .buttonStyle(.plain)
-                }
-                Spacer(minLength: 0)
-                Text(slots[activeSlot - 1].isEmpty ? "空槽位" : "已有内容")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            TextEditor(text: text)
-                .font(.subheadline)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 110)
-                .padding(8)
-                .background(
-                    GlassTokens.bubbleSystem,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let slotItems = (1...3).map { KnockSegmentItem(value: $0, title: "\($0)号") }
+        let slotSelection = Binding<Int>(
+            get: { activeSlot },
+            set: { onSelectSlot($0) }
+        )
+        return VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+            HStack(spacing: KnockTokens.spacingS) {
+                KnockText(title, role: .captionStrong, color: KnockTokens.textSecondary, lineLimit: 1)
+                Spacer(minLength: KnockTokens.spacingS)
+                KnockText(
+                    slots[activeSlot - 1].isEmpty ? "空槽位" : "已有内容",
+                    role: .caption,
+                    color: KnockTokens.textTertiary,
+                    lineLimit: 1
                 )
+            }
+
+            KnockSegmentedBar(
+                items: slotItems,
+                selection: slotSelection,
+                height: KnockTokens.segmentedSmallHeight,
+                showsIcons: false
+            )
+            .accessibilityLabel("\(title)选择")
+
+            KnockTextArea(
+                "槽位内容…",
+                text: text,
+                minHeight: 110,
+                accessibilityLabel: title
+            )
         }
     }
 
+    // MARK: - 新建：保存后进入聊天
+
     private var enterChatCard: some View {
-        Toggle(isOn: $enterChatAfterSave) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("保存后直接进入聊天")
-                    .font(.subheadline.weight(.medium))
-                Text("创建角色后立即打开与「\(name.isEmpty ? "新角色" : name)」的会话")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        KnockPanel {
+            Toggle(isOn: $enterChatAfterSave) {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockText("保存后直接进入聊天", role: .rowTitle, lineLimit: 1)
+                    KnockText(
+                        "创建角色后立即打开与「\(name.isEmpty ? "新角色" : name)」的会话",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineLimit: 2
+                    )
+                }
             }
+            .toggleStyle(KnockSwitchToggleStyle())
+            .accessibilityLabel("保存后直接进入聊天")
         }
-        .tint(GlassTokens.brandOrange)
-        .padding(14)
-        .cardSurface(cornerRadius: 20)
     }
+
+    // MARK: - 编辑：删除
 
     private var deleteCard: some View {
         Button {
             showDeleteConfirm = true
         } label: {
-            Label("删除角色", systemImage: "trash")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            HStack(spacing: KnockTokens.spacingS) {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .heavy))
+                Text("删除角色")
+            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(KnockDangerButtonStyle())
         .accessibilityLabel("删除角色")
     }
 
-    // MARK: - 子视图
-
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.primary)
-    }
-
-    private func labeledField<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            content()
+    private func errorBanner(_ text: String) -> some View {
+        KnockPanel(padding: KnockTokens.spacingM) {
+            HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(KnockTokens.dangerBright)
+                    .accessibilityHidden(true)
+                KnockText(text, role: .caption, color: KnockTokens.dangerBright, lineLimit: 4)
+                Spacer(minLength: 0)
+            }
         }
     }
 
-    private func textField(
-        _ binding: Binding<String>,
-        placeholder: String,
-        axis: Axis = .horizontal
-    ) -> some View {
-        TextField(placeholder, text: binding, axis: axis)
-            .font(.subheadline)
-            .lineLimit(axis == .vertical ? 3...6 : 1...1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                GlassTokens.bubbleSystem,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-    }
+    // MARK: - 敲敲头像选择 Sheet（原 147 内置头像默认不展示）
 
-    @ViewBuilder
-    private var avatarPreview: some View {
-        if let image = currentAvatarImage {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 84, height: 84)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(GlassTokens.glassStroke, lineWidth: 1))
-        } else {
-            AvatarBadge(name: name.isEmpty ? "新" : name, size: 84)
-        }
-    }
-
-    /// 内置 147 网格头像选择 Sheet（对齐 Android OperatorAvatarImage 内置头像值域）。
-    private var builtinAvatarSheet: some View {
+    private var knockAvatarSheet: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6),
-                    spacing: 8
-                ) {
-                    ForEach(1...147, id: \.self) { number in
-                        Button {
-                            avatarId = "\(number)"
-                            pendingAvatarFileURL = nil
-                            pendingAvatarImage = nil
-                            showBuiltinAvatarPicker = false
-                            SelfTestLog.add("persona edit builtin avatar selected=\(number)")
-                        } label: {
-                            ZStack(alignment: .bottomTrailing) {
-                                if let image = UIImage(named: "avatar_\(number)") {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 48, height: 48)
-                                        .clipShape(Circle())
-                                } else {
-                                    AvatarBadge(name: "\(number)", size: 48)
-                                }
-                                if avatarId == "\(number)" {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(GlassTokens.brandOrange)
-                                        .background(Circle().fill(.white).padding(1))
+            ZStack {
+                AmbientBackground(parallax: 0, showsStandee: false)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: KnockTokens.spacingM) {
+                        KnockText("敲敲头像", role: .pageTitle, lineLimit: 1)
+                        Spacer(minLength: KnockTokens.spacingS)
+                        KnockCloseButton(label: "关闭头像选择") {
+                            showKnockAvatarPicker = false
+                        }
+                    }
+                    .padding(.horizontal, KnockTokens.screenPadding)
+                    .frame(minHeight: KnockTokens.headerHeight)
+                    .background(KnockTokens.canvas)
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                            defaultAvatarOption
+                            KnockGroupTitle(title: "敲敲头像素材", systemImage: "sparkles")
+                                .padding(.top, KnockTokens.spacingS)
+
+                            LazyVGrid(
+                                columns: Array(repeating: GridItem(.flexible(), spacing: KnockTokens.spacingM), count: 4),
+                                spacing: KnockTokens.spacingM
+                            ) {
+                                ForEach(1...16, id: \.self) { number in
+                                    knockAvatarCell(number: number)
                                 }
                             }
+
+                            KnockText(
+                                "素材放入 Resources/AvatarsKnock/knock_<id>.png 后自动生效；缺失时显示首字占位。旧内置头像（1–147）资源已移除，仅保留值域解析兼容（渲染走首字占位）。",
+                                role: .caption,
+                                color: KnockTokens.textSecondary,
+                                lineSpacing: 2
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("内置头像 \(number)")
+                        .padding(.horizontal, KnockTokens.screenPadding)
+                        .padding(.vertical, KnockTokens.spacingM)
                     }
-                }
-                .padding(14)
-            }
-            .scrollIndicators(.hidden)
-            .navigationTitle("内置头像 1-147")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { showBuiltinAvatarPicker = false }
+                    .scrollIndicators(.hidden)
                 }
             }
+            .knockHideSystemChrome()
         }
     }
 
-    private func errorBanner(_ text: String) -> some View {
-        Label(text, systemImage: "exclamationmark.triangle.fill")
-            .font(.footnote)
-            .foregroundStyle(.red)
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cardSurface(cornerRadius: 14)
+    private var defaultAvatarOption: some View {
+        Button {
+            avatarId = ""
+            pendingAvatarFileURL = nil
+            pendingAvatarImage = nil
+            showKnockAvatarPicker = false
+            SelfTestLog.add("persona edit avatar selected=placeholder")
+        } label: {
+            HStack(spacing: KnockTokens.spacingM) {
+                KnockAvatar(name: previewName, size: KnockTokens.rowIconSize)
+                VStack(alignment: .leading, spacing: KnockTokens.spacingXXS) {
+                    KnockText("首字占位（默认）", role: .rowTitle, lineLimit: 1)
+                    KnockText("黑底 + 1.5pt 浅蓝圈 + 白色 heavy 首字", role: .caption, color: KnockTokens.textSecondary, lineLimit: 1)
+                }
+                Spacer(minLength: KnockTokens.spacingS)
+                if avatarId.isEmpty {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, KnockTokens.rowPaddingLeading)
+            .padding(.trailing, KnockTokens.rowPaddingTrailing - KnockTokens.rowPaddingLeading)
+            .frame(minHeight: KnockTokens.rowHeight)
+            .background(Capsule(style: .continuous).fill(KnockTokens.row))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("首字占位头像")
+        .accessibilityAddTraits(avatarId.isEmpty ? [.isSelected] : [])
+    }
+
+    private func knockAvatarCell(number: Int) -> some View {
+        let knockId = String(format: "knock:%02d", number)
+        let isSelected = avatarId == knockId
+        return Button {
+            avatarId = knockId
+            pendingAvatarFileURL = nil
+            pendingAvatarImage = nil
+            showKnockAvatarPicker = false
+            SelfTestLog.add("persona edit knock avatar selected=\(knockId)")
+        } label: {
+            VStack(spacing: KnockTokens.spacingXS) {
+                KnockAvatar(avatarId: knockId, name: previewName, size: 56)
+                KnockText(
+                    String(format: "%02d", number),
+                    role: .caption,
+                    color: isSelected ? KnockTokens.textPrimary : KnockTokens.textTertiary,
+                    lineLimit: 1
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, KnockTokens.spacingS)
+            .background {
+                RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                    .fill(KnockTokens.row)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? KnockTokens.electric : KnockTokens.strokeSecondary,
+                        lineWidth: KnockTokens.strokeWidth
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("敲敲头像 \(number)\(isSelected ? "，已选中" : "")")
+    }
+
+    /// 头像预览用的名字（占位首字取首个字符）。
+    private var previewName: String {
+        name.isEmpty ? "新" : name
     }
 
     // MARK: - 头像解析
 
-    private var currentAvatarImage: UIImage? {
-        if let pendingAvatarImage { return pendingAvatarImage }
-        let trimmed = avatarId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let number = Int(trimmed), (1...147).contains(number) {
-            return UIImage(named: "avatar_\(number)")
+    private var avatarPreviewTitle: String {
+        if pendingAvatarFileURL != nil { return "相册图片（保存后入库）" }
+        switch RoleAvatarResolver.source(for: avatarId) {
+        case .knock: return "敲敲头像"
+        case .builtin: return "首字占位（旧内置头像资源已移除）"
+        case .media: return "上传头像"
+        case .placeholder: return "首字占位"
         }
-        if trimmed.hasPrefix("media/") {
-            let path = environment.bridge.operatorMediaPath(mediaId: trimmed)
-            guard !path.isEmpty else { return nil }
-            let file = path.hasPrefix("file://") ? String(path.dropFirst(7)) : path
-            return UIImage(contentsOfFile: file)
-        }
-        return nil
     }
 
     private var avatarHintText: String {
         if pendingAvatarFileURL != nil { return "已选择相册图片（方形裁剪 ≤1024，保存时入库）" }
-        let trimmed = avatarId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let number = Int(trimmed), (1...147).contains(number) { return "当前：内置头像 \(number)" }
-        if trimmed.hasPrefix("media/") { return "当前：上传头像 \(trimmed)" }
-        return "默认占位头像（首字色块）"
+        switch RoleAvatarResolver.source(for: avatarId) {
+        case .knock(let id):
+            return "当前：敲敲头像 knock:\(id)"
+        case .builtin(let number):
+            return "当前：旧内置头像 \(number)（资源已移除，显示首字占位；保存不变更该值）"
+        case .media(let id):
+            return "当前：上传头像 \(id)"
+        case .placeholder:
+            return "默认占位：黑底 + 1.5pt 浅蓝圈 + 白色首字"
+        }
     }
 
     private var relationDisplayLabel: String {
         relationType.isEmpty ? "未设定" : relationType
+    }
+
+    /// 初始关系菜单动作：未设定 + 24 种关系类型（当前值打勾）。
+    /// 原本是系统 `Menu`（iOS 26 液态玻璃），改走 `KnockContextMenu` 自绘面板；
+    /// 选中语义与原实现一致（写回 `relationType`）。
+    private var relationMenuActions: [KnockMenuAction] {
+        var actions: [KnockMenuAction] = [
+            KnockMenuAction("未设定", systemImage: relationType.isEmpty ? "checkmark" : nil) {
+                relationType = ""
+            }
+        ]
+        actions += relationOptions.map { option in
+            KnockMenuAction(
+                option.label,
+                systemImage: relationType == option.label ? "checkmark" : nil
+            ) {
+                relationType = option.label
+            }
+        }
+        return actions
     }
 
     // MARK: - 数据
@@ -569,7 +703,7 @@ struct RoleEditView: View {
     }
 
     /// 截图/自动化用启动参数（仅模拟器验证，不影响正常路径）：
-    /// `--persona-avatar-sheet` 自动打开内置头像网格、`--persona-advanced` 自动展开高级槽位区。
+    /// `--persona-avatar-sheet` 自动打开敲敲头像选择、`--persona-advanced` 自动展开高级槽位区。
     private func applyLaunchOverrides() {
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--persona-advanced") {
@@ -579,7 +713,7 @@ struct RoleEditView: View {
                 scrollToAdvanced = true
             }
         }
-        if args.contains("--persona-avatar-sheet") { showBuiltinAvatarPicker = true }
+        if args.contains("--persona-avatar-sheet") { showKnockAvatarPicker = true }
     }
 
     private func apply(_ item: OperatorEditItem) {
@@ -666,7 +800,7 @@ struct RoleEditView: View {
 
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else {
-            errorText = "请输入干员名称"
+            errorText = "请输入代理人名称"
             return
         }
 

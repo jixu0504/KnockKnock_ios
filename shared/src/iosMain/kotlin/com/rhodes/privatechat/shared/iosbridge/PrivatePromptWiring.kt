@@ -95,7 +95,7 @@ internal class PrivatePromptWiring(
         "assembler=PrivatePromptAssembler memoryV2=MemoryV2Pipeline knowledge=KnowledgeBaseService " +
             "providers=7 embedding=local"
 
-    private fun userNickname(): String = settings.userName.ifBlank { "博士" }
+    private fun userNickname(): String = settings.userName.ifBlank { "绳匠" }
 
     /** 用户档案（oracle `AppStateHolder.UserProfile`：nickname/gender/bio）。 */
     fun userProfile(): UserProfileView = UserProfileView(
