@@ -344,6 +344,22 @@ extension AppGraphClient {
         }
     }
 
+    /// 手动调整记忆层级（L1 短期 / L2 日常 / L3 长期）。升长期会把过期时间置为最大值。
+    func promoteMemory(id: Int64, sourceTable: String, targetLevel: String) async -> Result<MemoryMutationResult, BridgeError> {
+        await withCheckedContinuation { continuation in
+            memoryBridge.promote(id: id, sourceTable: sourceTable, targetLevel: targetLevel) { result, error in
+                assertMainQueue()
+                if let error {
+                    continuation.resume(returning: .failure(BridgeError(message: error)))
+                } else if let result {
+                    continuation.resume(returning: .success(MemoryMutationResult(ok: result.ok, id: result.id, message: result.message)))
+                } else {
+                    continuation.resume(returning: .failure(BridgeError(message: "调整层级失败")))
+                }
+            }
+        }
+    }
+
     /// 保存内容/重要度。`importance < 0` = 不修改重要度。
     func updateMemory(id: Int64, sourceTable: String, content: String, importance: Int) async -> Result<MemoryMutationResult, BridgeError> {
         await withCheckedContinuation { continuation in

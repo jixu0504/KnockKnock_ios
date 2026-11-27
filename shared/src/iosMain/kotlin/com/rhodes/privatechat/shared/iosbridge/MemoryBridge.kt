@@ -287,6 +287,50 @@ class MemoryBridge internal constructor(
     }
 
     // ------------------------------------------------------------------
+    // 手动调整层级（短期 / 日常 / 长期）
+    // ------------------------------------------------------------------
+
+    /**
+     * 把一条记忆改成指定层级。用户判断「这条其实是长期认知」时可直接提升，
+     * 不必等自动整合攒够证据。升长期会把过期时间置为最大值。
+     */
+    fun promote(
+        id: Long,
+        sourceTable: String,
+        targetLevel: String,
+        onResult: (MemoryMutationResultDto?, String?) -> Unit,
+    ) {
+        workScope.launch {
+            try {
+                val level = normalizeLevel(targetLevel)
+                if (level.isBlank()) {
+                    mainScope.launch { onResult(MemoryMutationResultDto(false, 0, "层级无效"), null) }
+                    return@launch
+                }
+                if (id <= 0L) {
+                    mainScope.launch { onResult(MemoryMutationResultDto(false, 0, "记忆 id 无效"), null) }
+                    return@launch
+                }
+                // 派生表（legacy 印象等）不允许直接改层级，避免破坏证据链；"v2"/空 均指 memory_items。
+                val table = sourceTable.trim().lowercase()
+                if (table.isNotEmpty() && table != "v2" && table != "memory_items") {
+                    mainScope.launch {
+                        onResult(MemoryMutationResultDto(false, 0, "只能调整记忆条目的层级（sourceTable=$sourceTable）"), null)
+                    }
+                    return@launch
+                }
+                val target = com.rhodes.privatechat.shared.model.MemoryLevel.valueOf(level)
+                chatRepo.updateMemoryItemLevel(id, target, currentTimeMillis())
+                mainScope.launch {
+                    onResult(MemoryMutationResultDto(true, id, "已调整为${levelLabelOf(level)}记忆"), null)
+                }
+            } catch (t: Throwable) {
+                mainScope.launch { onResult(null, t.message ?: "调整层级失败") }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // T47 编辑（内容 / 重要度）
     // ------------------------------------------------------------------
 
@@ -652,6 +696,13 @@ class MemoryBridge internal constructor(
     private suspend fun mainOperatorId(): String = runCatching {
         chatRepo.operators.getAllOperatorsSync().firstOrNull()?.id ?: ""
     }.getOrDefault("")
+
+    private fun levelLabelOf(level: String): String = when (level.uppercase()) {
+        "L1" -> "短期"
+        "L2" -> "日常"
+        "L3" -> "长期"
+        else -> level
+    }
 
     private fun normalizeLevel(value: String): String = when (value.trim().uppercase()) {
         "L1", "SHORT_TERM", "SHORT", "SHORTTERM" -> "L1"

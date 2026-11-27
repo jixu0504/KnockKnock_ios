@@ -218,12 +218,13 @@ class MemoryParsePromotionTest {
     @Test
     fun structuredGroupNeedsTwoSessionsUnlessStrongSignal() {
         val r = rules()
-        val sameSession = (1..3).map {
+        // 单会话只有 2 条：证据太薄，不合并。
+        val thin = (1..2).map {
             item(it.toLong(), "event", "普通事实 $it", importance = 50).copy(
-                topicKey = "fact:positive:用户|work|杭州", sessionId = "s1",
+                topicKey = "fact:positive:用户|prefer|川菜", sessionId = "s1",
             )
         }
-        assertNull(r.pickPromotionTopic(sameSession, threshold = 20), "同一会话的三条不能作为独立证据")
+        assertNull(r.pickPromotionTopic(thin, threshold = 20), "单会话 2 条不得合并")
 
         val strongSameSession = (1..2).map {
             item(it.toLong(), "agreement_commitment", "用户答应周六看电影 $it", importance = 50).copy(
@@ -366,4 +367,76 @@ class MemoryParsePromotionTest {
         assertTrue(r.isHighValueComment(MomentComment(momentId = 1, operatorId = "op1", operatorName = "角色", content = "约定周末见")))
         assertFalse(r.isHighValueComment(MomentComment(momentId = 1, operatorId = "op1", operatorName = "角色", content = "哈哈")))
     }
+    @Test
+    fun sameSessionThreeItemsCanConsolidate() {
+        // 真实使用里用户很少跨会话重复同一件事：单会话 3 条同话题应能整合，否则 L2/L3 永不出现。
+        val r = rules()
+        val items = (1..3).map {
+            item(it.toLong(), "preference_expression", "用户喜欢冰美式 $it", importance = 55).copy(
+                topicKey = "fact:positive:user|prefer|美式咖啡", sessionId = "s1",
+            )
+        }
+        val picked = r.pickPromotionTopic(items, threshold = 20)
+        assertNotNull(picked, "单会话 3 条同话题应达到组门")
+        assertEquals(3, picked.items.size)
+    }
+
+    @Test
+    fun samePredicateDifferentObjectsShareConsolidationGroup() {
+        // 事实键为精确召回带宾语，导致逐条几乎不重复；整合要按「极性+主语+谓语」聚合。
+        val r = rules()
+        val items = listOf(
+            item(1, "preference_expression", "用户喜欢铃身上的香气", importance = 45).copy(
+                topicKey = "fact:positive:user|prefer|铃身上的香气", sessionId = "s1",
+            ),
+            item(2, "preference_expression", "用户喜欢铃推荐餐厅", importance = 40).copy(
+                topicKey = "fact:positive:user|prefer|铃推荐餐厅", sessionId = "s1",
+            ),
+            item(3, "preference_expression", "用户喜欢被铃触碰", importance = 55).copy(
+                topicKey = "fact:positive:user|prefer|被铃触碰", sessionId = "s1",
+            ),
+        )
+        val picked = r.pickPromotionTopic(items, threshold = 20)
+        assertNotNull(picked, "同一谓语的多种宾语应聚成一组")
+        assertEquals("fact:positive:user|prefer|汇总", picked.topicKey)
+        assertEquals(3, picked.items.size)
+    }
+
+    @Test
+    fun functionalPredicatesStillKeepTheirObject() {
+        // 居住地是单值事实：换城市代表事实变了，不能并成「住杭州/上海」。
+        val r = rules()
+        val items = listOf(
+            item(1, "event", "住杭州", importance = 60).copy(topicKey = "fact:positive:user|reside|杭州", sessionId = "s1"),
+            item(2, "event", "住上海", importance = 60).copy(topicKey = "fact:positive:user|reside|上海", sessionId = "s1"),
+            item(3, "event", "住北京", importance = 60).copy(topicKey = "fact:positive:user|reside|北京", sessionId = "s1"),
+        )
+        assertNull(r.pickPromotionTopic(items, threshold = 20), "单值谓语不同取值不得合并")
+    }
+
+    @Test
+    fun sameDayEvidenceCanReachL3() {
+        // 旧口径要求跨 3 天或 ≥4 条，实际不可达；同日 3 条稳定型认知应可升长期。
+        val r = rules()
+        val now = 1_760_000_000_000L
+        val items = (1..3).map {
+            item(it.toLong(), "preference_expression", "用户喜欢冰美式 $it", importance = 70).copy(
+                topicKey = "fact:positive:user|prefer", sessionId = "s1", createdAt = now + it * 60_000L,
+            )
+        }
+        val picked = r.pickPromotionTopic(items, threshold = 3, requireStable = true)
+        assertNotNull(picked, "同日 3 条稳定型证据应可升为长期")
+    }
+
+    @Test
+    fun singleWeakItemNeverBecomesLongTerm() {
+        val r = rules()
+        val only = listOf(
+            item(1, "event", "用户随口提了一句", importance = 30).copy(
+                topicKey = "fact:positive:user|prefer|随口", sessionId = "s1",
+            )
+        )
+        assertNull(r.pickPromotionTopic(only, threshold = 3, requireStable = true), "单条弱证据不得升长期")
+    }
+
 }

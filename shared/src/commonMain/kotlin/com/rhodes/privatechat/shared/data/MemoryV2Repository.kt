@@ -534,6 +534,16 @@ class MemoryV2Repository(private val wrapper: DatabaseWrapper) {
         db.memoryItemsQueries.updateMemoryItemImportance(importance.toLong(), updatedAt, id)
     }
 
+    /**
+     * T47 记忆管理页：手动调整层级（短期/日常/长期）。
+     * 升为长期时过期时间置为最大值（长期不该被清理策略回收）；降级保留原过期时间。
+     */
+    suspend fun updateMemoryItemLevel(id: Long, level: MemoryLevel, updatedAt: Long) = withContext(DatabaseDispatcher.dispatcher) {
+        val existing = db.memoryItemsQueries.getMemoryItemById(id).executeAsOneOrNull()
+        val expiresAt = if (level == MemoryLevel.L3) Long.MAX_VALUE else existing?.expiresAt ?: Long.MAX_VALUE
+        db.memoryItemsQueries.updateMemoryLevel(level.name, expiresAt, updatedAt, id)
+    }
+
     suspend fun updateActiveMemoryExpiry(expiresAt: Long, updatedAt: Long) = withContext(Dispatchers.Default) {
         db.transaction {
             db.memoryItemsQueries.updateActiveMemoryItemExpiry(expiresAt, updatedAt)

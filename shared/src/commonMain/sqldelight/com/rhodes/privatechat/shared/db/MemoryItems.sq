@@ -161,6 +161,11 @@ UPDATE memory_items SET content = ?, updatedAt = ? WHERE id = ?;
 updateMemoryItemImportance:
 UPDATE memory_items SET importance = ?, updatedAt = ? WHERE id = ?;
 
+-- T47 记忆管理页：手动调整层级（短期/日常/长期）。只改层级与过期时间，
+-- 内容与向量索引不动（长期记忆 expiresAt 设为最大值，避免被清理策略回收）。
+updateMemoryLevel:
+UPDATE memory_items SET memoryLevel = ?, expiresAt = ?, updatedAt = ? WHERE id = ?;
+
 clearAllMemoryItemVectorIds:
 UPDATE memory_items SET vectorId = '';
 

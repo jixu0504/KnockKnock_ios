@@ -484,6 +484,11 @@ class SettingsRepository(private val settings: ObservableSettings) {
         get() = getInt("memory_v2_promote_l2_threshold", 10).coerceIn(3, 100)
         set(value) = putInt("memory_v2_promote_l2_threshold", value.coerceIn(3, 100))
 
+    /** L2→L3（长期记忆）组门：同话题的日常认知达到该条数才升长期。 */
+    var memoryV2PromoteL3Threshold: Int
+        get() = getInt("memory_v2_promote_l3_threshold", 3).coerceIn(2, 50)
+        set(value) = putInt("memory_v2_promote_l3_threshold", value.coerceIn(2, 50))
+
     /** Repeated high-importance memories can settle sooner than ordinary memories. */
     var memoryV2ImportantPromotionThreshold: Int
         get() = getInt("memory_v2_important_promotion_threshold", 2).coerceIn(2, 20)

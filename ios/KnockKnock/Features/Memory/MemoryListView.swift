@@ -57,6 +57,8 @@ struct MemoryListView: View {
     @State private var rebuildResult: String?
     /// 行点击 → 详情（用 Button + navigationDestination 替代 List 内 NavigationLink 的系统箭头）
     @State private var selectedMemory: MemoryRecord?
+    /// 手动添加记忆（自定义记忆）表单
+    @State private var showCustomMemory = false
 
     private let pageSize = 30
 
@@ -174,9 +176,18 @@ struct MemoryListView: View {
         .task {
             await reload()
             await refreshHealth()
+            await runLaunchHooksIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .memoryStoreDidChange)) { _ in
             Task { await reload() }
+        }
+        .sheet(isPresented: $showCustomMemory) {
+            CustomMemorySheet {
+                // 保存后按当前筛选重载；若筛掉了新层级，退化为「全部」以免看起来没写进去。
+                if !levelFilter.isEmpty { levelFilter = "" }
+                Task { await reload() }
+            }
+            .environmentObject(environment)
         }
         .knockConfirmDialog(
             isPresented: Binding(
@@ -210,6 +221,44 @@ struct MemoryListView: View {
 
     @State private var searchTask: Task<Void, Never>?
 
+    /// 取证钩子（仅启动参数）：--memory-custom-demo 打开添加表单；--memory-demo-l3 建一条演示长期记忆并切到「长期」。
+    private func runLaunchHooksIfNeeded() async {
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("--memory-custom-demo") {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            showCustomMemory = true
+            return
+        }
+        if args.contains("--memory-demo-l3-clean") {
+            var q = MemoryQuery()
+            q.level = ""
+            q.keyword = "演示：角色习惯清晨跑步"
+            if case .success(let page) = await environment.bridge.loadMemoryPage(offset: 0, limit: 50, query: q) {
+                for item in page.items where item.content.contains("演示：角色习惯清晨跑步") {
+                    _ = await environment.bridge.deleteMemory(id: item.id, sourceTable: item.sourceTable)
+                }
+                SelfTestLog.add("memory demo L3 cleaned count=\(page.items.count)")
+            }
+            await reload()
+            return
+        }
+        guard args.contains("--memory-demo-l3") else { return }
+        guard case .success(let roles) = await environment.bridge.loadRoles(), let role = roles.first else { return }
+        let marker = "演示：角色习惯清晨跑步"
+        _ = await environment.bridge.createMemory(
+            ownerType: "operator",
+            ownerId: role.id,
+            content: marker,
+            level: "L3",
+            importance: 90,
+            explicitPrivate: false,
+            memoryType: "behavior_state"
+        )
+        levelFilter = "L3"
+        await reload()
+        SelfTestLog.add("memory demo L3 ready keyword=\(marker)")
+    }
+
     // MARK: 头部
 
     private var headerPanel: some View {
@@ -221,6 +270,19 @@ struct MemoryListView: View {
                     KnockText(memoryHeaderSummary, role: .caption, color: KnockTokens.textSecondary, lineLimit: 2)
                 }
                 Spacer(minLength: KnockTokens.spacingS)
+                Button {
+                    showCustomMemory = true
+                    SelfTestLog.add("memory mgmt open custom memory sheet")
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .heavy))
+                        .foregroundStyle(KnockTokens.textPrimary)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(KnockTokens.plusCircle))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("添加记忆")
+                .accessibilityIdentifier("memory-add-custom")
             }
         }
     }
@@ -505,6 +567,8 @@ struct MemoryDetailView: View {
     @State private var showDeleteConfirm = false
     @State private var privacy = AppGraphClient.shared.memoryPrivacySettings()
     @State private var sensitiveHit = false
+    /// 详情页层级调整进行中
+    @State private var isChangingLevel = false
 
     init(memoryID: Int64, sourceTable: String = "") {
         self.memoryID = memoryID
@@ -529,6 +593,7 @@ struct MemoryDetailView: View {
                             KnockLoadingPanel("读取记忆…")
                         } else if let detail {
                             contentPanel(detail)
+                            levelPanel(detail)
                             anchorsPanel(detail)
                             privacyPanel(detail)
                             dangerPanel(detail)
@@ -561,6 +626,78 @@ struct MemoryDetailView: View {
             isDestructive: true
         ) {
             Task { await deleteCurrent() }
+        }
+    }
+
+    // MARK: 层级卡（把这条记忆手动定为短期/日常/长期）
+
+    private func levelPanel(_ detail: MemoryDetail) -> some View {
+        KnockPanel {
+            VStack(alignment: .leading, spacing: KnockTokens.spacingS) {
+                HStack(spacing: KnockTokens.spacingXS) {
+                    KnockText("记忆层级", role: .rowTitle, lineLimit: 1)
+                    Spacer(minLength: 0)
+                    KnockBadge(text: detail.record.levelBadgeText, variant: .neutral)
+                }
+                KnockText(
+                    "自动整合会按证据把记忆往上收；你觉得某条本就该当长期认知，也可以在这里直接定层级。",
+                    role: .caption,
+                    color: KnockTokens.textSecondary,
+                    lineSpacing: 2
+                )
+                HStack(spacing: KnockTokens.spacingS) {
+                    levelButton(detail, level: "L1", title: "短期")
+                    levelButton(detail, level: "L2", title: "日常")
+                    levelButton(detail, level: "L3", title: "长期")
+                }
+                .opacity(isChangingLevel ? 0.6 : 1)
+            }
+        }
+    }
+
+    private func levelButton(_ detail: MemoryDetail, level: String, title: String) -> some View {
+        let selected = detail.record.level == level
+        return Button {
+            Task { await changeLevel(detail, to: level) }
+        } label: {
+            KnockText(
+                title,
+                role: .captionStrong,
+                color: selected ? KnockTokens.onElectric : KnockTokens.textPrimary,
+                lineLimit: 1
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: KnockTokens.panelRadiusSmall, style: .continuous)
+                    .fill(selected ? KnockTokens.electric : KnockTokens.row)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isChangingLevel || selected)
+        .accessibilityIdentifier("memory-level-\(level)")
+    }
+
+    private func changeLevel(_ detail: MemoryDetail, to level: String) async {
+        guard !isChangingLevel else { return }
+        isChangingLevel = true
+        defer { isChangingLevel = false }
+        switch await environment.bridge.promoteMemory(
+            id: detail.record.id,
+            sourceTable: detail.record.sourceTable,
+            targetLevel: level
+        ) {
+        case .success(let result):
+            SelfTestLog.add("memory detail change level id=\(detail.record.id) to=\(level) ok=\(result.ok) message=\(result.message)")
+            if result.ok {
+                NotificationCenter.default.post(name: .memoryStoreDidChange, object: nil)
+                await load()
+            } else {
+                message = result.message
+            }
+        case .failure(let error):
+            message = error.message
+            SelfTestLog.add("memory detail change level failed id=\(detail.record.id) error=\(error.message)")
         }
     }
 

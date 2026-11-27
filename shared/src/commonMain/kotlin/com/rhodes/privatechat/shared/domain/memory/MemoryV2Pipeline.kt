@@ -498,7 +498,9 @@ class MemoryV2Pipeline(
 
         val l2Items = repository.getActiveMemoryItemsByLevel(ownerType, ownerId, MemoryLevel.L2, now)
             .filter { it.sourceKind == sourceKind }
-        val l2Topic = parseRules.pickPromotionTopic(l2Items, thresholdL2, requireStable = true)
+        // L3 用独立组门（默认 3 条），不再复用 L1→L2 的 10 条，否则长期记忆实际不可达。
+        val l3Threshold = minOf(thresholdL2, settings.memoryV2PromoteL3Threshold)
+        val l2Topic = parseRules.pickPromotionTopic(l2Items, l3Threshold, requireStable = true)
         if (l2Topic != null && ensureBudget()) {
             val selected = l2Topic.items
             val messages = buildLevelMessages(MemoryV2PromptTemplates.L3, selected)

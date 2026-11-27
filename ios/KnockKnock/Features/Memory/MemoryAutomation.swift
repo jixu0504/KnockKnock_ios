@@ -159,6 +159,57 @@ enum MemoryAutomation {
             check("edit.content", false, "编辑后 detail 读取失败")
         }
 
+        // 5.5 层级调整：日常 → 长期（手动提级，立刻落库、长期不过期）
+        switch await bridge.promoteMemory(id: id, sourceTable: "v2", targetLevel: "L3") {
+        case .success(let result):
+            SelfTestLog.add("memory selftest promote L3 id=\(id) ok=\(result.ok) message=\(result.message)")
+        case .failure(let error):
+            SelfTestLog.add("memory selftest promote L3 FAILED error=\(error.message)")
+        }
+        if let detail = await loadDetail(bridge, id: id, table: "v2") {
+            check("promote.level=L3", detail.record.level == "L3", "level=\(detail.record.level)")
+            var l3Query = MemoryQuery()
+            l3Query.level = "L3"
+            let l3Page = await loadPage(bridge, offset: 0, limit: 200, query: l3Query)
+            check("promote.listedInL3", l3Page?.items.contains(where: { $0.id == id }) == true, "count=\(l3Page?.items.count ?? -1)")
+        } else {
+            check("promote.level=L3", false, "提级后 detail 读取失败")
+        }
+        // 降回日常，确认可逆且不会误删
+        switch await bridge.promoteMemory(id: id, sourceTable: "v2", targetLevel: "L2") {
+        case .success(let result):
+            SelfTestLog.add("memory selftest demote L2 id=\(id) ok=\(result.ok) message=\(result.message)")
+        case .failure(let error):
+            SelfTestLog.add("memory selftest demote L2 FAILED error=\(error.message)")
+        }
+        if let detail = await loadDetail(bridge, id: id, table: "v2") {
+            check("promote.demoteBack=L2", detail.record.level == "L2", "level=\(detail.record.level)")
+        }
+
+        // 5.6 自定义记忆：直接写成长期（用户在添加表单里选「长期」的等价路径）
+        let directL3Marker = "\(marker)直接长期"
+        switch await bridge.createMemory(
+            ownerType: "operator",
+            ownerId: operatorId,
+            content: "\(directL3Marker)：角色坚持每天清晨跑步。",
+            level: "L3",
+            importance: 90,
+            explicitPrivate: false,
+            memoryType: "behavior_state"
+        ) {
+        case .success(let result):
+            SelfTestLog.add("memory selftest createL3 id=\(result.id) ok=\(result.ok) message=\(result.message)")
+            if result.ok, let detail = await loadDetail(bridge, id: result.id, table: "v2") {
+                check("custom.createL3", detail.record.level == "L3", "level=\(detail.record.level)")
+                check("custom.createL3.source", detail.record.sourceKind == "MANUAL_MEMORY", "source=\(detail.record.sourceKind)")
+                _ = await bridge.deleteMemory(id: result.id, sourceTable: "v2")
+            } else {
+                check("custom.createL3", false, "创建长期记忆失败")
+            }
+        case .failure(let error):
+            check("custom.createL3", false, "error=\(error.message)")
+        }
+
         // 6. 隐私设置读写（settings 键语义）
         let privacyBefore = bridge.memoryPrivacySettings()
         SelfTestLog.add("memory selftest privacy keys memory_v2=\(privacyBefore.memoryV2Enabled) distinguish=\(privacyBefore.distinguishPrivateMemory) sourceAware=\(privacyBefore.sourceAwareMemoryEnabled) globalPublic=\(privacyBefore.globalPublicMemoryEnabled) sensitiveWords=\(privacyBefore.sensitiveWords.count) policyLines=\(privacyBefore.policyLines.count)")

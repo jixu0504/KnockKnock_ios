@@ -297,7 +297,7 @@ internal class MemoryParseRules(
         if (items.isEmpty()) return null
         val grouped = items
             .filter { it.content.isNotBlank() && it.importance >= 20 }
-            .groupBy { groupKeyOf(it.topicKey.ifBlank { topicKey(it.memoryType, it.content) }) }
+            .groupBy { consolidationKeyOf(it.topicKey.ifBlank { topicKey(it.memoryType, it.content) }) }
             .mapValues { (_, values) -> values.sortedByDescending { promotionItemScore(it) } }
             .filterValues { values -> values.size >= requiredGroupSize(threshold, values) }
         if (grouped.isEmpty()) return null
@@ -319,7 +319,8 @@ internal class MemoryParseRules(
                 it.memoryType == "agreement_commitment" || it.memoryType == "care_reminder"
         }
         val sessions = values.map { it.sessionId }.filter { it.isNotBlank() }.distinct().size
-        if (sessions < 2 && !strong) return Int.MAX_VALUE
+        // 单会话也能形成认知，但要求同话题证据够厚（≥3 条）；只有 1~2 条仍不许合并。
+        if (sessions < 2 && !strong && values.size < STRUCTURED_GROUP_THRESHOLD) return Int.MAX_VALUE
         return if (strong) settings.memoryV2ImportantPromotionThreshold else STRUCTURED_GROUP_THRESHOLD
     }
 
@@ -334,12 +335,21 @@ internal class MemoryParseRules(
         return item.importance * 100L + recency
     }
 
+    /**
+     * L3 稳定门：认知要「够稳」才升长期。
+     *
+     * 旧口径要求跨 3 天或 ≥4 条证据，实际使用中同一话题很难在几天内重复攒够，
+     * 导致长期记忆恒为 0。现口径改为「类型稳定或有强证据」+「跨天、或证据 ≥3 条、或强证据」，
+     * 即同一天内 3 条同话题的稳定型认知也可以升为长期。
+     */
     internal fun isStableEnoughForL3(items: List<MemoryItem>): Boolean {
-        if (items.size < 3 && items.none { it.importance >= 85 }) return false
+        val strongEvidence = items.any { it.importance >= 85 }
+        if (items.size < 2 && !strongEvidence) return false
         val times = items.map { it.createdAt }.filter { it > 0 }
         val span = if (times.size >= 2) (times.maxOrNull() ?: 0L) - (times.minOrNull() ?: 0L) else 0L
         val stableType = items.any { it.memoryType in stableMemoryTypes }
-        return stableType && (span >= 3L * 86_400_000L || items.size >= 4 || items.any { it.importance >= 90 })
+        return (stableType || strongEvidence) &&
+            (span >= L3_MIN_SPAN_MS || items.size >= L3_MIN_EVIDENCE || strongEvidence)
     }
 
     internal fun topicKey(memoryType: String, content: String): String {
@@ -435,6 +445,24 @@ internal class MemoryParseRules(
         /** 无论是否结构化都返回可用于分组的键；非结构化保持原样。 */
         internal fun groupKeyOf(topicKey: String): String = parseTopicKey(topicKey)?.groupKey ?: topicKey
 
+        /**
+         * 整合（L1→L2→L3）分组键：结构化事实按「极性 + 主语 + 谓语」聚合，不区分宾语。
+         *
+         * 动机：事实键为了精确召回会带上宾语（`user|prefer|铃身上的香气` / `user|prefer|铃的身体`），
+         * 逐条几乎不会重复，旧口径下同组永远攒不满，整合永不触发。
+         * 但单值谓语（居住地/工作/生日/年龄）换值代表「事实变了」而不是「同类认知更多」，
+         * 因此这些谓语仍保留宾语，避免把「住杭州」「住上海」并成一条。
+         */
+        internal fun consolidationKeyOf(topicKey: String): String {
+            val parts = parseTopicKey(topicKey) ?: return topicKey
+            return if (MemoryRelationRules.isFunctional(parts.predicate)) {
+                parts.groupKey
+            } else {
+                // 宾语位置写「汇总」：保持三段式键格式，下游 parseTopicKey / 关系判定仍可解析。
+                "$STRUCTURED_TOPIC_PREFIX${parts.polarity}:${parts.subject}|${parts.predicate}|$CONSOLIDATION_OBJECT"
+            }
+        }
+
         /** 归并基座；非结构化返回 null。 */
         internal fun factBaseOf(topicKey: String): String? = parseTopicKey(topicKey)?.base
 
@@ -447,6 +475,11 @@ internal class MemoryParseRules(
 
         const val STRUCTURED_TOPIC_PREFIX = "fact:"
         const val STRUCTURED_GROUP_THRESHOLD = 3
+        /** L3 稳定门的跨天阈值（1 天；旧口径 3 天过严）。 */
+        const val L3_MIN_SPAN_MS = 86_400_000L
+        const val L3_MIN_EVIDENCE = 3
+        /** 整合键里代表「同类汇总」的宾语占位。 */
+        const val CONSOLIDATION_OBJECT = "汇总"
         /** 谓词同义归一（顺序敏感：否定优先于肯定）。 */
         val PREDICATE_SYNONYMS: List<Pair<String, List<String>>> = listOf(
             "dislike" to listOf("讨厌", "不喜欢", "受不了", "反感", "戒了"),

@@ -668,6 +668,7 @@ class ChatRepository(private val wrapper: DatabaseWrapper, settings: SettingsRep
     suspend fun updateMemoryItemVectorId(id: Long, vectorId: String, updatedAt: Long) = memoryV2.updateMemoryItemVectorId(id, vectorId, updatedAt)
     suspend fun updateMemoryItemContent(id: Long, content: String, updatedAt: Long) = memoryV2.updateMemoryItemContent(id, content, updatedAt)
     suspend fun updateMemoryItemImportance(id: Long, importance: Int, updatedAt: Long) = memoryV2.updateMemoryItemImportance(id, importance, updatedAt)
+    suspend fun updateMemoryItemLevel(id: Long, level: MemoryLevel, updatedAt: Long) = memoryV2.updateMemoryItemLevel(id, level, updatedAt)
     suspend fun updateActiveMemoryExpiry(expiresAt: Long, updatedAt: Long) = memoryV2.updateActiveMemoryExpiry(expiresAt, updatedAt)
     suspend fun restoreExpiredMemoryItems(expiresAt: Long, updatedAt: Long) = memoryV2.restoreExpiredMemoryItems(expiresAt, updatedAt)
     suspend fun clearAllMemoryItemVectorIds() = memoryV2.clearAllMemoryItemVectorIds()
