@@ -90,6 +90,14 @@ class MemoryFactRepository(private val db: RhodesDatabase) {
         }
     }
 
+    /** T78：单值谓词换值 → 旧事实 superseded 并关闭有效期。 */
+    suspend fun markSuperseded(memoryIds: Collection<Long>, now: Long): Int = withContext(Dispatchers.Default) {
+        val ids = memoryIds.distinct()
+        if (ids.isEmpty()) return@withContext 0
+        queries.supersedeFactsByIds(now, now, ids)
+        ids.size
+    }
+
     suspend fun countSuspected(ownerType: String, ownerId: String): Long = withContext(Dispatchers.Default) {
         queries.countSuspectedFacts(ownerType, ownerId).executeAsOne()
     }

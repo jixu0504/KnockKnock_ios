@@ -372,7 +372,8 @@ internal class A7MemoryWiring(
     private val repo: ChatRepository,
     dbWrapper: DatabaseWrapper,
     private val settings: SettingsRepository,
-) {
+){
+    private val providerResolver = com.rhodes.privatechat.shared.network.ProviderConfigResolver(settings)
     val aiService = AIService(deepseekThinking = { settings.deepseekThinkingEnabled })
     private val vectorService = MemoryVectorService(settings, LocalVectorStoreGateway(dbWrapper))
     val memoryV2 = MemoryV2Pipeline(
@@ -381,6 +382,7 @@ internal class A7MemoryWiring(
         aiService = aiService,
         memoryVectorService = vectorService,
         userNicknameProvider = { settings.userName.ifBlank { "绳匠" } },
+        apiKeyProvider = { providerResolver.apiKeyFor(settings.provider.ifBlank { "deepseek" }) },
     )
     private val knowledgeIndexService = KnowledgeBaseIndexService(repo.knowledgeBases, vectorService, settings)
     val knowledgeBase = KnowledgeBaseService(

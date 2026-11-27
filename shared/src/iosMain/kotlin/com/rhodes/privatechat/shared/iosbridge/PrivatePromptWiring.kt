@@ -55,6 +55,7 @@ internal class PrivatePromptWiring(
     dbWrapper: DatabaseWrapper,
     private val settings: SettingsRepository,
 ) {
+    private val providerResolver = com.rhodes.privatechat.shared.network.ProviderConfigResolver(settings)
     private val codec = DefaultReplyCodec()
 
     /** 真实 AIService（记忆 L1/L2/L3 提取用；与 Android `sharedUtils.aiService` 同实现）。 */
@@ -70,6 +71,7 @@ internal class PrivatePromptWiring(
         aiService = aiService,
         memoryVectorService = vectorService,
         userNicknameProvider = { userNickname() },
+        apiKeyProvider = { providerResolver.apiKeyFor(settings.provider.ifBlank { "deepseek" }) },
     )
 
     private val knowledgeIndexService = KnowledgeBaseIndexService(repo.knowledgeBases, vectorService, settings)

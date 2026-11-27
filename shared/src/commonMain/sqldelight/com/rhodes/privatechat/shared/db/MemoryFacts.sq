@@ -59,6 +59,12 @@ UPDATE memory_facts SET conflictStatus = 'confirmed', updatedAt = ? WHERE memory
 supersedeFact:
 UPDATE memory_facts SET conflictStatus = 'superseded', validTo = ?, updatedAt = ? WHERE memoryId = ?;
 
+getSupersededMemoryIds:
+SELECT memoryId FROM memory_facts WHERE conflictStatus = 'superseded' AND memoryId IN ?;
+
+supersedeFactsByIds:
+UPDATE memory_facts SET conflictStatus = 'superseded', validTo = ?, updatedAt = ? WHERE memoryId IN ?;
+
 listSuspectedFacts:
 SELECT memoryId FROM memory_facts
 WHERE ownerType = ? AND ownerId = ? AND conflictStatus = 'suspected'

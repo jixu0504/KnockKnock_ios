@@ -59,6 +59,12 @@ WHERE ownerType = ? AND ownerId = ? AND status = 'active' AND expiresAt > ? AND 
 ORDER BY createdAt DESC
 LIMIT ?;
 
+getActiveStructuredTopicRefs:
+SELECT id, topicKey, createdAt FROM memory_items
+WHERE ownerType = ? AND ownerId = ? AND status = 'active' AND expiresAt > ? AND topicKey LIKE 'fact:%'
+ORDER BY createdAt DESC
+LIMIT ?;
+
 getActiveMemoryItemsByIds:
 SELECT * FROM memory_items
 WHERE id IN ? AND status = 'active' AND expiresAt > ?

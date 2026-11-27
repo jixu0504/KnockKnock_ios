@@ -127,6 +127,30 @@ class RoleBridge internal constructor(
         }
     }
 
+    /**
+     * 测试专用：创建一条独立会话（不改变用户「+」入口语义）。
+     * 仅由 `--memory-e2e` 启动参数调用，用于跨会话记忆/晋升测试。
+     */
+    fun createTestSession(operatorId: String, sessionId: String, onResult: (String?, String?) -> Unit) {
+        workScope.launch {
+            try {
+                val operator = chatRepo.operators.getOperator(operatorId)
+                    ?: throw IllegalStateException("角色不存在：$operatorId")
+                chatRepo.insertSession(
+                    ChatSession(
+                        id = sessionId,
+                        operatorId = operator.id,
+                        operatorName = operator.name,
+                        avatarUri = operator.avatarUri,
+                    ),
+                )
+                mainScope.launch { onResult(sessionId, null) }
+            } catch (t: Throwable) {
+                mainScope.launch { onResult(null, t.message ?: "创建测试会话失败") }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // 内部：一次性载入 operators / sessions / 印象，避免 N+1 查询
     // ------------------------------------------------------------------

@@ -213,12 +213,22 @@ struct ImpressionsView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel("管理已拒绝的印象（\(snapshot.rejectedCount) 条）")
                     }
-                    KnockText(
-                        snapshot.note,
-                        role: .caption,
-                        color: KnockTokens.textTertiary,
-                        lineSpacing: 3
-                    )
+                    if !snapshot.usesImpressionTable {
+                        // 新印象表还没有数据时页面回退到记忆条目，必须明说，否则看起来像「印象已形成」。
+                        KnockText(
+                            "长期印象还在形成中：这里暂时展示的是已记录的记忆条目。",
+                            role: .caption,
+                            color: KnockTokens.textSecondary,
+                            lineSpacing: 3
+                        )
+                    } else {
+                        KnockText(
+                            snapshot.note,
+                            role: .caption,
+                            color: KnockTokens.textTertiary,
+                            lineSpacing: 3
+                        )
+                    }
                     if snapshot.legacyCount > 0 {
                         KnockText(
                             "含 \(snapshot.legacyCount) 条早期记录",

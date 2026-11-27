@@ -96,22 +96,35 @@ class MemoryRankFusionTest {
     }
 
     @Test
-    fun sameTopicInjectionIsCappedAtTwo() = runBlocking {
+    fun sameFactInjectionIsCappedAtTwo() = runBlocking {
+        // 上限按「同一事实」（主体|谓词|客体）计算，不是按谓词：
+        // 若按主体+谓词，所有「不喜欢」会挤成一组，忌口类事实再也注入不了（58 轮实测）。
+        val first = memory(1, "用户喜欢喝美式咖啡", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
+        val second = memory(2, "用户喜欢喝美式咖啡，不加糖", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
+        val third = memory(3, "用户喜欢喝美式咖啡，每天一杯", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
+        val keys = mapOf(
+            1L to "fact:positive:用户|prefer|美式咖啡",
+            2L to "fact:positive:用户|prefer|美式咖啡|q=不加糖",
+            3L to "fact:positive:用户|prefer|美式咖啡|q=每天一杯",
+        )
+        val block = engine(listOf(first, second, third), lexicalHits = listOf(first, second, third), factKeys = keys)
+            .buildPrivateChatMemoryContext("op1", "我喜欢喝什么咖啡", allowedSources = setOf("PRIVATE_CHAT"))
+
+        val lines = block.lines().filter { it.startsWith("- ") }
+        assertEquals(1, lines.size, "同一事实只保留一条（父子去重优先于上限），实际：$block")
+        assertTrue(block.contains("美式咖啡"), "应保留该事实的一条：$block")
+    }
+
+    @Test
+    fun differentObjectsAreNotCapped() = runBlocking {
         val seaside = memory(1, "用户喜欢去海边", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
         val hiking = memory(2, "用户喜欢去爬山", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
-        val coffee = memory(3, "用户喜欢喝咖啡", similarity = 0.5, lexicalScore = 4.0, type = "preference_expression")
         val keys = mapOf(
             1L to "fact:positive:用户|prefer|海边",
             2L to "fact:positive:用户|prefer|爬山",
-            3L to "fact:positive:用户|prefer|咖啡",
         )
-        val block = engine(listOf(seaside, hiking, coffee), lexicalHits = listOf(seaside, hiking, coffee), factKeys = keys)
+        val block = engine(listOf(seaside, hiking), lexicalHits = listOf(seaside, hiking), factKeys = keys)
             .buildPrivateChatMemoryContext("op1", "最近我喜欢做什么", allowedSources = setOf("PRIVATE_CHAT"))
-
-        val lines = block.lines().filter { it.startsWith("- ") }
-        assertEquals(2, lines.size, "同一主题最多保留 2 条，实际：$block")
-        assertTrue(lines[0].contains("海边"), "保持已选顺序，第一条应是海边：$block")
-        assertTrue(lines[1].contains("爬山"), "保持已选顺序，第二条应是爬山：$block")
-        assertFalse(block.contains("咖啡"), "第三条同主题候选应被上限裁掉：$block")
+        assertTrue(block.contains("海边") && block.contains("爬山"), "不同偏好都必须注入：$block")
     }
 }

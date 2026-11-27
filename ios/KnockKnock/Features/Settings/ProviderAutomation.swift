@@ -20,6 +20,27 @@ enum ProviderAutomation {
     static let isEnabled = ProcessInfo.processInfo.arguments.contains("--provider-selftest")
     private static var didRun = false
 
+    private static func configureFromFile(environment: AppEnvironment) async {
+        let bridge = environment.bridge
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("provider-configure.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base = object["base"] as? String,
+              let model = object["model"] as? String,
+              let key = object["key"] as? String
+        else {
+            SelfTestLog.add("provider configure FAILED: missing provider-configure.json")
+            return
+        }
+        let save = bridge.saveProviderConfig(
+            providerId: "custom", model: model, customUrl: base, apiKey: key, temperature: 0.95
+        )
+        let status = bridge.providerStatus()
+        SelfTestLog.add("provider configure save='\(save)' mode=\(status.mode) keyConfigured=\(status.keyConfigured) summary=\(status.summary)")
+        try? FileManager.default.removeItem(at: url)
+    }
+
     private static func argValue(_ flag: String, default fallback: String) -> String {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return fallback }
@@ -27,6 +48,14 @@ enum ProviderAutomation {
     }
 
     static func runIfNeeded(environment: AppEnvironment, router: AppRouter) async {
+        // 测试专用：从 App 沙盒 Documents/provider-configure.json 读取供应商配置并保存，
+        // 避免把 Key 写进仓库或命令行参数。普通用户路径不可达。
+        if ProcessInfo.processInfo.arguments.contains("--provider-configure-file") {
+            guard !didRun else { return }
+            didRun = true
+            await configureFromFile(environment: environment)
+            return
+        }
         guard isEnabled, !didRun else { return }
         didRun = true
         SelfTestLog.add("=== provider selftest start ===")

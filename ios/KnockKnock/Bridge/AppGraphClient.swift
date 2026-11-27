@@ -457,6 +457,22 @@ final class AppGraphClient {
     }
 
     /// 新建/复用会话：SessionRepository.getOrCreateSession 语义，成功返回 sessionId。
+    /// 测试专用：创建独立会话（--memory-e2e 跨会话测试用）。
+    func createTestSession(operatorId: String, sessionId: String) async -> Result<String, BridgeError> {
+        await withCheckedContinuation { continuation in
+            graph.roles().createTestSession(operatorId: operatorId, sessionId: sessionId) { sessionId, error in
+                assertMainQueue()
+                if let error {
+                    continuation.resume(returning: .failure(BridgeError(message: error)))
+                } else if let sessionId {
+                    continuation.resume(returning: .success(sessionId))
+                } else {
+                    continuation.resume(returning: .failure(BridgeError(message: "创建测试会话失败")))
+                }
+            }
+        }
+    }
+
     func startChat(operatorId: String) async -> Result<String, BridgeError> {
         await withCheckedContinuation { continuation in
             graph.roles().startChat(operatorId: operatorId) { sessionId, error in

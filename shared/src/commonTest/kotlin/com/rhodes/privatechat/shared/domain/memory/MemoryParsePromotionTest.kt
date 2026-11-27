@@ -44,6 +44,35 @@ class MemoryParsePromotionTest {
     private fun json(vararg objects: String): String = objects.joinToString(",", "[", "]")
 
     @Test
+    fun qualifierVariantsFormOnePromotionGroup() {
+        // 58 轮实测：三句「喜欢美式咖啡」被模型写成 3 个不同键，永远凑不满组门。
+        val l1 = listOf(
+            item(1, type = "preference_expression", content = "喜欢美式咖啡不加糖", importance = 60).copy(
+                topicKey = "fact:positive:user|prefer|美式咖啡不加糖", sessionId = "s1",
+            ),
+            item(2, type = "preference_expression", content = "每天一杯美式", importance = 60).copy(
+                topicKey = "fact:positive:user|prefer|美式咖啡|q=每天一杯", sessionId = "s2",
+            ),
+            item(3, type = "preference_expression", content = "冰美式冬天也喝", importance = 60).copy(
+                topicKey = "fact:positive:user|prefer|美式咖啡|q=不加糖", sessionId = "s3",
+            ),
+        )
+        val topic = rules().pickPromotionTopic(l1, threshold = 20)
+        assertNotNull(topic, "归并后应达到结构化组门 3 条")
+        assertEquals("fact:positive:user|prefer|美式咖啡", topic!!.topicKey)
+        assertEquals(3, topic.items.size)
+    }
+
+    @Test
+    fun livingPlaceChangeDoesNotFormPromotionGroup() {
+        val l1 = listOf(
+            item(1, content = "住杭州", importance = 60).copy(topicKey = "fact:positive:user|reside|杭州", sessionId = "s1"),
+            item(2, content = "住上海", importance = 60).copy(topicKey = "fact:positive:user|reside|上海", sessionId = "s2"),
+        )
+        assertNull(rules().pickPromotionTopic(l1, threshold = 20), "不同取值不应合并成一条事实")
+    }
+
+    @Test
     fun schemaFieldsAndForcedSourcePrivacyMatchOracle() {
         val r = rules()
         val parsed = r.parseMemoryItems(

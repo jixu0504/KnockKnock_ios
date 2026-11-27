@@ -659,19 +659,26 @@ struct MemoryDetailView: View {
                     KnockText("来源", role: .sectionTitle, lineLimit: 1)
                     Spacer(minLength: 0)
                     KnockText(
-                        "\(detail.sourceAnchors.count) 条来源" +
+                        "\(detail.sourceAnchors.filter { $0.type != "等级别名" && $0.type != "会话" && $0.type != "来源引用" }.count) 条来源" +
                         (detail.policyAnchors.isEmpty ? "" : " · \(detail.policyAnchors.count) 条补充"),
                         role: .caption,
                         color: KnockTokens.textTertiary,
                         lineLimit: 1
                     )
                 }
-                ForEach(detail.sourceAnchors) { anchor in
+                ForEach(detail.sourceAnchors.filter { anchor in
+                    anchor.type != "等级别名" && anchor.type != "会话" && anchor.type != "来源引用"
+                }) { anchor in
                     HStack(alignment: .top, spacing: KnockTokens.spacingS) {
                         KnockBadge(text: anchor.type, variant: .neutral)
                             .frame(width: 64, alignment: .leading)
-                        KnockText(anchor.content, role: .caption, color: KnockTokens.textPrimary, lineSpacing: 2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        KnockText(
+                            anchor.type == "类型" ? detail.record.typeText : anchor.content,
+                            role: .caption,
+                            color: KnockTokens.textPrimary,
+                            lineSpacing: 2
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, KnockTokens.spacingXXS)
                 }

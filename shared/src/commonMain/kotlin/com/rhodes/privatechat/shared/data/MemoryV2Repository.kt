@@ -208,6 +208,23 @@ class MemoryV2Repository(private val wrapper: DatabaseWrapper) {
         limit: Int,
     ): List<Long> = entityRepository.findMemoryIdsByNames(ownerType, ownerId, normalizedNames, limit)
 
+    /** 被取代的旧 memory_items 归档（列表/召回都按 active 过滤，实现「旧值不再当现状」）。 */
+    suspend fun archiveSupersededMemoryItems(memoryIds: List<Long>, now: Long): Int =
+        withContext(Dispatchers.Default) {
+            var archived = 0
+            memoryIds.forEach { id ->
+                runCatching {
+                    db.memoryItemsQueries.archiveMemoryItem(now, id)
+                    archived++
+                }
+            }
+            archived
+        }
+
+    /** T78：单值事实换值后关闭旧事实有效期（不删除记忆）。 */
+    suspend fun supersedeMemoryFacts(memoryIds: List<Long>, now: Long): Int =
+        factRepository.markSuperseded(memoryIds, now)
+
     /** T78：确认冲突（新事实成立），旧事实关闭有效期；供后续确认入口调用。 */
     suspend fun confirmMemoryFactConflict(newMemoryId: Long, oldMemoryId: Long, now: Long) =
         factRepository.confirmConflict(newMemoryId, oldMemoryId, now)
@@ -449,6 +466,24 @@ class MemoryV2Repository(private val wrapper: DatabaseWrapper) {
         db.memoryItemsQueries.getActiveMemoryTopicRefs(ownerType, ownerId, now, topicKeys, limit.toLong())
             .executeAsList()
             .map { it.id to it.topicKey }
+    }
+
+    /** 结构化事实行的 (id, topicKey, createdAt)，用于按归并基座判定关系（EXACT 键匹配会漏掉限定词差异）。 */
+    suspend fun getActiveStructuredTopicRefs(
+        ownerType: String,
+        ownerId: String,
+        now: Long,
+        limit: Int,
+    ): List<StructuredTopicRef> = withContext(Dispatchers.Default) {
+        db.memoryItemsQueries.getActiveStructuredTopicRefs(ownerType, ownerId, now, limit.toLong())
+            .executeAsList()
+            .map { StructuredTopicRef(it.id, it.topicKey, it.createdAt) }
+    }
+
+    /** 已被新事实取代的记忆 id（召回层据此不再当作现状）。 */
+    suspend fun supersededMemoryIds(memoryIds: List<Long>): Set<Long> = withContext(Dispatchers.Default) {
+        if (memoryIds.isEmpty()) return@withContext emptySet()
+        db.memoryFactsQueries.getSupersededMemoryIds(memoryIds).executeAsList().toSet()
     }
 
     suspend fun insertMemoryRelation(

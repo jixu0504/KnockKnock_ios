@@ -186,6 +186,8 @@ internal class MemoryParseRules(
         val polarity: String,
         val qualifiers: List<String>,
         val factKey: String,
+        /** 归并键：去掉限定词与客体尾部修饰，用于晋升分组与冲突判定。 */
+        val groupKey: String = factKey,
     )
 
     internal fun structuredFactOf(rawJson: String): StructuredFact? = runCatching {
@@ -213,7 +215,8 @@ internal class MemoryParseRules(
             append("fact:").append(polarity).append(':').append(subject).append('|').append(predicate).append('|').append(objectText)
             if (qualifiers.isNotEmpty()) append("|q=").append(qualifiers.joinToString(","))
         }
-        return StructuredFact(subject, predicate, objectText, polarity, qualifiers, factKey)
+        val groupKey = "$STRUCTURED_TOPIC_PREFIX$polarity:$subject|$predicate|${objectHeadOf(objectText)}"
+        return StructuredFact(subject, predicate, objectText, polarity, qualifiers, factKey, groupKey)
     }
 
     private fun structuredTopicKey(obj: JsonObject): String? = structuredFactOf(obj)?.factKey
@@ -294,7 +297,7 @@ internal class MemoryParseRules(
         if (items.isEmpty()) return null
         val grouped = items
             .filter { it.content.isNotBlank() && it.importance >= 20 }
-            .groupBy { it.topicKey.ifBlank { topicKey(it.memoryType, it.content) } }
+            .groupBy { groupKeyOf(it.topicKey.ifBlank { topicKey(it.memoryType, it.content) }) }
             .mapValues { (_, values) -> values.sortedByDescending { promotionItemScore(it) } }
             .filterValues { values -> values.size >= requiredGroupSize(threshold, values) }
         if (grouped.isEmpty()) return null
@@ -392,6 +395,51 @@ internal class MemoryParseRules(
 
     internal companion object {
         /** 事实各部分的归一化口径：小写、去标点空白、最多 24 字符。 */
+        /**
+         * 客体头部归一：剥掉「不加糖 / 不要辣 / 少冰」这类尾部修饰。
+         *
+         * 模型常把限定词写进客体（`美式咖啡不加糖`、`美式咖啡` + `q=不加糖`），不归一就永远凑不满
+         * 晋升组门（实测 3 句「喜欢美式」被拆成 3 个键，L2/印象无法形成）。只剥尾部短修饰，
+         * 主体名词保持原样；剥完不足 2 字则回退原文，避免把客体削空。
+         */
+        internal fun objectHeadOf(objectText: String): String {
+            val match = TRAILING_MODIFIER.find(objectText) ?: return objectText
+            val head = objectText.take(objectText.length - match.value.length)
+            return if (head.length >= 2) head else objectText
+        }
+
+        /** `fact:<polarity>:<subject>|<predicate>|<object>[|q=…]` 的解析结果。 */
+        internal data class TopicKeyParts(
+            val polarity: String,
+            val subject: String,
+            val predicate: String,
+            val objectHead: String,
+        ) {
+            /** 去掉极性的归并基座（同基座才能判定 supports / contradicts / supersedes）。 */
+            val base: String get() = "$subject|$predicate|$objectHead"
+            val groupKey: String get() = "$STRUCTURED_TOPIC_PREFIX$polarity:$base"
+        }
+
+        internal fun parseTopicKey(topicKey: String): TopicKeyParts? {
+            if (!topicKey.startsWith(STRUCTURED_TOPIC_PREFIX)) return null
+            val rest = topicKey.removePrefix(STRUCTURED_TOPIC_PREFIX)
+            val colon = rest.indexOf(':')
+            if (colon <= 0 || colon >= rest.length - 1) return null
+            val polarity = rest.substring(0, colon).trim()
+            val parts = rest.substring(colon + 1).split('|')
+            if (polarity.isBlank()) return null
+            if (parts.size < 3 || parts[0].isBlank() || parts[1].isBlank() || parts[2].isBlank()) return null
+            return TopicKeyParts(polarity, parts[0], parts[1], objectHeadOf(parts[2]))
+        }
+
+        /** 无论是否结构化都返回可用于分组的键；非结构化保持原样。 */
+        internal fun groupKeyOf(topicKey: String): String = parseTopicKey(topicKey)?.groupKey ?: topicKey
+
+        /** 归并基座；非结构化返回 null。 */
+        internal fun factBaseOf(topicKey: String): String? = parseTopicKey(topicKey)?.base
+
+        private val TRAILING_MODIFIER = Regex("(不加|不要|没有|加|少|多)[^不加不要没有]{0,4}$")
+
         internal fun normalizeFactPart(raw: String?): String = raw.orEmpty()
             .lowercase()
             .filter { it.isLetterOrDigit() }

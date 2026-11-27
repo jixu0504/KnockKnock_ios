@@ -16,6 +16,10 @@ enum MemoryAutomation {
     private static var failed = 0
 
     static func runIfNeeded(environment: AppEnvironment) async {
+        if ProcessInfo.processInfo.arguments.contains("--memory-e2e") {
+            await MemoryE2EAutomation.run(environment: environment)
+            return
+        }
         guard isEnabled, !didRun else { return }
         didRun = true
 
@@ -257,6 +261,109 @@ enum MemoryAutomation {
         switch await bridge.loadMemoryDetail(id: id, sourceTable: table) {
         case .success(let detail): return detail
         case .failure: return nil
+        }
+    }
+}
+
+
+// MARK: - 记忆系统 50+ 轮端到端自动化（仅 --memory-e2e）
+
+/// 读取 Documents/memory-e2e.json（`sessions` 为二维消息数组），逐会话发送并等待回复。
+/// 供模拟器/真机回归使用；普通启动不可达。日志写 Documents/memory-e2e.log。
+@MainActor
+enum MemoryE2EAutomation {
+    private static let logURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("memory-e2e.log")
+
+    static func run(environment: AppEnvironment) async {
+        let bridge = environment.bridge
+        let stamp = Int(Date().timeIntervalSince1970)
+        append("=== memory e2e start stamp=\(stamp) ===")
+
+        guard let doc = try? Data(contentsOf: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("memory-e2e.json")),
+              let object = try? JSONSerialization.jsonObject(with: doc) as? [String: Any],
+              let sessions = object["sessions"] as? [[String]]
+        else {
+            append("MEMORY_E2E_DONE success=0 fail=0 no-script")
+            return
+        }
+        var operatorId = (object["operatorId"] as? String) ?? ""
+        if operatorId.isEmpty {
+            if case .success(let roles) = await bridge.loadRoles(), let first = roles.first {
+                operatorId = first.id
+            }
+        }
+        append("operator=\(operatorId) sessions=\(sessions.count) messages=\(sessions.reduce(0) { $0 + $1.count })")
+
+        var success = 0
+        var failed = 0
+        for (index, messages) in sessions.enumerated() {
+            let sessionId = "session_e2e_\(operatorId)_\(stamp)_\(index)"
+            switch await bridge.createTestSession(operatorId: operatorId, sessionId: sessionId) {
+            case .failure(let error):
+                append("session \(index) create FAILED \(error.message)")
+                failed += messages.count
+                continue
+            case .success:
+                break
+            }
+            append("session \(index) id=\(sessionId) messages=\(messages.count)")
+            for (turn, text) in messages.enumerated() {
+                let reply = await sendAndWait(bridge: bridge, sessionId: sessionId, text: text)
+                if let reply, reply.ok {
+                    success += 1
+                    append("OK s\(index)t\(turn) demo=\(reply.isDemo) user=\(text.prefix(60)) ai=\(reply.text.prefix(160))")
+                } else {
+                    failed += 1
+                    append("FAIL s\(index)t\(turn) user=\(text.prefix(60)) err=\(reply?.error ?? "timeout")")
+                }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+            }
+        }
+        append("MEMORY_E2E_DONE success=\(success) fail=\(failed) total=\(success + failed)")
+    }
+
+    private static func sendAndWait(
+        bridge: AppGraphClient,
+        sessionId: String,
+        text: String
+    ) async -> ChatRoundResult? {
+        await withCheckedContinuation { continuation in
+            var resumed = false
+            let handle = bridge.sendChat(
+                sessionId: sessionId,
+                text: text,
+                onDelta: { _ in },
+                onDone: { result in
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: result)
+                }
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+                guard !resumed else { return }
+                resumed = true
+                handle.cancel()
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+
+    private static func append(_ line: String) {
+        SelfTestLog.add(line)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let text = "[\(formatter.string(from: Date()))] \(line)\n"
+        if let data = text.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path),
+               let handle = try? FileHandle(forWritingTo: logURL) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: logURL)
+            }
         }
     }
 }

@@ -68,6 +68,8 @@ class MemoryV2Pipeline(
     private val memoryVectorService: MemoryVectorService? = null,
     private val userNicknameProvider: () -> String,
     private val clock: Clock = Clock.System,
+    /** 记忆抽取用的 API Key：iOS 传 Keychain 解析器；默认沿用 settings 明文（Android/测试）。 */
+    private val apiKeyProvider: () -> String = { settings.apiKey },
 ) {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -101,7 +103,7 @@ class MemoryV2Pipeline(
         }
         return try {
             val result = aiService.chat(
-                settings.apiKey, messages, settings.provider, settings.modelName, settings.customUrl,
+                apiKeyProvider(), messages, settings.provider, settings.modelName, settings.customUrl,
                 temperature = settings.aiTemperature, requestType = requestType
             )
             MemoryDiagnostics.log("AI/$requestType/响应", "记忆模型请求成功\n耗时=${startedAt.elapsedNow().inWholeMilliseconds}ms\n输入Token=${result.inputTokens}\n输出Token=${result.outputTokens}\n输出字符=${result.content.length}")
@@ -141,6 +143,12 @@ class MemoryV2Pipeline(
     suspend fun ingestPrivateChat(sessionId: String, operatorId: String, operatorName: String, messages: List<ChatMessage>, currentRound: Int): Boolean {
         if (!settings.memoryV2Enabled || !settings.privateMemoryGenerationEnabled) return false
         if (messages.isEmpty()) return true
+        // 纯提问窗口不抽取：用户只是在问「我住在哪/团子几岁」，模型会把提问本身记成事实
+        //（实测 58 轮里 4 条元记忆污染列表），跳过既省调用也不留噪声。
+        if (MemoryIngestFilter.isQuestionOnlyWindow(messages)) {
+            MemoryDiagnostics.log("MemoryV2", "跳过提取：窗口内用户消息均为提问（会话=$sessionId 条数=${messages.size}）")
+            return true
+        }
         val operationId = MemoryDiagnostics.beginOperation("私聊记忆提取", operatorName, sessionId)
         MemoryDiagnostics.conversationStep(operationId, "私聊记忆提取", "提取窗口", "进行中", "消息=${messages.size}，范围=${messages.first().id}-${messages.last().id}，阈值=${settings.privateMemoryExtractionThreshold}")
         val sourceText = messages.joinToString("\n") { formatPrivateMessage(it) }
@@ -548,6 +556,7 @@ class MemoryV2Pipeline(
                 repository.memoryV2.getActiveMemoryItemsByIds(memoryIds, nowMillis())
                     .associate { it.id to it.topicKey }
             },
+            supersededResolver = { memoryIds -> repository.memoryV2.supersededMemoryIds(memoryIds) },
             // T73：本轮最终注入的记忆累加 injectionCount（失败不影响召回，见 engine.notifySelected）。
             onSelected = { ids -> repository.memoryV2.bumpInjectionUsage(ids, nowMillis()) },
             nowMillis = { nowMillis() },
@@ -1059,51 +1068,84 @@ class MemoryV2Pipeline(
 
     /**
      * 结构化 L1 落库后记录事实关系（T78 数据基础）：
-     * 同基座同极性 → supports；同基座相反极性 → contradicts；其余留给 T78 完整版的模型/用户裁决。
-     * contradicts 同时把新旧事实行标为 suspected（待确认），只写标记不关闭/合并任何记忆。
+     * 同归并基座同极性 → supports；同基座相反极性 → contradicts；
+     * 单值谓词（住址/工作/年龄）换值 → supersedes，并关闭旧事实有效期（不删除记忆）。
+     *
+     * 候选按**归并基座**取，不用 EXACT topicKey：模型会把限定词写进客体
+     *（`美式咖啡不加糖` vs `美式咖啡|q=不加糖`），精确匹配会导致关系永远记不上（实测 relations=0）。
      */
     private suspend fun recordStructuredRelations(saved: List<MemoryItem>) {
-        var conflictRelations = 0
+        val structured = saved.filter {
+            it.memoryLevel == MemoryLevel.L1 && it.topicKey.startsWith(MemoryRelationRules.FACT_PREFIX)
+        }
+        if (structured.isEmpty()) return
+        val now = nowMillis()
+        var conflicts = 0
+        var supersedes = 0
         val conflictIds = linkedSetOf<Long>()
-        saved.filter { it.memoryLevel == MemoryLevel.L1 && it.topicKey.startsWith(MemoryRelationRules.FACT_PREFIX) }
-            .forEach { item ->
-                val opposite = MemoryRelationRules.oppositeKey(item.topicKey) ?: return@forEach
-                val refs = runCatching {
-                    repository.memoryV2.getActiveMemoryTopicRefs(
-                        ownerType = item.ownerType,
-                        ownerId = item.ownerId,
-                        topicKeys = listOf(item.topicKey, opposite),
-                        now = nowMillis(),
-                        limit = 20,
+        val supersededIds = linkedSetOf<Long>()
+        structured.forEach { item ->
+            val newKeys = MemoryParseRules.parseTopicKey(item.topicKey) ?: return@forEach
+            val refs = runCatching {
+                repository.memoryV2.getActiveStructuredTopicRefs(item.ownerType, item.ownerId, now, STRUCTURED_REF_LIMIT)
+            }.getOrDefault(emptyList())
+            refs.forEach { ref ->
+                val otherId = ref.memoryId
+                val otherKey = ref.topicKey
+                if (otherId == item.id) return@forEach
+                // 取代只能「旧 → 新」：新事实绝不因为处理顺序被掉头覆盖
+                //（实测同一批里 4 条住址互相取代，最新一条也被标成 superseded）。
+                val otherIsOlder = ref.createdAt < item.createdAt || (ref.createdAt == item.createdAt && otherId < item.id)
+                val otherParts = MemoryParseRules.parseTopicKey(otherKey) ?: return@forEach
+                // 只有「同主体 + 同谓词」才可能有关系，先做一次廉价过滤。
+                if (otherParts.subject != newKeys.subject || otherParts.predicate != newKeys.predicate) return@forEach
+                val type = MemoryRelationRules.relationType(item.topicKey, otherKey) ?: return@forEach
+                runCatching {
+                    repository.memoryV2.insertMemoryRelation(
+                        fromMemoryId = item.id,
+                        toMemoryId = otherId,
+                        relationType = type,
+                        confidence = when (type) {
+                            MemoryRelationRules.SUPPORTS -> 0.85
+                            MemoryRelationRules.SUPERSEDES -> 0.8
+                            else -> 0.6
+                        },
+                        decidedBy = "rule",
+                        now = now,
                     )
-                }.getOrDefault(emptyList())
-                refs.forEach { (otherId, otherKey) ->
-                    if (otherId == item.id) return@forEach
-                    val type = MemoryRelationRules.relationType(item.topicKey, otherKey) ?: return@forEach
-                    runCatching {
-                        repository.memoryV2.insertMemoryRelation(
-                            fromMemoryId = item.id,
-                            toMemoryId = otherId,
-                            relationType = type,
-                            confidence = if (type == MemoryRelationRules.SUPPORTS) 0.85 else 0.6,
-                            decidedBy = "rule",
-                            now = nowMillis(),
-                        )
-                    }
-                    if (type == MemoryRelationRules.CONTRADICTS) {
-                        conflictRelations++
+                }
+                when (type) {
+                    MemoryRelationRules.CONTRADICTS -> {
+                        conflicts++
                         conflictIds += item.id
                         conflictIds += otherId
                     }
+                    MemoryRelationRules.SUPERSEDES -> {
+                        if (!otherIsOlder) return@forEach
+                        // 同单值谓词的新事实覆盖旧事实：旧事实不再是「现状」。
+                        supersedes++
+                        supersededIds += otherId
+                    }
                 }
             }
+        }
         if (conflictIds.isNotEmpty()) {
             val marked = runCatching {
-                repository.memoryV2.markMemoryFactConflict(conflictIds.toList(), nowMillis())
+                repository.memoryV2.markMemoryFactConflict(conflictIds.toList(), now)
             }.getOrDefault(0)
             MemoryDiagnostics.log(
                 "Memory/FactConflict",
-                "事实冲突标记：contradicts=$conflictRelations 候选=${conflictIds.size} 实际标记=$marked",
+                "事实冲突标记：contradicts=$conflicts 候选=${conflictIds.size} 实际标记=$marked",
+            )
+        }
+        if (supersededIds.isNotEmpty()) {
+            val ids = supersededIds.toList()
+            val closed = runCatching { repository.memoryV2.supersedeMemoryFacts(ids, now) }.getOrDefault(0)
+            // 归档旧记忆：记忆列表与召回都按 active 过滤，用户不会再看到「杭州」被当作现状。
+            val archived = runCatching { repository.memoryV2.archiveSupersededMemoryItems(ids, now) }.getOrDefault(0)
+            MemoryDiagnostics.log(
+                "Memory/FactSupersede",
+                "单值事实换值：supersedes=$supersedes 关闭旧事实=$closed 归档旧记忆=$archived",
             )
         }
     }
@@ -1272,5 +1314,7 @@ class MemoryV2Pipeline(
         const val ENTITY_RECALL_IDF = 2.5
         const val ENTITY_CATALOG_LIMIT = 400
         const val ENTITY_HIT_LIMIT = 40
+        /** 关系判定的候选事实行上限（单角色最近 N 条结构化事实）。 */
+        const val STRUCTURED_REF_LIMIT = 200
     }
 }

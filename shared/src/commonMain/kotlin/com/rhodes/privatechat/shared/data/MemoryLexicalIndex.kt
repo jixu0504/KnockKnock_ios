@@ -157,3 +157,6 @@ class MemoryLexicalIndex(private val db: RhodesDatabase) {
                 }
         }
 }
+
+/** 一条结构化事实记忆的引用（id / 事实键 / 记录时间）。 */
+data class StructuredTopicRef(val memoryId: Long, val topicKey: String, val createdAt: Long)

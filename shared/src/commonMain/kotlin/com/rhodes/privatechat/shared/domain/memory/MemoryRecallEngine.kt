@@ -23,6 +23,8 @@ internal class MemoryRecallEngine(
     private val lexicalRecall: (suspend (operatorId: String, query: String) -> List<VectorMemory>)? = null,
     /** 选中后的同事实去重：memoryId → fact/topic key（X-03，同一事只注入最合适的一条）。 */
     private val factKeyResolver: (suspend (memoryIds: List<Long>) -> Map<Long, String>)? = null,
+    /** 已被新事实取代的记忆 id：不再当作「现状」注入（T78 supersedes）。 */
+    private val supersededResolver: (suspend (memoryIds: List<Long>) -> Set<Long>)? = null,
     /**
      * 最终注入选择（去重/矛盾消解/同主题上限之后）的反馈回调（T73）：收到本轮实际注入的
      * originMemoryId（已过滤 0、已去重）。为 null 时行为与旧版完全一致。
@@ -102,7 +104,7 @@ internal class MemoryRecallEngine(
         val lexicalThreshold = lexicalAdmissionThreshold(intent)
         // 同一记忆可能同时出现在两条通道：按向量 id 合并，保留两边的信号（不能丢掉词法分，
         // 否则「向量相似度低但词法很强」的条目会被当作纯向量候选拒掉）。
-        val merged = (candidates + lexicalCandidates)
+        val mergedRaw = (candidates + lexicalCandidates)
             .groupBy { it.id }
             .map { (_, group) ->
                 val vector = group.firstOrNull { it.similarity > 0.0 } ?: group.first()
@@ -117,12 +119,23 @@ internal class MemoryRecallEngine(
                     vector
                 }
             }
-        val lexicalOnlyIds = merged.asSequence()
+        // 已被新事实取代的记忆不再是「现状」（住址杭州 → 上海），直接剔除，
+        // 避免把旧值当当前值注入（实测 Q4 同时召回杭州与浦东）。
+        val supersededIds = runCatching {
+            supersededResolver?.invoke(mergedRaw.mapNotNull { it.originMemoryId.takeIf { id -> id > 0 } }.distinct())
+        }.getOrNull().orEmpty()
+        val merged = if (supersededIds.isEmpty()) {
+            mergedRaw
+        } else {
+            mergedRaw.filter { it.originMemoryId <= 0 || it.originMemoryId !in supersededIds }
+        }
+        val evidenceMerged = applyQueryEvidence(merged, query)
+        val lexicalOnlyIds = evidenceMerged.asSequence()
             .filter { it.lexicalScore > 0.0 && it.similarity <= 0.0 }
             .mapNotNull { it.originMemoryId.takeIf { id -> id > 0 } }
             .toSet()
 
-        val admitted = merged.mapNotNull { memory ->
+        val admitted = evidenceMerged.mapNotNull { memory ->
             val type = memory.tags.split(',').getOrNull(1).orEmpty()
             val threshold = minimumPrivateSimilarity(memory.sourceType, type, query)
             val vectorPass = memory.similarity >= threshold
@@ -165,6 +178,7 @@ internal class MemoryRecallEngine(
         MemoryDiagnostics.log(
             "Memory/Recall",
             "私聊召回：候选=${candidates.size} 过阈值=${ranked.size} 注入=${selected.size} " +
+                "准入IDs=${ranked.map { it.originMemoryId }} 注入IDs=${selected.map { it.originMemoryId }} " +
                 "查询字=${query.length} 扩展=${recallQuestion} 耗时=${startedAt.elapsedNow().inWholeMilliseconds}ms",
         )
         val lines = selected.joinToString("\n") { "- ${it.content.take(180)}" }
@@ -274,11 +288,84 @@ internal class MemoryRecallEngine(
         const val MAX_INJECTIONS_PER_TOPIC = 2
         const val FACT_TOPIC_PREFIX = "fact:"
         const val LEXICAL_BOOST_CAP = 12.0
+        /** 词法/实体强命中阈值：高于 FACT/TIME 的准入线，保证语义类查询先拿到注入名额。 */
+        const val STRONG_HIT_SCORE = 2.4
+        /** 查询中的泛化词不能作为「正文直接命中」的证据。 */
+        private val ENTITY_ATTRIBUTE_MARKERS = listOf("几岁", "叫什么", "什么名字", "是谁", "多大", "哪只")
+        private val GENERIC_QUERY_TERMS = setOf(
+            "什么", "哪里", "哪个", "哪些", "多少", "几岁", "怎么", "怎样", "是不是", "有没有",
+            "记得", "知道", "告诉", "一下", "现在", "最近", "我们", "你们", "自己",
+        )
     }
 
     internal fun isVisualRecallQuery(query: String): Boolean = listOf(
         "图片", "照片", "相片", "图里", "图中", "这张", "那张", "截图", "画面", "看见", "看到", "物品", "东西"
     ).any { query.contains(it) }
+
+    /**
+     * 确定性的「查询—事实」匹配，补足 BM25 与哈希向量对中文否定/别名的盲点。
+     *
+     * 三类证据按强到弱提升词法分：① 客体包含查询实体词（「团子」⊂「布偶猫团子三岁」）；
+     * ② 查询包含事实谓词的问法（「住」→reside、「不吃/讨厌」→dislike）；
+     * ③ 记忆正文直接包含查询中的区分性词（「天气」→「下雨天这种天气」）。
+     * 只有挂接事实键解析器的生产召回启用，避免改变无事实数据的旧金样。
+     */
+    private suspend fun applyQueryEvidence(merged: List<VectorMemory>, query: String): List<VectorMemory> {
+        val resolver = factKeyResolver ?: return merged
+        if (merged.isEmpty() || query.isBlank()) return merged
+        val ids = merged.mapNotNull { it.originMemoryId.takeIf { id -> id > 0 } }.distinct()
+        val keys = runCatching { resolver.invoke(ids) }.getOrDefault(emptyMap())
+        val terms = MemoryLexicalTokenizer.queryTerms(query)
+            .filter { it.length >= 2 && it !in GENERIC_QUERY_TERMS }
+            .distinct()
+        // 只处理「关于我/我的记忆」或「某实体叫什么、几岁、是谁」的问题。
+        // 「花生多少钱一斤」「推荐一部电影」不是记忆查询，不能被客体/谓词命中撬动。
+        val aboutUser = query.contains("我") || query.contains("咱") ||
+            query.contains("你记得") || query.contains("还记得")
+        val entityAttributeQuery = ENTITY_ATTRIBUTE_MARKERS.any { query.contains(it) }
+        return merged.map { memory ->
+            val key = keys[memory.originMemoryId]
+            val parts = key?.let { MemoryParseRules.parseTopicKey(it) }
+            val objectMatch = parts != null && (aboutUser || entityAttributeQuery) && parts.let { part ->
+                terms.any { term -> part.objectHead.contains(term) || term.contains(part.objectHead) }
+            }
+            val predicateMatch = aboutUser && parts?.let { predicateMatchesQuery(it.predicate, query) } == true
+            // 正文命中也要求有事实结构，避免背景噪声被一句话抬进注入。
+            val contentMatch = parts != null && (aboutUser || entityAttributeQuery) && terms.any { term ->
+                memory.content.contains(term) || memory.originContent.contains(term)
+            }
+            val evidenceScore = when {
+                objectMatch -> 6.0
+                contentMatch && predicateMatch -> 5.0
+                contentMatch -> 4.0
+                predicateMatch -> 4.0
+                else -> 0.0
+            }
+            if (evidenceScore <= memory.lexicalScore) {
+                memory
+            } else {
+                memory.copy(
+                    lexicalScore = evidenceScore,
+                    lexicalMatchCount = maxOf(memory.lexicalMatchCount, 2),
+                    lexicalMaxTermIdf = maxOf(memory.lexicalMaxTermIdf, 2.5),
+                )
+            }
+        }
+    }
+
+    private fun predicateMatchesQuery(predicate: String, query: String): Boolean {
+        val words = when (predicate) {
+            "prefer" -> listOf("喜欢", "爱喝", "爱吃", "偏好", "口味")
+            "dislike" -> listOf("不喜欢", "讨厌", "不吃", "忌口", "受不了")
+            "reside" -> listOf("住在", "住哪", "住哪里", "住址", "住在哪里", "哪里住", "哪个城市")
+            "own" -> listOf("养了", "养什么", "宠物")
+            "promise" -> listOf("答应", "承诺", "约定", "约好")
+            "work" -> listOf("工作", "上班", "职业", "做什么工作")
+            "birthday" -> listOf("生日", "出生")
+            else -> emptyList()
+        }
+        return words.any { query.contains(it) }
+    }
 
     /**
      * RRF 排名融合（计划书 §4.6.3）：`fused = Σ 1/(60+rank_channel)`，只影响排序，准入仍由调用方判定。
@@ -298,7 +385,9 @@ internal class MemoryRecallEngine(
         fun fused(memory: VectorMemory): Double {
             val vector = vectorRanks[memory.id]?.let { 1.0 / (RRF_RANK_OFFSET + it) } ?: 0.0
             val lexical = lexicalRanks[memory.id]?.let { 1.0 / (RRF_RANK_OFFSET + it) } ?: 0.0
-            return vector + lexical
+            // 平票打破：同样只有一个通道命中时，词法/实体分数高的候选优先于纯向量候选
+            // （否则「团子几岁」这类实体查询会被泛化的向量候选挤出注入预算）。
+            return vector + lexical + memory.lexicalScore.coerceAtLeast(0.0) * 0.0001
         }
         return admitted
             .sortedWith(
@@ -336,11 +425,16 @@ internal class MemoryRecallEngine(
         val chosen = mutableListOf<VectorMemory>()
         selected.forEach { memory ->
             val key = keys[memory.originMemoryId]?.trim().orEmpty()
-            if (key.isEmpty()) {
+            val dedupeKey = dedupeIdentity(key)
+            if (dedupeKey.isEmpty()) {
                 chosen += memory
                 return@forEach
             }
-            val existingIndex = chosen.indexOfFirst { keys[it.originMemoryId]?.trim().orEmpty() == key }
+            // 同一事实的多版本只留一条：按「极性 + 归并基座」比较，不按精确键
+            //（模型会把限定词写进客体/qualifier），但**保留相反极性**给矛盾消解处理。
+            val existingIndex = chosen.indexOfFirst {
+                dedupeIdentity(keys[it.originMemoryId]?.trim().orEmpty()) == dedupeKey
+            }
             if (existingIndex < 0) {
                 chosen += memory
             } else if (memoryLevelRank(memory) > memoryLevelRank(chosen[existingIndex])) {
@@ -370,7 +464,13 @@ internal class MemoryRecallEngine(
             val conflictIndex = chosen.indexOfFirst {
                 val otherKey = keys[it.originMemoryId]?.trim().orEmpty()
                 val otherBase = factKeyBase(otherKey)
-                otherBase == base && polarityOf(key) != polarityOf(otherKey)
+                if (otherBase == null) return@indexOfFirst false
+                if (otherBase == base && polarityOf(key) != polarityOf(otherKey)) return@indexOfFirst true
+                // 单值谓词（住址/工作/年龄）换了取值：旧值不再当现状，只注入较新一条。
+                val predicate = predicateOf(key)
+                predicate != null && predicate == predicateOf(otherKey) &&
+                    MemoryParseRules.parseTopicKey(key)?.subject == MemoryParseRules.parseTopicKey(otherKey)?.subject &&
+                    MemoryRelationRules.isFunctional(predicate)
             }
             if (conflictIndex < 0) {
                 chosen += memory
@@ -409,26 +509,31 @@ internal class MemoryRecallEngine(
         }
     }
 
+    /**
+     * 主题 = 归一后的完整事实基座（主体|谓词|客体）。
+     *
+     * 只取「主体|谓词」会把所有「不喜欢」压成一组（香菜/下雨/餐厅/奶茶），
+     * 上限 2 条之后其余忌口再也注入不了（实测 Q3 答「糖」、Q6 答「不知道」）。
+     */
     private fun topicOfFactKey(key: String): String? {
         if (key.isEmpty()) return null
-        val base = factKeyBase(key) ?: return key
-        val parts = base.split('|')
-        return if (parts.size >= 2) parts[0] + "|" + parts[1] else base
+        return factKeyBase(key) ?: key
     }
 
-    /** `fact:<polarity>:<base>` → base；非结构化键返回 null。 */
-    private fun factKeyBase(key: String): String? {
-        if (!key.startsWith(FACT_TOPIC_PREFIX)) return null
-        val rest = key.removePrefix(FACT_TOPIC_PREFIX)
-        val index = rest.indexOf(':')
-        if (index <= 0 || index >= rest.length - 1) return null
-        return rest.substring(index + 1)
+    /** 去重身份 = 极性 + 归并基座；非结构化键退回原文（不同措辞不合并）。 */
+    private fun dedupeIdentity(key: String): String {
+        val parts = MemoryParseRules.parseTopicKey(key) ?: return key
+        return "${parts.polarity}|${parts.base}"
     }
 
-    private fun polarityOf(key: String): String {
-        val rest = key.removePrefix(FACT_TOPIC_PREFIX)
-        return rest.substringBefore(':')
-    }
+    /** 归并基座（去掉限定词与客体尾部修饰）；非结构化键返回 null。 */
+    private fun factKeyBase(key: String): String? = MemoryParseRules.factBaseOf(key)
+
+    private fun polarityOf(key: String): String =
+        MemoryParseRules.parseTopicKey(key)?.polarity
+            ?: key.removePrefix(FACT_TOPIC_PREFIX).substringBefore(':')
+
+    private fun predicateOf(key: String): String? = MemoryParseRules.parseTopicKey(key)?.predicate
 
     private fun memoryLevelRank(memory: VectorMemory): Int = when (memory.tags.split(',').firstOrNull()) {
         "L3" -> 3
@@ -492,6 +597,9 @@ internal class MemoryRecallEngine(
             }
         }
 
+        // 词法/实体强命中先占位：否则「团子几岁」「我讨厌什么天气」这类查询会被
+        // 近期泛化 L1 挤掉（实测 58 轮中 6 问只中 1.5 问）。
+        addMatching(minOf(2, maxCount)) { it.lexicalScore >= STRONG_HIT_SCORE }
         addMatching(recentL1Limit) { it.sourceType == "memory_v2_l1" && now - it.createdAt <= 30L * 86_400_000L }
         if (visualQuery) {
             // A directly relevant image should not be crowded out by generic long-term context.
