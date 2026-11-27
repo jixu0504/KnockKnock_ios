@@ -295,6 +295,99 @@ class GroupChatBridge internal constructor(
     // ==================================================================
 
     /** 自动互动开关（Android GroupChatViewModel.setAutoGroupChatEnabled 等价）。回调 (状态文案, 错误)。 */
+    /**
+     * 切换群聊模式（online / offline / director）→ 写 `chat_sessions.mode`，并让引擎失效该群缓存，
+     * 使下一轮 [send] 按新模式的群回复规则（线上纯文字 / 线下·导演带【旁白】）组装提示词。
+     *
+     * 与私聊 [SessionListBridge.updateMode] 的差异：群聊不写 `settings.last_mode_<operatorId>`
+     * （该键只用于私聊恢复上次模式，写成 last_mode_group_xx 是无意义的脏数据）。
+     */
+    /**
+     * 撤回自己发的群消息（群聊没有「对方」概念：撤回＝从本机群记录中移除该条并向所有成员隐藏）。
+     * 与私聊 `recallMessage` 同语义：删行 + 清理该消息触发的回复轮次 + 重算会话预览。
+     */
+    fun recallGroupMessage(sessionId: String, messageId: Long, onDone: (String?) -> Unit) =
+        runOperation(onDone) { removeGroupMessage(sessionId, messageId) }
+
+    /** 本地删除群消息（不撤回语义；仅删本机 DB 行并重算会话预览）。 */
+    fun deleteGroupMessage(sessionId: String, messageId: Long, onDone: (String?) -> Unit) =
+        runOperation(onDone) { removeGroupMessage(sessionId, messageId) }
+
+    /** 撤回/删除共用实现：删消息行 → 清理关联回复轮次 → 重算会话预览 → 校验是否真的没了。 */
+    private suspend fun removeGroupMessage(sessionId: String, messageId: Long): String? {
+        val message = chatRepo.getMessageById(messageId) ?: return null // 已不存在视作成功
+        chatRepo.deleteMessage(messageId)
+        runCatching { chatRepo.deleteReplyTurnsBySourceMessage(messageId) }
+        runCatching { chatRepo.deleteMessageDisplayEvents(messageId) }
+        refreshGroupPreview(sessionId)
+        engine.invalidateGroup(sessionId)
+        return if (chatRepo.getMessageById(messageId) != null) "删除失败（消息仍在）" else null
+    }
+
+    /** 删消息后重算会话预览（把最后一条消息的文案/时间写回 chat_sessions）。 */
+    private suspend fun refreshGroupPreview(sessionId: String) {
+        val latest = chatRepo.getRecentMessagesSync(sessionId, 1).firstOrNull()
+        chatRepo.updateLastMessage(
+            sessionId,
+            latest?.let { groupPreviewText(it) }.orEmpty(),
+            latest?.timestamp ?: Clock.System.now().toEpochMilliseconds(),
+        )
+    }
+
+    /** 群会话预览文案：图片/礼物/系统/ai_json 分别取合适的摘要。 */
+    private fun groupPreviewText(message: ChatMessage): String = when {
+        message.type == "image" -> "[图片]"
+        message.type == "gift_hidden" || message.type == "gift_reply_failed" -> "[礼物]"
+        message.type == "system" -> ""
+        message.type == "ai_json" -> stripAiJsonForPreview(message.content).take(50)
+        else -> message.content.take(50)
+    }
+
+    /**
+     * ai_json 内容的可读摘要：按行扫描取出 `"speech": "..."` 的台词，去掉【标签】与转义换行。
+     * 不用正则、不用 JSON 解析器（预览文案只需粗略可读，避免引入依赖与转义风险）。
+     */
+    private fun stripAiJsonForPreview(raw: String): String {
+        val speeches = mutableListOf<String>()
+        for (rawLine in raw.split('\n')) {
+            val line = rawLine.trim()
+            val keyIndex = line.indexOf("\"speech\"")
+            if (keyIndex < 0) continue
+            val colon = line.indexOf(':', keyIndex + 8)
+            if (colon < 0) continue
+            var value = line.substring(colon + 1).trim()
+            if (!value.startsWith("\"")) continue
+            value = value.removePrefix("\"")
+            val close = value.indexOf("\"")
+            if (close >= 0) value = value.take(close)
+            value = value.replace("\\n", " ").replace("\\\"", "\"").trim()
+            if (value.isNotEmpty()) speeches.add(value)
+        }
+        val text = if (speeches.isNotEmpty()) speeches.joinToString(" ") else raw
+        val sb = StringBuilder()
+        var depth = 0
+        for (ch in text) {
+            when (ch) {
+                '【' -> depth++
+                '】' -> if (depth > 0) depth-- else sb.append(ch)
+                else -> if (depth == 0) sb.append(ch)
+            }
+        }
+        return sb.toString().replace("\\n", " ").trim()
+    }
+
+    fun setGroupMode(sessionId: String, mode: String, onDone: (String?) -> Unit) = runOperation(onDone) {
+        val normalized = mode.trim().lowercase()
+        require(normalized in CHAT_MODES) { "不支持的群聊模式：$mode" }
+        val session = chatRepo.getSession(sessionId)
+            ?: throw IllegalStateException("群聊不存在：$sessionId")
+        if (session.mode != normalized) {
+            chatRepo.sessions.updateSessionMode(sessionId, normalized)
+        }
+        engine.invalidateGroup(sessionId)
+        null
+    }
+
     fun setAutoGroupChatEnabled(sessionId: String, enabled: Boolean, onDone: (String?, String?) -> Unit) {
         workScope.launch {
             try {

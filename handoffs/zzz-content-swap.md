@@ -101,3 +101,24 @@ GroupChatBridge/A7Glue（演示桩 妮可 zz058、userName 默认 绳匠）· Se
 - 发送钮禁用态：灰底在暗色下几乎不可见 → 改暗蓝 `chatBlue.opacity(0.26)` + 白字 0.55。
 
 **验证**：模拟器（51C310B6）`--chat-refresh-selftest` 6/6 PASS（含 recall-newest/delete-newest/delete-older id 残留用例/import-marker/import-notify/import-persist）；`--chat-ops-selftest` 7 PASS（regenerate 为演示模式既有确定性差异）；`--selftest === done ===`；深/浅截图 knock-final3-*.png。真机包已安装（启动时设备锁定，解锁即可）。
+
+## 10. 群聊模式切换 + 群消息撤回/删除（2026-11-27，v0.3.4）
+
+真机反馈两问题，本轮修复：
+
+### A. 群聊缺「线上/线下/导演」模式切换（新增功能）
+- **shared 早已支持**三种模式的回复规则（`GroupPromptAssembler.foundation/modeFormat/modeHistoryBoundary/observingText`），发送时取 `session.mode` —— 缺的只是 iOS UI 入口与写库通道。
+- 新增 `GroupChatBridge.setGroupMode(sessionId, mode, onDone)`：校验 online/offline/director → 写 `chat_sessions.mode` → `engine.invalidateGroup()` 让下一轮按新模式组装提示词；**不写** `settings.last_mode_*`（该键私聊专用，群 operatorId 是 group_xx，写入即脏数据）。
+- `GroupChatClient.setGroupMode` Swift 包装；`GroupChatViewModel.mode/modeText/isModeBusy/setMode`（复用 `ChatViewModel.chatModes` 的 线上/线下/导演 口径）。
+- `GroupChatView`：顶栏加**模式胶囊**（位于群名右侧、成员按钮左侧）+ `KnockDialogPanel` 三模式弹窗（当前项电动黄高亮 + ✔），与私聊同款视觉。
+- 实机验证：`--group-mode-selftest` 三模式往返 `online→offline→director→online` 全 ok，`RESULT PASS=true`；DB `chat_sessions.mode` 正确落库；**线下模式回复里出现【旁白】块**（截图 knock-034-group-online.png），证明规则真实生效。
+
+### B. 群聊里自己发的消息无法撤回/删除（bug）
+- 原菜单只对 AI 消息提供「撤回这一段」，自己发的消息**只有复制**。
+- 新增 `GroupChatBridge.recallGroupMessage / deleteGroupMessage`（共用 `removeGroupMessage`：删行 → 清 replyTurns/displayEvents → 重算会话预览 → `invalidateGroup` → 校验是否真删）。
+- `GroupChatView` 菜单：outgoing 且有真实 id 时新增「撤回」「删除（本地）」两项 destructive，各带二次确认弹窗。
+- **同时修掉 id 残留 bug**：`GroupChatViewModel.refresh()` 的 `olderKept` 原按 id 原样回填 → 删除较早消息时会「复活」。新增 `refresh(dropping:)` 剔除被删 id，`runOperation` 传递之（与私聊 0.2.0 的修法同源）。
+- 实机验证：`--group-recall-selftest` → `recall PASS=true messageId=981 stillInTimeline=false`、`delete PASS=true messageId=983 stillInTimeline=false`；**DB 复核**（devicectl 拷出 rhodes.db）：被删 id 在 `chat_messages` 中确实不存在。
+
+### 取证钩子（仅启动参数触发，对用户路径零影响）
+`--group-mode-picker`（自动展开模式弹窗）、`--group-mode-selftest`（三模式往返自检）、`--group-mode-offline-demo`（切线下便于截图）、`--group-recall-selftest`（发→撤回→删→DB 复核）。

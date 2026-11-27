@@ -323,6 +323,37 @@ extension AppGraphClient {
     /// 当前查看的群（未读自增排除当前群；进入/退出群聊页时更新）
     func setActiveGroup(sessionId: String) { groupBridge.setActiveGroup(sessionId: sessionId) }
 
+    /// 撤回自己发的群消息（群聊无「对方」语义：从本机群记录移除 + 重算预览）。返回 nil = 成功。
+    func recallGroupMessage(sessionId: String, messageId: Int64) async -> String? {
+        await withCheckedContinuation { continuation in
+            groupBridge.recallGroupMessage(sessionId: sessionId, messageId: messageId) { error in
+                assertMainQueue("groups.recall")
+                continuation.resume(returning: error)
+            }
+        }
+    }
+
+    /// 本地删除群消息（不撤回语义）。返回 nil = 成功。
+    func deleteGroupMessage(sessionId: String, messageId: Int64) async -> String? {
+        await withCheckedContinuation { continuation in
+            groupBridge.deleteGroupMessage(sessionId: sessionId, messageId: messageId) { error in
+                assertMainQueue("groups.delete")
+                continuation.resume(returning: error)
+            }
+        }
+    }
+
+    /// 切换群聊模式（online/offline/director）：写 `chat_sessions.mode` 并失效群引擎缓存，
+    /// 下一轮发送即按新模式规则组装提示词。返回 nil = 成功。
+    func setGroupMode(sessionId: String, mode: String) async -> String? {
+        await withCheckedContinuation { continuation in
+            groupBridge.setGroupMode(sessionId: sessionId, mode: mode) { error in
+                assertMainQueue("groups.setMode")
+                continuation.resume(returning: error)
+            }
+        }
+    }
+
     func isGroupDemoMode() -> Bool { groupBridge.isDemoMode() }
 
     // MARK: 群操作

@@ -57,6 +57,8 @@ final class GroupChatViewModel: ObservableObject {
     @Published private(set) var hasMore = false
     @Published private(set) var errorText: String?
     @Published private(set) var isDemo = false
+    /// 群聊模式切换进行中（防重复点击）
+    @Published private(set) var isModeBusy = false
     @Published private(set) var actionFeedback: String?
     @Published private(set) var isActionBusy = false
     @Published private(set) var isAutoBusy = false
@@ -86,6 +88,35 @@ final class GroupChatViewModel: ObservableObject {
         guard let detail else { return "群聊" }
         let muted = detail.mutedCount > 0 ? " · \(detail.mutedCount) 人禁言" : ""
         return "\(detail.memberCount) 位成员\(muted) · \(detail.modeText)"
+    }
+
+    /// 当前群聊模式（online / offline / director），来自 chat_sessions.mode。
+    var mode: String { (detail?.mode ?? "online").lowercased() }
+
+    /// 模式短标签（与私聊口径一致：线上 / 线下 / 导演）。
+    var modeText: String {
+        ChatViewModel.chatModes.first(where: { $0.code == mode })?.label ?? "线上"
+    }
+
+    /// 切换群聊模式：写 chat_sessions.mode → 重读群详情刷新 UI；下一轮发送按新规则生效。
+    func setMode(_ newMode: String) async {
+        let normalized = newMode.lowercased()
+        guard ChatViewModel.chatModes.contains(where: { $0.code == normalized }) else { return }
+        guard normalized != mode, !isModeBusy else { return }
+        let old = mode
+        isModeBusy = true
+        defer { isModeBusy = false }
+        let error = await bridge.setGroupMode(sessionId: sessionId, mode: normalized)
+        if let error {
+            errorText = "切换模式失败：\(error)"
+            GroupSelfTestLog.add("group mode switch FAILED session=\(sessionId) \(old)->\(normalized) error=\(error)")
+            return
+        }
+        if case .success(let item) = await bridge.loadGroupDetail(sessionId: sessionId) {
+            detail = item
+        }
+        showFeedback("已切换到\(modeText)模式")
+        GroupSelfTestLog.add("group mode switch session=\(sessionId) \(old)->\(normalized) ok")
     }
 
     var canSend: Bool {
@@ -163,15 +194,18 @@ final class GroupChatViewModel: ObservableObject {
     }
 
     /// 重新拉取详情 + 最新一页（发送后/操作后）
-    func refresh() async {
+    /// 刷新群聊列表。
+    /// - Parameter dropping: 刚刚撤回/删除的消息 id；这些行必须从「更早已加载」缓存里剔除，
+    ///   否则 `olderKept` 会按 id 把它们原样回填（首屏只取最新 50 条，删旧消息时必然残留）。
+    func refresh(dropping: Set<Int64> = []) async {
         if case .success(let item) = await bridge.loadGroupDetail(sessionId: sessionId) {
             detail = item
         }
         switch await bridge.loadGroupMessagePage(sessionId: sessionId, beforeId: 0, limit: Self.pageSize) {
         case .success(let page):
-            let fresh = page.items.reversed()
+            let fresh = page.items.reversed().filter { !dropping.contains($0.id) }
             let oldestFresh = fresh.first?.id ?? Int64.max
-            let olderKept = messages.filter { $0.id > 0 && $0.id < oldestFresh }
+            let olderKept = messages.filter { $0.id > 0 && $0.id < oldestFresh && !dropping.contains($0.id) }
             let pending = messages.filter { $0.id < 0 }
             messages = olderKept + fresh + pending
             cursor = page.nextBeforeId
@@ -180,6 +214,14 @@ final class GroupChatViewModel: ObservableObject {
             GroupSelfTestLog.add("group view refresh total=\(page.totalCount) loaded=\(messages.count) newest=\(page.items.first?.id ?? 0)")
         case .failure(let error):
             GroupSelfTestLog.add("group view refresh FAILED error=\(error.message)")
+        }
+    }
+
+    /// 直接从 DB 读最新一页（自检用：区分「内存里消失」和「DB 里真的删掉」）。
+    func reloadPageFromDB() async -> Result<[GroupMessageItem], BridgeError> {
+        switch await bridge.loadGroupMessagePage(sessionId: sessionId, beforeId: 0, limit: Self.pageSize) {
+        case .success(let page): return .success(page.items)
+        case .failure(let error): return .failure(error)
         }
     }
 
@@ -289,8 +331,24 @@ final class GroupChatViewModel: ObservableObject {
         }
     }
 
+    /// 撤回自己发的群消息（仅 outgoing 行；整条移除）。
+    func recallOwn(row: GroupBubbleRow) {
+        runOperation("撤回", dropping: [row.messageId]) { [weak self] in
+            guard let self else { return "已取消" }
+            return await self.bridge.recallGroupMessage(sessionId: self.sessionId, messageId: row.messageId)
+        }
+    }
+
+    /// 本地删除群消息（仅 outgoing 行；整条移除）。
+    func deleteLocal(row: GroupBubbleRow) {
+        runOperation("删除", dropping: [row.messageId]) { [weak self] in
+            guard let self else { return "已取消" }
+            return await self.bridge.deleteGroupMessage(sessionId: self.sessionId, messageId: row.messageId)
+        }
+    }
+
     func recallSegment(row: GroupBubbleRow) {
-        runOperation("撤回分段") { [weak self] in
+        runOperation("撤回分段", dropping: [row.messageId]) { [weak self] in
             guard let self else { return "已取消" }
             return await self.bridge.recallGroupSegment(
                 sessionId: self.sessionId,
@@ -321,7 +379,11 @@ final class GroupChatViewModel: ObservableObject {
         return URL(fileURLWithPath: path)
     }
 
-    private func runOperation(_ name: String, _ operation: @escaping () async -> String?) {
+    private func runOperation(
+        _ name: String,
+        dropping: Set<Int64> = [],
+        _ operation: @escaping () async -> String?
+    ) {
         guard !isActionBusy else { return }
         isActionBusy = true
         Task {
@@ -333,9 +395,9 @@ final class GroupChatViewModel: ObservableObject {
                 GroupSelfTestLog.add("group view \(name) FAILED error=\(error)")
             } else {
                 showFeedback("\(name)完成")
-                GroupSelfTestLog.add("group view \(name) ok")
+                GroupSelfTestLog.add("group view \(name) ok dropped=\(dropping.count)")
             }
-            await refresh()
+            await refresh(dropping: dropping)
         }
     }
 

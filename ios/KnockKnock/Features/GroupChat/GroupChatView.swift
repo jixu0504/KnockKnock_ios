@@ -21,6 +21,11 @@ struct GroupChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     @State private var pendingRecall: GroupBubbleRow?
+    /// 自己发的群消息：待撤回 / 待删除（二次确认）
+    @State private var pendingOwnRecall: GroupBubbleRow?
+    @State private var pendingOwnDelete: GroupBubbleRow?
+    /// 群聊模式切换弹窗（线上 / 线下 / 导演）
+    @State private var isModePickerPresented = false
 
     init(sessionId: String) {
         _model = StateObject(wrappedValue: GroupChatViewModel(sessionId: sessionId))
@@ -75,6 +80,24 @@ struct GroupChatView: View {
         } message: {
             Text("只撤回这一位成员的发言段；全部段撤回时整条消息会消失。")
         }
+        .alert("撤回这条消息？", isPresented: ownRecallAlertBinding) {
+            Button("撤回", role: .destructive) {
+                if let row = pendingOwnRecall { model.recallOwn(row: row) }
+                pendingOwnRecall = nil
+            }
+            Button("取消", role: .cancel) { pendingOwnRecall = nil }
+        } message: {
+            Text("这条消息会从本机的群聊记录里移除。")
+        }
+        .alert("删除这条消息？", isPresented: ownDeleteAlertBinding) {
+            Button("删除", role: .destructive) {
+                if let row = pendingOwnDelete { model.deleteLocal(row: row) }
+                pendingOwnDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingOwnDelete = nil }
+        } message: {
+            Text("仅从本机记录中删除，不会撤回。此操作不可恢复。")
+        }
         .alert("操作失败", isPresented: errorAlertBinding) {
             Button("好", role: .cancel) { model.clearError() }
         } message: {
@@ -99,6 +122,200 @@ struct GroupChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .groupSelfTestRefresh)) { _ in
             Task { await model.refresh() }
         }
+        // 群聊模式切换弹窗（自绘敲敲面板）
+        .overlay {
+            if isModePickerPresented {
+                modePickerOverlay
+            }
+        }
+        // 自动化取证钩子：`--group-mode-picker` 直接展开模式弹窗
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("--group-mode-picker") {
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                isModePickerPresented = true
+                GroupSelfTestLog.add("group mode picker auto-opened (launch arg) current=\(model.modeText)")
+            }
+            // 自动化自检：`--group-mode-selftest` 依次切三模式并落盘证据（实机无触控）
+            if ProcessInfo.processInfo.arguments.contains("--group-mode-selftest") {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                for target in ["offline", "director", "online"] {
+                    await model.setMode(target)
+                    GroupSelfTestLog.add("group mode selftest target=\(target) -> mode=\(model.mode) text=\(model.modeText)")
+                }
+                let ok = model.mode == "online"
+                GroupSelfTestLog.add("group mode selftest RESULT PASS=\(ok) final=\(model.mode)")
+            }
+            // 自动化自检：`--group-recall-selftest` 发一条 → 撤回 → 断言消失（实机无触控取证）
+            if ProcessInfo.processInfo.arguments.contains("--group-recall-selftest") {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                model.draft = "撤回自检消息 A"
+                model.send()
+                // 等发送完成（真实供应商可能较慢）
+                for _ in 0..<60 where model.isStreaming {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                let mine = model.rows.last { $0.kind == .outgoing && $0.messageId > 0 }
+                GroupSelfTestLog.add("group recall selftest sent ok=\(mine != nil) rows=\(model.rows.count)")
+                if let mine {
+                    let mid = mine.messageId
+                    model.recallOwn(row: mine)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    let stillThere = model.rows.contains { $0.messageId == mid }
+                    GroupSelfTestLog.add("group recall selftest PASS=\(!stillThere) messageId=\(mid) stillInTimeline=\(stillThere) rows=\(model.rows.count)")
+                } else {
+                    GroupSelfTestLog.add("group recall selftest FAIL reason=no-outgoing-row")
+                }
+                // 再测删除：发一条 → 删除
+                model.draft = "删除自检消息 B"
+                model.send()
+                for _ in 0..<60 where model.isStreaming {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if let mine2 = model.rows.last(where: { $0.kind == .outgoing && $0.messageId > 0 }) {
+                    let mid2 = mine2.messageId
+                    model.deleteLocal(row: mine2)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    let still2 = model.rows.contains { $0.messageId == mid2 }
+                    GroupSelfTestLog.add("group delete selftest PASS=\(!still2) messageId=\(mid2) stillInTimeline=\(still2) rows=\(model.rows.count)")
+                } else {
+                    GroupSelfTestLog.add("group delete selftest FAIL reason=no-outgoing-row")
+                }
+                GroupSelfTestLog.add("group recall/delete selftest done")
+                await runLegacyCleanup()
+            }
+            // 自动化取证：`--group-mode-offline-demo` 切到线下模式后保持（供截图取证胶囊文案）
+            if ProcessInfo.processInfo.arguments.contains("--group-mode-offline-demo") {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await model.setMode("offline")
+                GroupSelfTestLog.add("group mode offline demo mode=\(model.modeText)")
+            }
+        }
+    }
+
+    /// 清理早期自检遗留的「自检消息 A/B」（当时钩子用乐观 id 删除无效导致残留）。
+    private func runLegacyCleanup() async {
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        var candidates: [GroupBubbleRow] = []
+        for row in model.rows {
+            guard row.kind == .outgoing, row.messageId > 0 else { continue }
+            if row.text.contains("自检消息 A") || row.text.contains("自检消息 B") {
+                candidates.append(row)
+            }
+        }
+        GroupSelfTestLog.add("group selftest cleanup candidates=\(candidates.count)")
+        for row in candidates {
+            model.deleteLocal(row: row)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+        }
+        var leftover = -1
+        switch await model.reloadPageFromDB() {
+        case .success(let items):
+            leftover = items.filter { $0.text.contains("自检消息 A") || $0.text.contains("自检消息 B") }.count
+        case .failure:
+            leftover = -1
+        }
+        GroupSelfTestLog.add("group selftest cleanup RESULT leftoverInDB=\(leftover)")
+    }
+
+    // MARK: - 模式切换（线上 / 线下 / 导演）
+
+    /// 顶栏模式胶囊：显示当前模式，点击展开三模式弹窗。
+    private var modeChip: some View {
+        Button {
+            isModePickerPresented = true
+        } label: {
+            HStack(spacing: 3) {
+                KnockText(model.modeText, role: .captionStrong, lineLimit: 1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .heavy))
+                    .foregroundStyle(KnockTokens.textSecondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 26)
+            .background(Capsule(style: .continuous).fill(KnockTokens.row))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(KnockTokens.strokeSecondary, lineWidth: KnockTokens.strokeWidth)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isModeBusy)
+        .accessibilityLabel("群聊模式：\(model.modeText)")
+        .accessibilityHint("切换线上、线下或导演模式")
+    }
+
+    /// 模式选择弹窗（与私聊同款自绘面板）。
+    private var modePickerOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture { isModePickerPresented = false }
+
+            KnockDialogPanel(title: "切换群聊模式") {
+                VStack(alignment: .leading, spacing: KnockTokens.spacingM) {
+                    ForEach(ChatViewModel.chatModes) { item in
+                        modeOptionRow(item)
+                    }
+                    KnockText(
+                        "线上：成员只发文字，像在群里打字；线下：面对面群聊，成员会带【旁白】描述动作与环境；导演：你描述场景，成员按你的安排演出。切换后下一轮回复生效。",
+                        role: .caption,
+                        color: KnockTokens.textSecondary,
+                        lineSpacing: 3
+                    )
+                    Button("取消") { isModePickerPresented = false }
+                        .buttonStyle(KnockSecondaryButtonStyle())
+                }
+            }
+            .padding(.horizontal, 28)
+        }
+        .transition(.opacity)
+    }
+
+    private func modeOptionRow(_ item: ChatModeOption) -> some View {
+        let isCurrent = item.code == model.mode
+        return Button {
+            isModePickerPresented = false
+            guard !isCurrent else { return }
+            Task { await model.setMode(item.code) }
+        } label: {
+            HStack(spacing: KnockTokens.spacingS) {
+                Text(item.icon)
+                    .font(.system(size: 15))
+                KnockText(
+                    item.label,
+                    role: .rowTitle,
+                    color: isCurrent ? KnockTokens.onElectric : KnockTokens.textPrimary,
+                    lineLimit: 1
+                )
+                Spacer(minLength: KnockTokens.spacingS)
+                if isCurrent {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(KnockTokens.onElectric)
+                }
+            }
+            .padding(.horizontal, KnockTokens.spacingM)
+            .frame(minHeight: 44)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(isCurrent ? KnockTokens.electric : KnockTokens.row)
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        isCurrent ? KnockTokens.electricRing : KnockTokens.strokeSecondary,
+                        lineWidth: KnockTokens.strokeWidth
+                    )
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isModeBusy)
+        .accessibilityLabel("\(item.label)模式")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
     // MARK: - 顶栏
@@ -114,6 +331,7 @@ struct GroupChatView: View {
                 .accessibilityHidden(true)
             KnockText(model.title, role: .pageTitle, lineLimit: 1, minimumScaleFactor: 0.7)
             Spacer(minLength: KnockTokens.spacingS)
+            modeChip
             KnockCapsuleIconButton(
                 systemImage: "person.2.fill",
                 variant: .neutral,
@@ -281,6 +499,19 @@ struct GroupChatView: View {
                 model.copy(row: row)
             }
         ]
+        // 自己发出去的消息：撤回 / 删除（群聊无「对方」语义，两者都从本机群记录移除）
+        if row.kind == .outgoing && row.messageId > 0 && !row.isRecalled {
+            actions.append(
+                KnockMenuAction("撤回", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    pendingOwnRecall = row
+                }
+            )
+            actions.append(
+                KnockMenuAction("删除（本地）", systemImage: "trash", role: .destructive) {
+                    pendingOwnDelete = row
+                }
+            )
+        }
         if row.kind == .incoming && row.type == "ai_json" {
             actions.append(
                 KnockMenuAction("撤回这一段", systemImage: "arrow.uturn.backward", role: .destructive) {
@@ -324,6 +555,20 @@ struct GroupChatView: View {
                 proxy.scrollTo("group-timeline-bottom", anchor: .bottom)
             }
         }
+    }
+
+    private var ownRecallAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingOwnRecall != nil },
+            set: { if !$0 { pendingOwnRecall = nil } }
+        )
+    }
+
+    private var ownDeleteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingOwnDelete != nil },
+            set: { if !$0 { pendingOwnDelete = nil } }
+        )
     }
 
     private var recallAlertBinding: Binding<Bool> {
