@@ -212,6 +212,63 @@ class ChatEngine(
         return deferred.await()
     }
 
+    // === 表情消息（仅线上模式；不进入识图管线）===
+
+    /**
+     * 发送表情。
+     *
+     * 与图片的关键差别：**不做视觉识别**。表情的语义在目录里已经是文字（情绪名 + 画面描述），
+     * 落库只保存 [EmojiMessageContract] JSON 供回放渲染，送模型的是一句纯文本
+     * `用户发送了一个表情：生气（深红底 + 皱眉）`。因此这里不检查 `visionConfigured()`。
+     *
+     * 仅线上模式可用：线下/导演模式没有真实模型可理解语义，调用方应提前拦截。
+     */
+    fun sendEmojiMessage(
+        emoji: ChatEmoji,
+        session: ChatSession,
+        mode: String,
+        existingMessageId: Long? = null,
+        replyLeaseTokenOverride: String? = null,
+        onResponseComplete: (Boolean) -> Unit = {},
+    ): Job? {
+        if (mode != "online") {
+            events.emit(EngineEvent.Toast("表情仅支持线上模式发送"))
+            return null
+        }
+        val payload = EmojiMessageContract.encode(emoji.id, emoji.label, emoji.description)
+        return sendMessage(
+            textOverride = EmojiCatalog.promptText(emoji),
+            session = session,
+            mode = mode,
+            persistedContentOverride = payload,
+            retryMessageId = existingMessageId,
+            messageTypeOverride = EmojiCatalog.MESSAGE_TYPE,
+            replyLeaseTokenOverride = replyLeaseTokenOverride,
+            onResponseComplete = onResponseComplete,
+        )
+    }
+
+    /** 表情回复恢复：从 JSON 还原语义后重走 [sendEmojiMessage]。 */
+    suspend fun resumeEmojiReply(sessionId: String, messageId: Long, replyLeaseToken: String? = null): Boolean {
+        val session = store.getSession(sessionId) ?: return false
+        val message = store.getMessageById(messageId)
+            ?.takeIf { it.sessionId == sessionId && it.isMe && it.type == EmojiCatalog.MESSAGE_TYPE }
+            ?: return false
+        val parsed = EmojiMessageContract.parse(message.content) ?: return false
+        val emoji = EmojiCatalog.find(parsed.emojiId) ?: return false
+        val deferred = CompletableDeferred<Boolean>()
+        val job = sendEmojiMessage(
+            emoji = emoji,
+            session = session,
+            mode = message.mode,
+            existingMessageId = messageId,
+            replyLeaseTokenOverride = replyLeaseToken,
+            onResponseComplete = { deferred.complete(it) },
+        )
+        if (job == null) return false
+        return deferred.await()
+    }
+
     /**
      * 图片回复恢复（oracle resumeImageReply :2742-2756）：从图片 JSON 还原 uri/caption 后
      * 重走 sendImageMessage(existingMessageId=…)。
@@ -307,9 +364,16 @@ class ChatEngine(
                 msgId = withTimeout(config.messageWriteBudgetMs) { allocator.allocate() } // oracle :1391
             }
             val hiddenGift = messageTypeOverride == "gift_hidden"
+            // 表情：落库保存 JSON 载荷（回放渲染用），送模型的仍是 text（纯文字语义）。
+            val isEmojiMessage = messageTypeOverride == EmojiCatalog.MESSAGE_TYPE
+            val persistedContent = when {
+                isEmojiMessage -> persistedContentOverride ?: text
+                hiddenGift -> persistedContentOverride ?: text
+                else -> text
+            }
             val userMessage = ChatMessage(
                 id = msgId, sessionId = session.id,
-                senderName = "我", content = if (hiddenGift) persistedContentOverride ?: text else text,
+                senderName = "我", content = persistedContent,
                 type = messageTypeOverride ?: "text", mode = mode,
                 timestamp = clock.nowMillis(), isMe = true,
             )

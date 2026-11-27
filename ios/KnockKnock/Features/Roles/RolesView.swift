@@ -20,6 +20,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// 角色列表二级筛选（纯展示过滤；不改数据层与 bridge 调用）。
 enum RoleListFilter: String, CaseIterable, Hashable, Identifiable {
@@ -111,6 +112,8 @@ struct RolesView: View {
                     .padding(.top, KnockTokens.spacingM)
                     .padding(.bottom, KnockTokens.spacingXL)
                 }
+                .scrollDismissesKeyboard(.immediately)
+                .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
             }
             .scrollIndicators(.hidden)
             .refreshable { await reload() }
@@ -149,7 +152,7 @@ struct RolesView: View {
                 roleId: target.operatorId,
                 onSaved: { item in
                     SelfTestLog.add("roles roleEdit saved id=\(item.id) name=\(item.name)")
-                    Task { await reload() }
+                    Task { @MainActor in await reload() }
                 },
                 onDeleted: { id in
                     SelfTestLog.add("roles roleEdit deleted id=\(id)")
@@ -194,6 +197,7 @@ struct RolesView: View {
             }
         }
         .padding(.bottom, KnockTokens.spacingXS)
+        .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
     }
 
     // MARK: - 群聊分区（T43：列表 + 进入群聊 + 新建群聊）
@@ -418,6 +422,10 @@ struct RolesView: View {
     private func openRoleEditor(roleId: String?) {
         roleEditTarget = RoleEditTarget(operatorId: roleId)
         SelfTestLog.add("roles openRoleEditor roleId=\(roleId ?? "new")")
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     // MARK: - 数据

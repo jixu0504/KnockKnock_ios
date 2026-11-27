@@ -167,6 +167,44 @@ extension AppGraphClient {
         return ChatSendHandle(cancellable: cancellable)
     }
 
+    /// 表情目录（19 个绳网表情：id / 资源名 / 情绪 / 画面）。
+    func emojiCatalog() -> [EmojiItem] {
+        chatEngineBridge.emojiCatalog().map(EmojiItem.init(dto:))
+    }
+
+    /// 发送表情（仅线上模式；不调用识图模型，语义以文字送给模型）。
+    func sendEmojiChat(
+        sessionId: String,
+        emojiId: String,
+        onDelta: @escaping (String) -> Void,
+        onReplySegments: @escaping ([MessageSegmentItem]) -> Void = { _ in },
+        onDone: @escaping (ChatRoundResult) -> Void
+    ) -> ChatSendHandle {
+        let cancellable = chatEngineBridge.sendEmoji(
+            sessionId: sessionId,
+            emojiId: emojiId,
+            onDelta: { delta in
+                assertMainQueue("sendEmoji.onDelta")
+                onDelta(delta)
+            },
+            onReplySegments: { segments in
+                assertMainQueue("sendEmoji.onReplySegments")
+                onReplySegments(segments.map(MessageSegmentItem.init(dto:)))
+            },
+            onDone: { dto in
+                assertMainQueue("sendEmoji.onDone")
+                onDone(ChatRoundResult(
+                    ok: dto.ok,
+                    text: dto.text,
+                    error: dto.error,
+                    aiMessageId: dto.aiMessageId,
+                    isDemo: dto.demo
+                ))
+            }
+        )
+        return ChatSendHandle(cancellable: cancellable)
+    }
+
     /// 图片 ID → 本机绝对路径（http(s) 原样返回；不存在返回 ""）。
     func imagePath(for imageId: String) -> String {
         chatEngineBridge.imagePath(imageId: imageId)
@@ -215,5 +253,20 @@ extension AppGraphClient {
                 }
             )
         }
+    }
+}
+
+/// 表情目录项（Swift 侧视图模型）。
+struct EmojiItem: Identifiable, Hashable {
+    let id: String
+    let assetName: String
+    let label: String
+    let detail: String
+
+    init(dto: EmojiDto) {
+        id = dto.id
+        assetName = dto.assetName
+        label = dto.label
+        detail = dto.description
     }
 }

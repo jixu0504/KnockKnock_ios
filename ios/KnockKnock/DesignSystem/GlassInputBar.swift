@@ -13,7 +13,7 @@
 //  - **键盘避让采用显式监听**（keyboardWillShow/Hide 抬升输入栏），不依赖父视图 safeArea 推导
 //    （TabView + NavigationStack + safeAreaInset 组合下更可靠）；`SelfTestLog` 打点原样保留；
 //  - 回调签名不变：`onSend` / `onCancel` / `onAddAttachment`；`placeholder` 可覆盖（群聊用）；
-//  - 多行输入（1...5 行）自适应，Dynamic Type 大字号下不裁切（minHeight + 自适应高度）。
+//  - 多行输入最多显示 3 行，超出后滚动；Dynamic Type 大字号下不裁切。
 //
 //  可访问性：
 //  - 发送 / 停止 / 附件按钮均有 `accessibilityLabel`，最小命中 44pt 由按钮 frame 保证；
@@ -32,6 +32,8 @@ struct GlassInputBar: View {
     var onCancel: () -> Void
     /// T42：附件（+）→ PhotosPicker → 发送图片
     var onAddAttachment: () -> Void = {}
+    /// 表情按钮（仅线上模式传入；nil = 不显示）。
+    var onOpenEmoji: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
     /// 键盘抬升高度（已扣除底部安全区，避免重复留白）
@@ -51,6 +53,7 @@ struct GlassInputBar: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: KnockTokens.spacingS) {
             attachmentButton
+            if let onOpenEmoji { emojiButton(onOpenEmoji) }
             inputField
             trailingButton
         }
@@ -97,11 +100,27 @@ struct GlassInputBar: View {
         .accessibilityLabel("添加附件")
     }
 
+    /// 表情入口：与附件按钮同尺寸同风格（圆形描边），仅在线上模式渲染。
+    private func emojiButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "face.smiling")
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(KnockTokens.textPrimary)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(KnockTokens.plusCircle))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("选择表情")
+    }
+
     // MARK: 输入框（胶囊 + 1.5pt 描边 + 行底 + 多行自适应）
 
     private var inputField: some View {
         TextField("", text: $text, prompt: promptText, axis: .vertical)
-            .lineLimit(1...5)
+            .lineLimit(1...3)
+            .frame(minHeight: 44)
             .font(KnockTypography.font(.body, dynamicTypeSize: dynamicTypeSize))
             .foregroundStyle(Color(hex: 0x0B0B0C))
             .tint(KnockTokens.chatBlue)

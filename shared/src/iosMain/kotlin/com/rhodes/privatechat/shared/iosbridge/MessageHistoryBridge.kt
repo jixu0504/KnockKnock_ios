@@ -2,6 +2,7 @@ package com.rhodes.privatechat.shared.iosbridge
 
 import com.rhodes.privatechat.shared.data.ChatRepository
 import com.rhodes.privatechat.shared.domain.chat.DefaultReplyCodec
+import com.rhodes.privatechat.shared.domain.chat.EmojiMessageContract
 import com.rhodes.privatechat.shared.domain.chat.ImageMessageContract
 import com.rhodes.privatechat.shared.domain.chat.PrivateReplyFormat
 import com.rhodes.privatechat.shared.domain.chat.VisibleReplyContract
@@ -185,6 +186,14 @@ class MessageHistoryBridge internal constructor(
                     else -> "[图片]"
                 },
                 imageId = image?.imageUri.orEmpty(),
+            )
+        }
+        "emoji" -> {
+            val emoji = EmojiMessageContract.parse(content)
+            ParsedContent(
+                // 解析失败（旧数据把提示词文本当正文存过）时退回原文，不显示空白标签。
+                text = emoji?.let { "[表情：${it.label}]" } ?: content.trim(),
+                imageId = emoji?.imageId.orEmpty(),
             )
         }
         "gift_hidden" -> ParsedContent(text = "[送出了礼物]")

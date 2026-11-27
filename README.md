@@ -1,14 +1,14 @@
 # 敲敲 KnockKnock iOS
 
 > **KnockKnock_ios** —— 敲敲的 iOS 原生版：Kotlin Multiplatform 共享领域层 + SwiftUI 原生壳。
-> 当前 **v0.3.1（build 4）测试版**：记忆与印象系统升级完成，模拟器验证通过；实机安装与发布 Gate 待执行。
+> 当前 **v0.3.3（build 6）测试版**：记忆与印象系统升级完成，模拟器验证通过；实机安装与发布 Gate 待执行。
 > 本仓库是 RhodesLink（Android）的非官方 iOS 移植，产品名与标识以「敲敲 / KnockKnock」为准。
 
 <p align="center">
-  <img src="docs/assets/memory-clean.png" width="240" alt="记忆管理（敲敲 0.3.1）" />
-  <img src="docs/assets/impressions-clean.png" width="240" alt="大家的印象（敲敲 0.3.1）" />
-  <img src="docs/assets/settings-clean.png" width="240" alt="设置·记忆（敲敲 0.3.1）" />
-  <img src="docs/assets/ranking-clean.png" width="240" alt="聊天排行榜（敲敲 0.3.1）" />
+  <img src="docs/assets/memory-clean.png" width="240" alt="记忆管理（敲敲 0.3.2）" />
+  <img src="docs/assets/impressions-clean.png" width="240" alt="大家的印象（敲敲 0.3.2）" />
+  <img src="docs/assets/settings-clean.png" width="240" alt="设置·记忆（敲敲 0.3.2）" />
+  <img src="docs/assets/ranking-clean.png" width="240" alt="聊天排行榜（敲敲 0.3.2）" />
 </p>
 
 ---
@@ -255,7 +255,7 @@ python3 scripts/knock-yellow-audit.py "screenshots/knock-final-*.png" --md-out /
 ## 🧪 测试与自检
 
 ```bash
-gradle :shared:iosSimulatorArm64Test    # 737 例；8 条 KtorDarwinStreamingTest 需本地 127.0.0.1 测试服务，属基线失败
+gradle :shared:iosSimulatorArm64Test    # 739 例；8 条 KtorDarwinStreamingTest 需本地 127.0.0.1 测试服务，属基线失败
 ```
 
 App 内置可自动化自检（启动参数触发，普通启动不显示任何自检 UI；日志写入 App 沙盒）：
@@ -312,6 +312,8 @@ App 内置可自动化自检（启动参数触发，普通启动不显示任何�
 
 | 日期 | 内容 |
 |---|---|
+| 2026-11-27 | **v0.3.3 表情发送**：线上模式可发 19 个「敲敲」绳网表情；表情**不经过识图**，以「情绪 + 画面」文字语义送模型（`用户发送了一个表情：生气（深红底 + 皱眉）`），因此不消耗视觉能力与图片 token；同时修复私聊输入框改为初始一行、最多三行自适应 |
+| 2026-11-27 | **v0.3.2 交互修复版**：私聊输入框最多显示三行；修复已有角色人设保存后的读回与页面刷新；联系人页点击空白处或滑动列表可收起键盘 |
 | 2026-11-27 | **v0.3.1 记忆修复版**：修复记忆抽取鉴权、事实归并、查询—事实匹配、纯提问噪声、旧事实取代与印象页回退说明；新增小语料与取代方向回归测试；10 轮跨会话复测 4/4 查询通过 |
 | 2026-11-26 | **v0.3.0 记忆与印象升级**：三层记忆维护、BM25+向量双通道与拒答、RRF/同主题上限/实体通道、事实键/关系/冲突、整合幂等与预算；印象一等表/证据链/回填/分页/拒绝冻结编辑；schema 33、备份 v2、界面去开发者化；工程/target/scheme/产物统一为 KnockKnock，bundle id 保持 `com.xsbcjx.knockknock` |
 | 2026-11-25 | **「敲敲」UI 全面改版（P1–P5）**：全站统一电光黄/黑胶囊视觉 + 深浅双主题 + 自绘 TabBar/分段栏/空态/弹窗/红色 X 结束键；Liquid Glass 复核结论 A（SwiftUI 走到底）；46 张双主题终版截图 + 黄色面积审计 + 可访问性证据（详见 [`handoffs/knock-ui-final.md`](handoffs/knock-ui-final.md)） |

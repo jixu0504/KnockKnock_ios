@@ -110,6 +110,8 @@ struct MessageBubble: View {
     var onImageTap: (() -> Void)? = nil
     /// T43 群聊：多发言人气泡的发送者名（接收方向显示在气泡上方；私聊/系统消息为空不显示）
     var senderName: String = ""
+    /// 表情消息的本地资源名；非空时按表情渲染（无相框、无全屏，尺寸固定）。
+    var emojiAssetName: String = ""
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var caretVisible = true
@@ -141,7 +143,18 @@ struct MessageBubble: View {
         }
     }
 
+    @ViewBuilder
     private var bubbleBody: some View {
+        if !emojiAssetName.isEmpty {
+            // 表情不套气泡底色：直接是一张表情图，视觉上更接近聊天软件的表情消息。
+            EmojiImage(assetName: emojiAssetName, size: 96)
+                .accessibilityLabel("表情消息")
+        } else {
+            styledBubbleBody
+        }
+    }
+
+    private var styledBubbleBody: some View {
         bubbleContent
             .padding(.horizontal, 10)
             .padding(.vertical, 8)

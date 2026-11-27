@@ -517,6 +517,47 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
+    /// 表情目录（19 个绳网表情）。
+    func emojiCatalog() -> [EmojiItem] { bridge.emojiCatalog() }
+
+    /// 发送表情（仅线上模式）。表情不走识图：shared 侧用目录里的情绪+画面文字送给模型。
+    func sendEmoji(_ emoji: EmojiItem) {
+        guard !isStreaming else { return }
+        guard mode.lowercased() == "online" else {
+            errorText = "表情仅支持线上模式发送"
+            SelfTestLog.add("chat emoji blocked mode=\(mode)")
+            return
+        }
+        errorText = nil
+        // 乐观插入：表情气泡 + AI 流式占位（与文本发送同构，onDone 后按 DB 行替换）
+        append(
+            side: .outgoing,
+            text: "[表情：\(emoji.label)]",
+            mode: mode,
+            type: "emoji",
+            imageId: "emoji:\(emoji.id)"
+        )
+        let placeholderID = append(side: .incoming, text: "", isStreaming: true, mode: mode, typedCharacters: 0)
+        streamingMessageID = placeholderID
+        isStreaming = true
+        statusLine = "正在回应…"
+        SelfTestLog.add("chat emoji send id=\(emoji.id) label=\(emoji.label) mode=\(mode)")
+
+        cancellable = bridge.sendEmojiChat(
+            sessionId: sessionId,
+            emojiId: emoji.id,
+            onDelta: { [weak self] delta in
+                Task { @MainActor in self?.appendDelta(delta) }
+            },
+            onReplySegments: { [weak self] segments in
+                Task { @MainActor in self?.applyStreamingSegments(segments) }
+            },
+            onDone: { [weak self] result in
+                Task { @MainActor in self?.finish(result) }
+            }
+        )
+    }
+
     /// 取消当前轮次（IosCancellable.cancel + 引擎 generation 失效）
     func cancel() {
         cancellable?.cancel()
@@ -832,7 +873,9 @@ final class ChatViewModel: ObservableObject {
         text: String,
         isStreaming: Bool = false,
         mode: String = "",
-        typedCharacters: Int = Int.max
+        typedCharacters: Int = Int.max,
+        type: String = "text",
+        imageId: String = ""
     ) -> Int64 {
         let id = nextTempID
         nextTempID -= 1
@@ -843,6 +886,8 @@ final class ChatViewModel: ObservableObject {
                 text: text,
                 isStreaming: isStreaming,
                 timeText: Self.nowTimeText(),
+                imageId: imageId,
+                type: type,
                 mode: mode.isEmpty ? self.mode : mode,
                 typedCharacters: typedCharacters
             )

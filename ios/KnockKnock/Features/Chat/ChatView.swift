@@ -32,6 +32,8 @@ struct ChatView: View {
     /// T42：图片附件选择（+ → PhotosPicker → shared 媒体入库 → 引擎发送）
     @State private var pickedPhotoItem: PhotosPickerItem?
     @State private var isPhotoPickerPresented = false
+    /// 表情选择面板（仅线上模式；表情不进识图管线）
+    @State private var isEmojiPickerPresented = false
     /// T42：等待删除确认的消息（本地删除）
     @State private var pendingDeleteMessage: ChatMessage?
     /// T55：聊天模式选择弹窗（线上 / 线下 / 导演）
@@ -73,6 +75,7 @@ struct ChatView: View {
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 openRoleProfile()
             }
+            await runEmojiLaunchHooksIfNeeded()
             // 敲敲自绘长按菜单演示/取证钩子（仅 --knock-menu-demo；对用户路径零影响）
             if ProcessInfo.processInfo.arguments.contains("--knock-menu-demo") {
                 await runKnockMenuDemoIfNeeded()
@@ -123,6 +126,15 @@ struct ChatView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .shellSelfTestSendMessage)) { notification in
             model.send(notification.object as? String)
+        }
+
+        .sheet(isPresented: $isEmojiPickerPresented) {
+            EmojiPickerSheet { emoji in
+                isEmojiPickerPresented = false
+                model.sendEmoji(emoji)
+            } onCancel: {
+                isEmojiPickerPresented = false
+            }
         }
         // T42 图片附件：PhotosPicker → Data → 缩放 → shared 媒体入库 → 引擎 sendImageMessage
         .photosPicker(
@@ -343,6 +355,21 @@ struct ChatView: View {
         return "对\(bare)说些什么…"
     }
 
+    /// 表情取证钩子（仅启动参数；普通启动直接返回）：--emoji-picker-demo / --emoji-send <id>。
+    private func runEmojiLaunchHooksIfNeeded() async {
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("--emoji-picker-demo") {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            isEmojiPickerPresented = true
+        }
+        guard let index = args.firstIndex(of: "--emoji-send"), index + 1 < args.count else { return }
+        let emojiId = args[index + 1]
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        let catalog = model.emojiCatalog()
+        guard let emoji = catalog.first(where: { $0.id.caseInsensitiveCompare(emojiId) == .orderedSame }) else { return }
+        model.sendEmoji(emoji)
+    }
+
     private var composerStack: some View {
         VStack(spacing: 0) {
             if let err = model.errorText {
@@ -357,7 +384,8 @@ struct ChatView: View {
                 placeholder: inputPlaceholder,
                 onSend: { model.send() },
                 onCancel: { model.cancel() },
-                onAddAttachment: { isPhotoPickerPresented = true }
+                onAddAttachment: { isPhotoPickerPresented = true },
+                onOpenEmoji: model.mode.lowercased() == "online" ? { isEmojiPickerPresented = true } : nil
             )
         }
     }
@@ -522,6 +550,8 @@ struct ChatView: View {
             MessageBubble(text: item.text, side: .system)
         case .image:
             imageRow(item)
+        case .emoji:
+            emojiRow(item)
         case .dialogue:
             bubbleRow(item, side: .incoming)
         case .text:
@@ -591,6 +621,22 @@ struct ChatView: View {
         }
         router.chatPath.append(Route.roleDetail(roleId: model.operatorId))
         SelfTestLog.add("chat avatar profile push roleId=\(model.operatorId) depth=\(router.chatPath.count)")
+    }
+
+    /// 表情消息行：本地资源小图，不套相框、不点开全屏（表情不是可放大的图片消息）。
+    @ViewBuilder
+    private func emojiRow(_ item: ChatDisplayItem) -> some View {
+        let side: BubbleSide = item.side == .outgoing ? .outgoing : .incoming
+        HStack(alignment: .top, spacing: KnockTokens.spacingS) {
+            if side == .incoming { messageAvatar(for: side) }
+            MessageBubble(
+                text: item.text,
+                side: side,
+                emojiAssetName: item.emojiAssetName
+            )
+            if side == .outgoing { messageAvatar(for: side) }
+        }
+        .frame(maxWidth: .infinity, alignment: side == .outgoing ? .trailing : .leading)
     }
 
     /// 图片消息行：仍按整条消息渲染（不拆段），点击全屏（T42 路径不变）

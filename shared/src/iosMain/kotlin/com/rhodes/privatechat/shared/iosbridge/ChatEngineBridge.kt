@@ -5,6 +5,7 @@ package com.rhodes.privatechat.shared.iosbridge
 import com.rhodes.privatechat.shared.data.ChatRepository
 import com.rhodes.privatechat.shared.db.DatabaseWrapper
 import com.rhodes.privatechat.shared.domain.chat.ChatEngine
+import com.rhodes.privatechat.shared.domain.chat.EmojiCatalog
 import com.rhodes.privatechat.shared.domain.chat.DefaultReplyCodec
 import com.rhodes.privatechat.shared.domain.chat.EngineEvent
 import com.rhodes.privatechat.shared.domain.chat.EngineEventSink
@@ -262,6 +263,61 @@ class ChatEngineBridge internal constructor(
             }
         }
 
+    /**
+     * 发送表情（仅线上模式）。
+     *
+     * 表情不走识图：[emojiId] 只需是 [EmojiCatalog] 里的 id，语义由目录里的
+     * 情绪名 + 画面描述以纯文本送模型。onDone 与文本发送同构。
+     */
+    fun sendEmoji(
+        sessionId: String,
+        emojiId: String,
+        onDelta: (String) -> Unit,
+        onReplySegments: (List<MessageSegmentDto>) -> Unit,
+        onDone: (ChatResultDto) -> Unit,
+    ): IosCancellable {
+        val cancellable = IosCancellable { cancelActive() }
+        val job = workScope.launch {
+            try {
+                val session = resolveSession(sessionId)
+                    ?: throw IllegalStateException("没有可用会话，请先创建对话")
+                require(!session.id.startsWith("group_")) { "群聊表情请使用群聊接口" }
+                val emoji = EmojiCatalog.find(emojiId)
+                    ?: throw IllegalStateException("未知表情：$emojiId")
+                platformSynchronized(lock) {
+                    activeSessionId = session.id
+                    capturedReplyId = 0L
+                    capturedUserIds = emptySet()
+                    capturedError = ""
+                    actionError = ""
+                    actionFailed = false
+                }
+                val engineJob = engine.sendEmojiMessage(
+                    emoji = emoji,
+                    session = session,
+                    mode = session.mode,
+                    onResponseComplete = { stored ->
+                        completeSend(session, stored, onDelta, onReplySegments, onDone)
+                    },
+                )
+                if (engineJob == null) {
+                    val reason = platformSynchronized(lock) { capturedError }
+                        .ifBlank { "表情未发送（仅支持线上模式）" }
+                    mainScope.launch {
+                        onDone(ChatResultDto(false, 0L, 0L, "", reason, demo = aiRouter.lastWasDemo))
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                mainScope.launch {
+                    onDone(ChatResultDto(false, 0L, 0L, "", t.message ?: "表情发送失败", demo = aiRouter.lastWasDemo))
+                }
+            }
+        }
+        activeJob = job
+        return cancellable
+    }
+
     /** 图片消息重发（oracle resumeImageReply :2742-2756；仅识别失败/发送失败的 image 消息）。 */
     fun retryImageMessage(sessionId: String, messageId: Long, onDone: (String?) -> Unit) =
         runOperation(onDone) {
@@ -369,8 +425,14 @@ class ChatEngineBridge internal constructor(
      * 图片 ID → 本机绝对文件路径（渲染用；同步、无 IO 异常）。
      * 返回：http(s)/data: 原样透传；本地文件存在 → 绝对路径；不存在/非媒体 ID → ""。
      */
+    /** 表情目录（id/资源名/情绪/画面），供 Swift 选择器展示；不含任何图片数据。 */
+    fun emojiCatalog(): List<EmojiDto> =
+        EmojiCatalog.all.map { EmojiDto(it.id, it.assetName, it.label, it.description) }
+
     fun imagePath(imageId: String): String {
         if (imageId.isBlank()) return ""
+        // 表情走 App 内置资源，不是媒体文件（由 Swift 侧按资源名渲染）。
+        if (imageId.startsWith(EmojiCatalog.IMAGE_ID_PREFIX)) return ""
         if (imageId.startsWith("http://") || imageId.startsWith("https://") || imageId.startsWith("data:")) {
             return imageId
         }
@@ -1185,3 +1247,11 @@ private class RoutingStreamingClient(
         return demo.complete(messages, stage)
     }
 }
+
+/** 表情目录项（Swift 选择器用）。 */
+class EmojiDto(
+    val id: String,
+    val assetName: String,
+    val label: String,
+    val description: String,
+)

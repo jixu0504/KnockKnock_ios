@@ -129,6 +129,46 @@ object VisibleReplyContract {
 }
 
 /**
+ * 表情消息 JSON 契约。
+ *
+ * 与图片消息的区别是**没有 visionSummary**：表情的语义在发送时就已经是文字（情绪名 + 画面），
+ * 落库只为回放渲染，提示词侧直接读 [EmojiCatalog.promptText]，全程不调用识图模型。
+ */
+object EmojiMessageContract {
+
+    data class EmojiMessageJson(
+        val emojiId: String,
+        val label: String,
+        val description: String,
+    ) {
+        /** 渲染用资源名（与打包资源同名）。 */
+        val assetName: String get() = "emoji_$emojiId"
+        val imageId: String get() = "${EmojiCatalog.IMAGE_ID_PREFIX}$emojiId"
+    }
+
+    fun encode(emojiId: String, label: String, description: String): String = buildJsonObject {
+        put("emojiId", JsonPrimitive(emojiId))
+        put("label", JsonPrimitive(label))
+        put("description", JsonPrimitive(description))
+    }.toString()
+
+    fun parse(content: String): EmojiMessageJson? = runCatching {
+        val root = json.parseToJsonElement(content).jsonObject
+        EmojiMessageJson(
+            emojiId = root["emojiId"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            label = root["label"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            description = root["description"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+        )
+    }.getOrNull()
+
+    /** 提示词文本：只有文字语义，不含任何图片数据。 */
+    fun promptText(content: String): String {
+        val parsed = parse(content) ?: return "用户发送了一个表情"
+        return "用户发送了一个表情：${parsed.label}（${parsed.description}）"
+    }
+}
+
+/**
  * 图片消息 JSON 契约（oracle ChatViewModel.kt:1859-1942 + MessageParser.kt:137-157）。
  * 三态：占位（visionSummary=""）→ 回填（visionSummary≤800 字）→ status="failed"（isSendFailed）。
  */
@@ -214,6 +254,8 @@ object PrivateReplyFormat {
         if (msg.type == "gift_reply_failed") return ""
         if (msg.type == "gift_hidden") return giftPromptText(msg.content)
         if (msg.type == "image" && msg.isMe) return formatImageMessageForPrompt(msg)
+        // 表情消息：提示词里只出现文字语义（情绪 + 画面），模型据此理解，不需要看图。
+        if (msg.type == EmojiCatalog.MESSAGE_TYPE && msg.isMe) return EmojiMessageContract.promptText(msg.content)
         if (msg.isMe) return "用户：${msg.content.take(500)}"
         if (msg.type != "ai_json") return msg.content.take(500)
         return try {

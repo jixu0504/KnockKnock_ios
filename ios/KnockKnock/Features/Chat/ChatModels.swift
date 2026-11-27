@@ -109,8 +109,15 @@ struct ChatMessage: Identifiable, Hashable {
 
     // MARK: - T42 消息操作可用性（对齐 Android MessageList.kt 菜单条件）
 
-    /// 图片消息（有 imageUri 或 type=image）
-    var isImage: Bool { type == "image" || !imageId.isEmpty }
+    /// 表情消息（type=emoji，imageId 形如 `emoji:SMS-06`）
+    var isEmoji: Bool { type == "emoji" }
+    /// 表情本地资源名（`emoji_SMS-06`）；非表情为空。
+    var emojiAssetName: String {
+        guard imageId.hasPrefix("emoji:") else { return "" }
+        return "emoji_" + imageId.dropFirst("emoji:".count)
+    }
+    /// 图片消息（有 imageUri 或 type=image；表情不算）
+    var isImage: Bool { type == "image" || (!imageId.isEmpty && !isEmoji) }
     /// AI 回复消息（可重说/继续说）
     var isAIMessage: Bool { type == "ai_json" && side == .incoming }
     /// 未送达消息（可重试；引擎仅接受 send_failed / gift_reply_failed）
@@ -179,6 +186,8 @@ enum ChatDisplayType: String {
     case narration
     case text
     case image
+    /// 表情消息：本地资源图，不走相框/全屏，只按情绪语义展示。
+    case emoji
     case system
 }
 
@@ -202,6 +211,8 @@ struct ChatDisplayItem: Identifiable, Hashable {
     let side: ChatMessage.Side
     /// 图片消息的本地 imageUri（点击全屏用；非图片为空）
     let imageId: String
+    /// 表情消息的本地资源名（`emoji_SMS-06`）；非表情为空
+    var emojiAssetName: String = ""
     /// 时间分隔条只在该消息的首段显示（微信/QQ 同款 ≥5 分钟规则）
     let showsTimeSeparator: Bool
 }
@@ -243,7 +254,9 @@ enum ChatDisplayItemBuilder {
             let segments = visibleSegments(for: message)
             if segments.isEmpty {
                 let type: ChatDisplayType
-                if message.isImage {
+                if message.isEmoji {
+                    type = .emoji
+                } else if message.isImage {
                     type = .image
                 } else if message.side == .system {
                     type = .system
@@ -266,6 +279,7 @@ enum ChatDisplayItemBuilder {
                         isMe: message.side == .outgoing,
                         side: message.side,
                         imageId: message.imageId,
+                        emojiAssetName: message.emojiAssetName,
                         showsTimeSeparator: showTime
                     )
                 )

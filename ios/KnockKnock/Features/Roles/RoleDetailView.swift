@@ -96,7 +96,8 @@ struct RoleDetailView: View {
                 roleId: role?.id ?? roleId,
                 onSaved: { item in
                     SelfTestLog.add("role detail edit saved id=\(item.id) name=\(item.name)")
-                    Task { await load() }
+                    showRoleEditor = false
+                    Task { @MainActor in await load() }
                 },
                 onDeleted: { id in
                     SelfTestLog.add("role detail edit deleted id=\(id)")

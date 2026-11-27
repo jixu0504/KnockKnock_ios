@@ -152,6 +152,41 @@ class DatabaseMigrationTest {
         assertTrue(upgradeMs < 10_000, "升级路径应 <10s，实测 ${upgradeMs}ms")
     }
 
+    /** v0.2.0（user_version=24）覆盖升级到 0.3.2（33）时，已有会话与消息必须保留。 */
+    @Test
+    fun upgradeFromV24PreservesExistingSessions() = withTempDir("rhodes-db-test") { dir ->
+        val dbPath = "$dir/rhodes-test.db"
+        val driver1 = DatabaseDriverFactory().createDriver(dbPath)
+        driver1.execute(
+            null,
+            "INSERT INTO chat_sessions(id, operatorId, operatorName, lastMessage, lastTime, mode) " +
+                "VALUES('session_keep', 'op_keep', '保留角色', '0.2.0 的最后一条消息', 123456, 'online')",
+            0,
+        )
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingBlob", 0)
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingDimension", 0)
+        driver1.execute(null, "ALTER TABLE vector_memories DROP COLUMN embeddingDtype", 0)
+        driver1.execute(null, "PRAGMA user_version = 24", 0)
+        driver1.close()
+
+        val driver2 = DatabaseDriverFactory().createDriver(dbPath)
+        try {
+            assertEquals(33L, userVersion(driver2), "0.2.0 升到 0.3.2 后 user_version 应为 33")
+            val session = driver2.executeQuery(
+                null,
+                "SELECT operatorName, lastMessage FROM chat_sessions WHERE id='session_keep'",
+                { cursor ->
+                    cursor.next()
+                    QueryResult.Value(cursor.getString(0) to cursor.getString(1))
+                },
+                0,
+            ).value
+            assertEquals("保留角色" to "0.2.0 的最后一条消息", session, "覆盖安装不得丢失旧会话")
+        } finally {
+            driver2.close()
+        }
+    }
+
     @Test
     fun warmReopenWorksAndKeepsData() = withTempDir("rhodes-db-test") { dir ->
         val dbPath = "$dir/rhodes-test.db"

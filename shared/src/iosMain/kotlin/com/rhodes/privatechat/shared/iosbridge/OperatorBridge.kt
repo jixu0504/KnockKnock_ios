@@ -11,6 +11,7 @@ import kotlin.native.ObjCName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import platform.Foundation.NSUUID
+import platform.Foundation.NSUserDefaults
 
 /**
  * 角色人设编辑桥（T49 加急：新建 / 编辑 / 头像 / 人设 / 提示词槽位 / 删除）。
@@ -94,6 +95,8 @@ class OperatorBridge internal constructor(
                 // Android OperatorViewModel.saveOperator:124-129 —— 已有角色保存后同步会话头像/标题
                 runCatching { chatRepo.syncOperatorAvatar(draft.id, saved.avatarId) }
                 runCatching { chatRepo.syncOperatorName(draft.id, saved.name) }
+                // 让提示词槽位在覆盖安装/立即重启后也能按已保存值读回。
+                NSUserDefaults.standardUserDefaults.synchronize()
                 mainScope.launch { onResult(saved, null) }
             } catch (t: Throwable) {
                 mainScope.launch { onResult(null, t.message ?: "保存角色失败") }

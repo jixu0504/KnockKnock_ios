@@ -144,6 +144,14 @@ struct RoleEditView: View {
             ) {
                 Task { await deleteRole() }
             }
+            .alert("操作未完成", isPresented: Binding(
+                get: { errorText != nil },
+                set: { if !$0 { errorText = nil } }
+            )) {
+                Button("知道了") { errorText = nil }
+            } message: {
+                Text(errorText ?? "")
+            }
         }
     }
 
@@ -836,6 +844,7 @@ struct RoleEditView: View {
         switch saveResult {
         case .failure(let error):
             errorText = error.message
+            NSLog("[KnockKnock][Persona] save failed new=%d error=%@", isNew, error.message)
             SelfTestLog.add("persona edit save failed new=\(isNew) error=\(error.message)")
         case .success(var item):
             guard !item.id.isEmpty else {
@@ -855,6 +864,11 @@ struct RoleEditView: View {
                 }
                 cleanupPendingAvatarFile()
             }
+            // 保存后立即从真实存储读回并同步表单，避免 sheet 关闭前后仍显示旧值。
+            if let refreshed = try? await reloadItem(id: item.id) {
+                item = refreshed
+            }
+            apply(item)
             let wantChat = isNew && enterChatAfterSave
             SelfTestLog.add("persona edit saved id=\(item.id) new=\(isNew) name=\(item.name) avatar=\(item.avatarId) personaLen=\(item.persona.count) tags=\(item.tags) relation=\(item.relationType)")
             onSaved?(item)
