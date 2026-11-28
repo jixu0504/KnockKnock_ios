@@ -185,11 +185,39 @@ struct GroupChatView: View {
                 GroupSelfTestLog.add("group recall/delete selftest done")
                 await runLegacyCleanup()
             }
-            // 自动化取证：`--group-mode-offline-demo` 切到线下模式后保持（供截图取证胶囊文案）
+            // 自动化取证：`--group-mode-offline-demo` / `--group-mode-director-demo` 切模式后保持（截图用）
             if ProcessInfo.processInfo.arguments.contains("--group-mode-offline-demo") {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 await model.setMode("offline")
                 GroupSelfTestLog.add("group mode offline demo mode=\(model.modeText)")
+            }
+            // v0.3.6 真实对话测试：`--director-live-test` 按顺序发多轮导演指令，逐轮落盘完整回复
+            // （仅诊断用；指令文本由启动参数 `--director-lines` 之后逐条传入，避免写死进源码）
+            if ProcessInfo.processInfo.arguments.contains("--director-live-test") {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                await model.setMode("director")
+                let lines = ProcessInfo.processInfo.arguments.directorInstructionLines
+                for (idx, line) in lines.enumerated() {
+                    GroupSelfTestLog.add("director live turn=\(idx + 1) INSTRUCTION=\(line)")
+                    model.draft = line
+                    model.send()
+                    for _ in 0..<180 where model.isStreaming {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    let lastAI = model.messages.last { !$0.isMe }
+                    GroupSelfTestLog.add("director live turn=\(idx + 1) REPLY_BEGIN")
+                    for rawLine in (lastAI?.text ?? "<无回复>").split(separator: "\n") {
+                        GroupSelfTestLog.add("director live | \(rawLine)")
+                    }
+                    GroupSelfTestLog.add("director live turn=\(idx + 1) REPLY_END")
+                }
+                GroupSelfTestLog.add("director live test done")
+            }
+            if ProcessInfo.processInfo.arguments.contains("--group-mode-director-demo") {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await model.setMode("director")
+                GroupSelfTestLog.add("group mode director demo mode=\(model.modeText)")
             }
         }
     }

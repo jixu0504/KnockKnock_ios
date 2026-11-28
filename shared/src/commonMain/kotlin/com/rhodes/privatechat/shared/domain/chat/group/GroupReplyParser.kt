@@ -172,7 +172,13 @@ object GroupTaggedReplyParser {
                 }
             }
         }
-        return results.filter { it.type.equals("narration", true) || it.message.isNotBlank() }
+        return GroupReplyParser.splitQuotedProseFromDialogue(
+            GroupReplyParser.splitActionsOutOfDialogue(
+                results.filter { it.type.equals("narration", true) || it.message.isNotBlank() }
+            )
+        ).map { item ->
+            item.copy(message = GroupReplyParser.normalizeMixedLanguage(item.message))
+        }.filter { it.type.equals("narration", true) || it.message.isNotBlank() }
     }
 
     /** 从心情标签块里切出心情值与仍然属于台词的剩余正文。 */
@@ -229,7 +235,12 @@ object GroupReplyParser {
     fun extractGroupResults(raw: String): List<GroupMsgResult> {
         runCatching {
             val arr = json.decodeFromString<List<GroupMsgResult>>(codec.cleanJson(raw))
-            if (arr.isNotEmpty()) return arr.filter { it.message.isNotBlank() }
+            if (arr.isNotEmpty()) {
+                return GroupReplyParser.splitQuotedProseFromDialogue(
+                    GroupReplyParser.splitActionsOutOfDialogue(arr.filter { it.message.isNotBlank() })
+                ).map { it.copy(message = GroupReplyParser.normalizeMixedLanguage(it.message)) }
+                    .filter { it.type.equals("narration", true) || it.message.isNotBlank() }
+            }
         }
         val recovered = JsonBlockExtractor.extract(raw).flatMap { block ->
             runCatching { json.decodeFromString<List<GroupMsgResult>>(block) }.getOrNull()
@@ -419,11 +430,15 @@ object GroupReplyParser {
     // === 历史/媒体格式化 ===
 
     /** oracle :2009-2046。单条历史消息 → 提示词行；不可用返回空串。 */
-    fun formatGroupHistoryForPrompt(msg: ChatMessage, activeNames: Set<String>): String {
+    fun formatGroupHistoryForPrompt(
+        msg: ChatMessage,
+        activeNames: Set<String>,
+        directorMode: Boolean = false,
+    ): String {
         if (msg.type == "gift_reply_failed") return ""
         if (msg.type == "gift_hidden") return giftPromptText(msg.content)
         if (msg.type == "image" && msg.isMe) return GroupImageJsonContract.formatForPrompt(msg.content)
-        if (msg.isMe) return "用户：${msg.content}"
+        if (msg.isMe) return if (directorMode) "导演指令：${msg.content}" else "用户：${msg.content}"
         if (msg.type == "system") return "系统：${msg.content}"
         if (msg.type != "ai_json") return "${msg.senderName}：${msg.content}"
         return try {
@@ -449,7 +464,288 @@ object GroupReplyParser {
         }
     }
 
-    /** oracle :2071-2074。礼物隐藏消息还原为 prompt 文本。 */
+    /**
+ * 台词纯净兜底（v0.3.6）：模型有时会把动作/镜头写进【发言人】的台词里（尤其导演模式，
+ * 因导演指令本身用括号写舞台提示，模型会模仿）。这里做确定性分流：
+ * - 台词里以括号包裹、且整段形如动作/镜头描述的行，迁出到该台词之前的一段【旁白】；
+ * - 迁出后若台词只剩空白，丢弃该台词段；
+ * - 台词里夹在句子中间的括号（如「我（推门）进来了」）保留原样，避免误伤正常口语。
+ */
+fun splitActionsOutOfDialogue(items: List<GroupMsgResult>): List<GroupMsgResult> {
+    if (items.none { it.type.equals("dialogue", true) }) return items
+    val out = mutableListOf<GroupMsgResult>()
+    for (item in items) {
+        if (!item.type.equals("dialogue", true)) {
+            out += item
+            continue
+        }
+        val (actions, speech) = partitionBracketedAction(item.message)
+        if (actions.isNotEmpty()) {
+            actions.forEach { text ->
+                // 相邻旁白合并，避免一段动作被拆成多条气泡
+                val last = out.lastOrNull()
+                if (last != null && last.type.equals("narration", true)) {
+                    out[out.lastIndex] = last.copy(message = last.message.trimEnd() + " " + text)
+                } else {
+                    out += GroupMsgResult(speaker = "旁白", message = text, type = "narration")
+                }
+            }
+        }
+        if (speech.isNotBlank()) {
+            out += if (speech == item.message) item else item.copy(message = speech)
+        }
+    }
+    return out
+}
+
+/**
+ * 台词纯净兜底 ②（v0.3.6）：台词里「引号之间夹叙述」的情形，例如
+ * `“A。”他没回头，声音压得平直如尺，“B。”` —— 引号外的「他没回头…」属于旁白。
+ * 规则：只要该段台词出现成对引号，就把所有引号内的内容拼成台词，引号外的文字迁为该台词之前的旁白。
+ * 无引号的台词不受影响（可能是正常口语），避免误伤。
+ */
+fun splitQuotedProseFromDialogue(items: List<GroupMsgResult>): List<GroupMsgResult> {
+    if (items.none { it.type.equals("dialogue", true) }) return items
+    val out = mutableListOf<GroupMsgResult>()
+    for (item in items) {
+        if (!item.type.equals("dialogue", true)) {
+            out += item
+            continue
+        }
+        val (spoken, prose) = extractQuotedSpeech(item.message)
+        if (spoken == null) {
+            out += item
+            continue
+        }
+        if (prose.isNotBlank()) {
+            val last = out.lastOrNull()
+            if (last != null && last.type.equals("narration", true)) {
+                out[out.lastIndex] = last.copy(message = last.message.trimEnd() + " " + prose.trim())
+            } else {
+                out += GroupMsgResult(speaker = "旁白", message = prose.trim(), type = "narration")
+            }
+        }
+        if (spoken.isNotBlank()) out += item.copy(message = spoken.trim())
+    }
+    return out
+}
+
+/**
+ * 分离「引号内台词」与「引号外叙述」。
+ * 支持 “”、""、「」、『』 四组引号；返回 null 表示该段没有成对引号（保持原样）。
+ */
+fun extractQuotedSpeech(message: String): Pair<String?, String> {
+    val pairs = listOf('“' to '”', '「' to '」', '『' to '』', '"' to '"')
+    data class Span(val start: Int, val end: Int, val content: String)
+    val spans = mutableListOf<Span>()
+    var index = 0
+    while (index < message.length) {
+        val open = pairs.firstOrNull { it.first == message[index] } ?: run { index++; null } ?: continue
+        val close = open.second
+        var depth = 1
+        var cursor = index + 1
+        var endIndex = -1
+        while (cursor < message.length) {
+            val ch = message[cursor]
+            if (ch == open.first && open.first != close) depth++ else if (ch == close) {
+                depth--
+                if (depth == 0) { endIndex = cursor; break }
+            }
+            cursor++
+        }
+        if (endIndex < 0) { index++; continue }
+        spans += Span(index, endIndex, message.substring(index + 1, endIndex))
+        index = endIndex + 1
+    }
+    if (spans.isEmpty()) return null to message
+    val spoken = spans.joinToString("") { it.content }.trim()
+    val proseBuilder = StringBuilder()
+    var last = 0
+    for (span in spans) {
+        if (span.start > last) proseBuilder.append(message, last, span.start)
+        last = span.end + 1
+    }
+    if (last < message.length) proseBuilder.append(message, last, message.length)
+    return spoken to proseBuilder.toString().replace("\n", " ").trim()
+}
+
+/**
+ * 中文纯净兜底（v0.3.6）：模型偶尔在中文旁白/台词里夹英文单词（如「门缝 widening 至两指宽」）。
+ * 这里只做保守归一：专有名词白名单原样保留，常见英文描述词替换为中文，其余拉丁词不做删除
+ * （避免误伤角色名/代号），由提示词层负责根治。
+ */
+fun normalizeMixedLanguage(text: String): String {
+    if (text.none { it.code in 'A'.code..'z'.code }) return text
+    var result = text
+    for ((en, zh) in MIXED_LANGUAGE_REPLACEMENTS) {
+        result = replaceLatinWord(result, en, zh)
+    }
+    // 还原被误替换的白名单词（理论上不会被替换，双保险）
+    for (keep in LATIN_ALLOWLIST) {
+        result = result.replace(zhOf(keep), keep)
+    }
+    return result
+}
+
+private val LATIN_ALLOWLIST = listOf(
+    "B-7", "HIA", "HAND", "TOPS", "Random Play", "W-Engine", "Fairy", "Eous",
+    "Bangboo", "Proxy", "Phaethon", "Belle", "Wise", "Denny", "Inter-Knot",
+)
+
+private val MIXED_LANGUAGE_REPLACEMENTS = listOf(
+    "widening" to "扩大", "narrowing" to "收窄", "opening" to "打开",
+    "okay" to "好", "ok" to "好", "fine" to "没事", "sure" to "当然",
+    "yes" to "是", "no" to "不", "hey" to "喂", "hi" to "嗨",
+    "sorry" to "抱歉", "thanks" to "谢了", "please" to "请",
+    "damn" to "该死", "shit" to "糟了", "wow" to "哇",
+)
+
+private fun zhOf(word: String): String =
+    MIXED_LANGUAGE_REPLACEMENTS.firstOrNull { it.first.equals(word, ignoreCase = true) }?.second ?: word
+
+/** 只替换「两侧不是字母」的整词，且保留首字母大小写语义（中文无需）。 */
+private fun replaceLatinWord(text: String, latin: String, chinese: String): String {
+    if (!text.contains(latin, ignoreCase = true)) return text
+    val out = StringBuilder()
+    var index = 0
+    while (index < text.length) {
+        val matched = text.regionMatches(index, latin, 0, latin.length, ignoreCase = true)
+        val prevOk = index == 0 || !text[index - 1].isLetter()
+        val nextIndex = index + latin.length
+        val nextOk = nextIndex >= text.length || !text[nextIndex].isLetter()
+        if (matched && prevOk && nextOk) {
+            out.append(chinese)
+            index = nextIndex
+        } else {
+            out.append(text[index])
+            index++
+        }
+    }
+    return out.toString()
+}
+
+/** 把台词拆成「动作（括号段）」与「说出口的话」。仅当括号段独占行或整段就是括号内容时才迁出。 */
+fun partitionBracketedAction(message: String): Pair<List<String>, String> {
+    val actions = mutableListOf<String>()
+    val speechLines = mutableListOf<String>()
+    val bareLines = mutableListOf<String>()
+    for (rawLine in message.split('\n')) {
+        val line = rawLine.trim()
+        if (line.isEmpty()) continue
+        val action = leadingBracketAction(line)
+        if (action != null) {
+            actions += action
+            val rest = line.substring(actionSourceLength(line, action)).trim()
+            if (rest.isNotEmpty() && !rest.startsWith("（") && !rest.startsWith("(")) {
+                // 括号后紧跟同一行的台词：保留台词部分
+                speechLines += rest
+            } else if (rest.isNotEmpty()) {
+                // 其余仍是括号内容，继续拆
+                val (moreActions, moreSpeech) = partitionBracketedAction(rest)
+                actions += moreActions
+                if (moreSpeech.isNotBlank()) speechLines += moreSpeech
+            }
+        } else {
+            bareLines += line
+        }
+    }
+    // 裸动作句：同一段台词里若存在带引号的台词行，则无引号且像动作描述的行判为旁白
+    if (bareLines.isNotEmpty()) {
+        val hasQuotedSpeech = bareLines.any { it.startsWith("“") || it.startsWith("\"") || it.startsWith("「") }
+        val survivors = mutableListOf<String>()
+        for (line in bareLines) {
+            if (hasQuotedSpeech && !isQuotedSpeechLine(line) && isBareActionLine(line)) actions += line
+            else survivors += line
+        }
+        // 全部被判为动作时，保留最后一句可朗读的台词（避免台词被清空）
+        if (survivors.isEmpty() && bareLines.isNotEmpty()) survivors += bareLines.last()
+        speechLines += survivors
+    }
+    return actions to speechLines.joinToString("\n")
+}
+
+/** 行首整段为括号包裹时返回其内容（不含括号）；否则 null。 */
+private fun leadingBracketAction(line: String): String? {
+    val open = line.firstOrNull() ?: return null
+    val close = when (open) {
+        '（' -> '）'
+        '(' -> ')'
+        else -> return null
+    }
+    var depth = 0
+    for (index in line.indices) {
+        when (line[index]) {
+            open -> depth++
+            close -> {
+                depth--
+                if (depth == 0) {
+                    val end = index
+                    val rest = line.substring(end + 1).trim()
+                    // 仅当括号段是整行，或其后还有内容时都算；但要求括号内容像描述（非纯语气词）
+                    val inner = line.substring(1, end).trim()
+                    if (inner.isEmpty()) return null
+                    return if (rest.isEmpty() || isActionLike(inner)) inner else null
+                }
+            }
+        }
+    }
+    return null
+}
+
+private fun actionSourceLength(line: String, action: String): Int {
+    // 返回「括号段 + 括号」在该行中的字符长度（含两侧括号）
+    val open = line[0]
+    val close = if (open == '（') '）' else ')'
+    var depth = 0
+    for (index in line.indices) {
+        when (line[index]) {
+            open -> depth++
+            close -> {
+                depth--
+                if (depth == 0) return index + 1
+            }
+        }
+    }
+    return action.length + 2
+}
+
+/** 是否整行是带引号（“”/""/「」）的台词。 */
+private fun isQuotedSpeechLine(line: String): Boolean {
+    val t = line.trim()
+    return t.startsWith("“") || t.startsWith("「") || t.startsWith("\"") ||
+        (t.length > 1 && t.first().isLetterOrDigit() && (t.contains("“") || t.contains("「")))
+}
+
+/**
+ * 是否像「不加括号的动作句」。判据：无引号、含身体部位/位移动词、且缺少说话标记（问句、
+ * 称呼、语气词、第一/第二人称对话动词）。
+ */
+private fun isBareActionLine(line: String): Boolean {
+    val t = line.trim().removeSuffix("。").removeSuffix("，")
+    if (t.isEmpty()) return false
+    if (isQuotedSpeechLine(line)) return false
+    // 说话标记：出现这些基本可判定为台词
+    val speechMarkers = listOf("？", "?", "！", "!", "我", "你", "您", "吧", "吗", "呢", "啊", "喂", "请", "说", "问", "叫", "听")
+    if (speechMarkers.any { t.contains(it) }) return false
+    val actionMarkers = listOf(
+        "左脚", "右脚", "足弓", "重心", "肩线", "肩胛", "指尖", "手臂", "手腕", "手指", "眉", "眼", "视线",
+        "未抬", "微沉", "绷直", "碾", "压地", "垂落", "转身", "后跟", "膝", "腰", "呼吸",
+    )
+    return actionMarkers.any { t.contains(it) } && t.length <= 40
+}
+
+/** 粗略判断括号内容是否像动作/镜头描述（含动词性提示词），避免误伤「（笑）」「（叹气）」这类口语标记。 */
+private fun isActionLike(inner: String): Boolean {
+    if (inner.length < 4) return false
+    val markers = listOf(
+        "走", "推", "按", "握", "抬", "低", "转", "退", "靠", "坐", "站", "蹲", "侧",
+        "进", "出", "开", "关", "看", "望", "扫", "移", "停", "把", "将", "并", "着",
+        "眉", "眼", "手", "脚", "肩", "头", "身", "背", "指尖", "手臂", "视线", "重心",
+    )
+    return inner.length >= 8 && markers.any { inner.contains(it) }
+}
+
+/** oracle :2071-2074。礼物隐藏消息还原为 prompt 文本。 */
     fun giftPromptText(content: String): String = runCatching {
         json.parseToJsonElement(content).jsonObject["prompt"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }.getOrDefault("（用户送出了礼物）")

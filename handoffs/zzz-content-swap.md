@@ -122,3 +122,104 @@ GroupChatBridge/A7Glue（演示桩 妮可 zz058、userName 默认 绳匠）· Se
 
 ### 取证钩子（仅启动参数触发，对用户路径零影响）
 `--group-mode-picker`（自动展开模式弹窗）、`--group-mode-selftest`（三模式往返自检）、`--group-mode-offline-demo`（切线下便于截图）、`--group-recall-selftest`（发→撤回→删→DB 复核）。
+
+## 11. 群聊导演模式改造（v0.3.6）：用户不在场，消息即导演指令
+
+**需求**：群聊导演模式下，其他人不把用户视为在场；用户每条消息都识别为导演指令，角色按指令行事。**仅提示词层改动**（不含 UI / 数据模型 / 引擎流程）。
+
+### 改动点（shared/prompt 层 + 群聊专属文案）
+1. `PromptTemplates.TAG_GROUP_DIRECTOR`：重写为「用户是导演、本人不在场景内」；成员按指令演出、不得对导演说话/描写导演、指令未涉及处延续上一轮；补充【用户本轮作用】在导演群聊中的口径。VERSION 40 → 41。
+2. `GroupPromptTexts.foundation(mode)` 新增 `"director"` 分支（原 else 分支仅剩 offline，文案保持等价）。
+3. `GroupPromptTexts.modeHistoryBoundary(mode)` 新增 director 分支：历史「导演指令」不是在场者发言。
+4. `GroupPromptTexts.observingText("director")` → 「导演在场外观察…」（原为「用户作为导演正在观察」，语义上仍把它当在场观察者）。
+5. `GroupPromptAssembler`：本轮消息标签 director → `【导演指令】\n导演：…`；`AUTO_REASON_TEXT` → 「导演下达了新指令。」。
+6. `GroupReplyParser.formatGroupHistoryForPrompt` 新增 `directorMode` 参数：历史里自己发的话标 `导演指令：`（默认 false，其他调用点行为不变）。
+7. `PromptModuleDefaults.groupBehavior(mode)`：新增 director 分支（演出指令、不把导演写成在场者、媒介限制），并补一条「不得输出导演台词/导演视角描写」。
+8. `GroupPromptAssembler` 追加群聊专属【导演群聊旁白约束】块。
+
+### 为什么不做进共用函数（重要判据）
+- `PromptModuleDefaults.narrationProtocol(mode)`、`groupOutputProtocol(mode)` 为**私聊/群聊共用**，且 `groupOutputProtocol` 被 `SourceFragments` 6 件锚点镜相等值约束。
+- 若直接改共用函数：私聊导演模式会被错误地变成「导演不在场」，且锚点金样与源码分片会失配。
+- 因此导演专属约束一律落在**群聊专属**路径（GroupPromptTexts / GroupPromptAssembler / groupBehavior）。
+
+### 金样
+- 重抽取 1 件 strict：`PromptTemplates_L109_TAG_GROUP_DIRECTOR.md`（顶层真源 + commonTest + androidUnitTest 三棵树 + `.raw-manifest.sha256` + inventory 注记）。
+- `PromptModuleDefaults_L187_in_narrationProtocol.md` **未改动**（narrationProtocol 共用，offline 输出字节不变；已用脚本验证与 HEAD 逐字节一致）。
+- 6 件 `SourceFragments` 锚点与 HEAD 逐字节一致（已脚本校验）。
+- 计数三档 27/7/13 不变。
+
+### 验证方式（本轮按用户要求不跑模拟器/实机）
+- 模拟器测试任务不可用（本机已删除 iOS simulator runtime）：`Xcode does not support simulator tests for ios_simulator_arm64`，属环境前置。
+- 改为**静态等价校验**：脚本复刻 `GoldenGate`（去注释头 / `$HUMAN_REALISM` 解引用 / `stripOuterBlankLines`）与 Kotlin `trimIndent` 模拟，断言 `TAG_GROUP_DIRECTOR` 金样 == 渲染结果 **True**；manifest 全量 sha256 校验 **0 件不一致**。
+- `:shared:compileKotlinIosArm64`、`:shared:compileTestKotlinIosSimulatorArm64`、`:shared:linkReleaseFrameworkIosArm64` 均 BUILD SUCCESSFUL。
+- 版本号 0.3.5 → **0.3.6**（build 8）。未提交、未打 IPA（等后续指令）。
+
+### 11.1 模拟器测试结果（2026-11-28，iOS 27.2 runtime 24B114，新增设备 Knock0316）
+
+下载并安装 iOS 27.2 模拟器 runtime（8.32GB）后完成验证：
+
+**共享层单元测试**
+- 全量：748 用例 / 11 失败；其中 8 件 `KtorDarwinStreamingTest`（需本地 mock SSE 服务器，既有环境前置）、3 件 `MemoryParsePromotionTest`。
+- **已证实 3 件 MemoryParse 失败为 v0.3.5 既有问题**：用 `git worktree` 检出干净 HEAD（1b3feef）跑同一测试，失败用例与报错完全一致 → 与本次导演模式改动无关。
+- **目标测试全绿**：17 个测试类 / 236 用例 / 0 失败（GoldenPromptTest 2、PromptRenderTest 23、PromptCacheLayerTest 31、PromptVersionMigrationTest 16、GroupPromptAssemblyTest 10、PromptAssemblyOrderTest 9、Group 系列 138 等）。
+
+**端到端提示词分层验证（新增 `--prompt-dump-selftest` 钩子，模拟器实跑）**
+```
+template/group/director chars=1038 [不在场景里=true] [导演指令=true] [不得把导演当成在场者=true] [按导演指令行事=true] [不得对导演说话=true]
+template/group/offline  chars=783  全部 false（导演约束无泄漏）
+template/group/online   chars=719  全部 false（导演约束无泄漏）
+behavior/group/director chars=3254 [用户是导演，本人不在场景内=true] [不得把导演写成在场者=true] [导演指令描述的地点=true]
+behavior/group/offline  chars=3067 [当前为面对面群聊=true]（原行为未回退）
+template/private/director chars=797 全部 false（私聊未被污染 ✅）
+behavior/private/director chars=3956 全部 false（私聊未被污染 ✅）
+```
+
+**UI 端到端**
+- `--group-mode-selftest`：online→offline→director→online 全 ok，`RESULT PASS=true`。
+- `--selftest`：`=== selftest done ===`，群 22 / 角色 63 正常。
+- 截图：`screenshots/knock-036-group-director.png`（胶囊显示「导演」）、`knock-036-group-chat.png`。
+
+**新增诊断钩子**（仅启动参数触发，对用户路径零影响）
+`--prompt-dump-selftest`（分层打印模板/行为层关键约束命中）、`--group-mode-director-demo`（切导演模式供截图）。
+`AppGraphClient.promptResolvedText(type:mode:module:)` Swift 包装（诊断用）。
+
+## 12. v0.3.6 收口：台词纯净完整方案 + 千问真实对话验证
+
+### 需求演进（用户实测反馈逐轮收敛）
+1. 群聊导演模式：用户不在场、消息即导演指令 → §11 已实现。
+2. 台词中混入动作描写 → 台词只保留角色说出口的话，动作一律进【旁白】。
+3. 残留：引号之间夹叙述（`“A。”他没回头，“B。”`）→ 本轮彻底修掉。
+4. 附带：中文夹杂英文（`门缝 widening`）、自行实体化未知来客并细描体貌。
+
+### 最终实现（提示词 4 层 + 代码 3 道确定性兜底）
+**提示词（`TAG_GROUP_DIRECTOR` / `groupBehavior` offline+director / 群聊【导演群聊旁白约束】/ `outputChecklist`）**
+- 台词纯净：「能原样念出来、加引号也不别扭」的可执行判据
+- 引号叙述禁令：禁止引号外夹动作神态
+- 未知来人禁令：只给现象时不得实体化、不得写体貌/量化细节、历史残留不得沿用
+- 中文纯净：除专有名词外禁止中英混写
+
+**代码（`GroupReplyParser`，标签路径 + JSON 路径双通道归一）**
+- `splitActionsOutOfDialogue`：行首括号动作句 → 旁白；同段有引号台词时，无引号裸动作句 → 旁白
+- `splitQuotedProseFromDialogue` / `extractQuotedSpeech`：成对引号内拼成台词，引号外文字 → 旁白（支持 “”「」『』""）
+- `normalizeMixedLanguage`：专有名词白名单保留，常见英文描述词替换中文
+
+### 千问 API 真实对话验证（`qwen-plus` / `ali`，模拟器，多轮）
+| 轮次 | 台词含动作 | 英文残留 | 自行发明来客 |
+|---|---|---|---|
+| 修复前 | 3/3 轮 | 有 | 3/3 轮 |
+| 括号+裸句修复后 | 0（括号）/1（裸句） | 0 | 仍 3/3 |
+| 本轮完整方案后（全新群） | **0** | **0** | **0**（只写「门缝下暗影微微晃动」保留悬念） |
+
+示例（最终）：旁白「蕾米埃尔指尖刚从腰侧滑开半寸…声音轻得像羽毛擦过耳膜」+ 台词「谁呀～？……不敲门，是怕惊走什么」；模型连「喉间微动」这类极短神态也自动归入旁白。
+
+### 已知边界
+旧会话历史里若已存在「门外人影左肩线/烫疤」类描写，模型会沿用历史继续写（上下文一致性），属历史包袱；新建群不再出现。
+
+### 验收
+- `GoldenPromptTest` ✅（DIRECTOR 金样三树重生成 + manifest + inventory；期间两次误把规则插进 `TAG_GROUP_ONLINE`，均已定位修正并还原其金样）
+- 群聊解析/装配测试：19+11+10 全 ✅
+- 全量 748 用例：仅 11 组既有失败（8 KtorDarwin 需 mock SSE、3 MemoryParsePromotion v0.3.5 既有，已用干净 HEAD worktree 证实）
+- 版本 0.3.5 → **0.3.6（build 8）**
+
+### 诊断钩子（仅启动参数触发，零用户路径影响）
+`--provider-setup/--provider-model/--provider-key/--provider-url`（运行时注入供应商，不落仓库）、`--director-live-test --director-lines`（多轮真实对话并逐轮落盘）、`--prompt-dump-selftest`（分层提示词验证）、`--group-mode-director-demo`。

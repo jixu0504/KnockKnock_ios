@@ -1022,6 +1022,11 @@ extension AppGraphClient {
         return result
     }
 
+    /// 诊断（仅 --prompt-dump-selftest 钩子使用）：取模板解析文本，用于验证导演模式提示词真实生效。
+    func promptResolvedText(type: String, mode: String, module: String = "") -> String {
+        graph.settings().promptResolvedText(type: type, mode: mode, module: module)
+    }
+
     func resetPromptItem(type: String, mode: String, module: String) {
         graph.settings().resetPromptItem(type: type, mode: mode, module: module)
         NSLog("[KnockKnock][Prompt] reset type=%@ mode=%@ module=%@", type, mode, module)

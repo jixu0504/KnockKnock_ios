@@ -72,6 +72,14 @@ enum SelfTestLog {
 
 // MARK: - 自检驱动
 
+extension Array where Element == String {
+    /// 取 `--director-lines` 之后的所有参数（每条 = 一轮导演指令）。
+    var directorInstructionLines: [String] {
+        guard let i = firstIndex(of: "--director-lines") else { return [] }
+        return Array(self[(i + 1)...]).filter { !$0.hasPrefix("--") }
+    }
+}
+
 @MainActor
 enum SelfTestDriver {
     static let isEnabled = ProcessInfo.processInfo.arguments.contains("--selftest")
@@ -91,6 +99,57 @@ enum SelfTestDriver {
         let handled = router.handle(url: url)
         SelfTestLog.add("launch-arg deeplink url=\(url.absoluteString) handled=\(handled)")
         return handled
+    }
+
+    /// v0.3.6 诊断：从启动参数写入供应商配置（API Key 仅运行时传入，不落源码/仓库）。
+    /// 用法：--provider-setup <providerId> --provider-model <model> --provider-key <key>
+    static func applyProviderOverrideIfNeeded(environment: AppEnvironment) -> String {
+        let args = ProcessInfo.processInfo.arguments
+        func value(_ flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
+        }
+        guard let providerId = value("--provider-setup"),
+              let model = value("--provider-model"),
+              let apiKey = value("--provider-key") else {
+            return "no-override"
+        }
+        let result = environment.bridge.saveProviderConfig(
+            providerId: providerId,
+            model: model,
+            customUrl: value("--provider-url") ?? "",
+            apiKey: apiKey,
+            temperature: 0.8
+        )
+        let status = environment.bridge.providerStatus()
+        let line = "provider-setup provider=\(providerId) model=\(model) saveResult=\(result.isEmpty ? "ok" : result) status.mode=\(status.mode) configured=\(status.configured) endpoint=\(status.endpoint)"
+        NSLog("[KnockKnock][ProviderSetup] %@", line)
+        return line
+    }
+
+    /// v0.3.6 诊断：验证导演模式「用户不在场」约束真实进入各层提示词。
+    static func dumpGroupPrompts(environment: AppEnvironment) async {
+        let client = environment.bridge
+
+        func report(_ label: String, _ text: String, _ keys: [String]) {
+            var line = "prompt-dump \(label) chars=\(text.count)"
+            for k in keys { line += " [\(k)=\(text.contains(k))]" }
+            NSLog("[KnockKnock][PromptDump] %@", line)
+        }
+
+        // 1) 模板层（TAG_GROUP_DIRECTOR）
+        let tplKeys = ["不在场景里", "导演指令", "不得把导演当成在场者", "按导演指令行事", "不得对导演说话"]
+        for mode in ["director", "offline", "online"] {
+            report("template/group/\(mode)", client.promptResolvedText(type: "group", mode: mode, module: ""), tplKeys)
+        }
+        // 2) 行为层（groupBehavior 的 director 分支）
+        let behaviorKeys = ["用户是导演，本人不在场景内", "不得把导演写成在场者", "导演指令描述的地点"]
+        report("behavior/group/director", client.promptResolvedText(type: "group", mode: "director", module: "behavior"), behaviorKeys)
+        report("behavior/group/offline", client.promptResolvedText(type: "group", mode: "offline", module: "behavior"), ["当前为面对面群聊"])
+        // 3) 反证：私聊导演模式不得被污染
+        let privateKeys = ["不在场景里", "导演指令", "本人不在场景内"]
+        report("template/private/director", client.promptResolvedText(type: "private", mode: "director", module: ""), privateKeys)
+        report("behavior/private/director", client.promptResolvedText(type: "private", mode: "director", module: "behavior"), privateKeys)
     }
 
     /// 自检流程（全部走真实 shared 桥接，不 mock）

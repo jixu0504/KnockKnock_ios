@@ -258,3 +258,11 @@
 | `raw/NewspaperModels_L167_NEWSPAPER_SYSTEM_PROMPT.md` | NewspaperModels.kt:167-191 |
 | `raw/AiSupportContract_L12.md` | AiSupportContract.kt:12-12 |
 | `raw/ProblemChecker_L815_in_promptTemplateIntegrityProbe.md` | ProblemChecker.kt:815-815 |
+
+## 2026-11-28 导演群聊重抽取（VERSION 40 → 41）
+
+- 变更件（1 件 strict）：`PromptTemplates_L109_TAG_GROUP_DIRECTOR.md`
+  改动主题：导演群聊中「用户不在场」。用户每条消息视为导演指令，成员按指令演出，不得把用户当作在场者（不对其说话、不在台词/旁白中描写其动作位置外貌情绪）。
+- `PromptModuleDefaults_L187_in_narrationProtocol.md` **未改动**：narrationProtocol 为私聊/群聊共用，
+  导演专属旁白约束改由 `GroupPromptAssembler` 追加【导演群聊旁白约束】块实现，故该金样字节保持不变。
+- strict/canonical/rawAnchor 三档计数保持 27/7/13；`android-oracle` 基线章节的 VERSION 指未改动的 Android 原件。

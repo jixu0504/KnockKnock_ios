@@ -79,6 +79,14 @@ private struct RootShell: View {
                 // 自动化验证钩子：`--open-url rhodes://…` 走与 onOpenURL 完全相同的
                 // AppRouter.handle(url:) 路径（模拟器无法点击系统「在 KnockKnock 中打开？」确认框）。
                 SelfTestDriver.handleLaunchURLIfNeeded(router: router)
+                if ProcessInfo.processInfo.arguments.contains("--provider-setup") {
+                    _ = SelfTestDriver.applyProviderOverrideIfNeeded(environment: environment)
+                }
+                // v0.3.6 诊断钩子：--prompt-dump-selftest 打印群聊导演/线下/线上三种模式的模板解析文本，
+                // 用于在无触控环境确认「导演群聊用户不在场」约束真实进入提示词（对用户路径零影响）。
+                if ProcessInfo.processInfo.arguments.contains("--prompt-dump-selftest") {
+                    await SelfTestDriver.dumpGroupPrompts(environment: environment)
+                }
                 // T36 角色/会话页验证钩子：`--roles-selftest` / `--autochat <operatorId>`
                 // （放在 SelfTestDriver 之前，角色/关系页打点会进入 --selftest 落盘日志）
                 await RolesAutomation.runIfNeeded(environment: environment, router: router)

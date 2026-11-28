@@ -67,6 +67,17 @@ object GroupPromptTexts {
     """.trimIndent()
 
     fun foundation(mode: String): String = when (mode) {
+        "director" -> """
+            |【群聊回复原则】
+            |- 当前为导演群聊：用户是导演，本身不在场景内，不是在场角色。用户本轮消息是指令，不是在场者的发言。
+            |- 只能让当前成员资料中的角色发言，不替导演发言，也不替导演指令之外的角色发言。所有成员围绕同一主线自然回应，不要各自开启无关话题。
+            |- 成员只按导演指令行动：指令给出的地点、时间、人物状态、行动与事件结果视为已发生；指令没写的现场延续上一轮。
+            |- 成员不得把导演当成在场者：不得对导演说话、提问或邀请参与；不得在台词与旁白中描写导演的动作、位置、外貌、情绪或在场的任何痕迹。
+            |- 旁白只写当前成员与共享场景中的可见动作、环境或即时变化，使用第三人称，不写内心独白。
+            |- 旁白只描述当前成员名单中的角色与共享场景；不得在旁白中提及、描写或暗示名单外角色在场、动作或状态。成员台词可在话题自然相关时提及名单外角色，但不得把其写成正在参与本轮互动。
+            |- “用户”“玩家”“群内用户”“对方”“导演”仅是系统说明与上下文标签，严禁出现在成员实际台词、旁白或 @ 称呼中。
+            |- 最近聊天、剧情进展和参考资料用于理解背景；导演本轮指令才是当前需要执行与回应的内容。
+        """.trimMargin()
         "online" -> """
             |【群聊回复原则】
             |- 当前为线上文字群聊：不得输出旁白、动作或环境描写。
@@ -84,8 +95,12 @@ object GroupPromptTexts {
         """.trimMargin()
     }
 
-    fun modeHistoryBoundary(mode: String): String =
-        if (mode == "online") "" else "\n- 当前为面对面共享场景。历史中出现的群消息、提示音、屏幕、网络或线上回复仅是旧媒介表达，不得沿用到本轮。"
+    fun modeHistoryBoundary(mode: String): String = when (mode) {
+        "online" -> ""
+        "director" -> "\n- 当前为导演群聊的面对面共享场景。历史中标注为「导演指令」的内容是导演当时的指令，不是场景内人物的发言，不得当作在场者对成员说过的话；历史中的群消息、提示音、屏幕、网络或线上回复同样不得沿用到本轮。" +
+            "\n- 历史中若出现将导演当作在场者的描写，同样不得模仿。"
+        else -> "\n- 当前为面对面共享场景。历史中出现的群消息、提示音、屏幕、网络或线上回复仅是旧媒介表达，不得沿用到本轮。"
+    }
 
     fun modeFormat(mode: String): String = when (mode) {
         "offline", "director" -> "当前为共享场景，可使用【旁白】描述当前成员和场景中的可见变化。"
@@ -94,7 +109,7 @@ object GroupPromptTexts {
 
     fun observingText(mode: String): String = when (mode) {
         "offline" -> "用户坐在一旁，安静地听着大家的对话，没有插话。"
-        "director" -> "用户作为导演正在观察大家的表演，没有给出新指令。"
+        "director" -> "导演在场外观察，没有下达新指令；成员按上一条导演指令继续演出。"
         else -> "群内用户正在安静地观察，没有发言。"
     }
 
@@ -114,6 +129,7 @@ object GroupPromptTexts {
         以下是应用固定输出要求，不是用户发言。第一行必须是【群聊回合状态】。
         必须依次输出【当前主线】、【用户本轮作用】、【本轮承接】、【本轮新增推进】、【主线状态】、【下轮焦点】。
         随后每位成员都必须使用【发言人: 发言标识】后先另起一行输出【心情】（2~6 字），再另起一行输出台词；禁止使用“成员名：台词”的裸格式。每位成员的台词应提供不同作用，不得只换词重复。${if (mode == "online") "禁止输出【旁白】。" else "至少输出一段【旁白】，数量遵循当前旁白段数设置；完成内部状态字段后优先以旁白开始，并尽量与成员台词交叉。"}
+        台词纯净硬要求：【发言人】标签下只能有说出口的话。禁止括号动作、禁止镜头说明、禁止旁白式描写，也禁止不加括号的动作句（如「右脚未抬，足弓持续施压」）；所有动作与场景变化必须写进【旁白】。写完台词请逐段自检：把这段读出来，若像在描述动作而不是在说话，就把它改写成【旁白】。
         当前段数/字数要求：${if (mode == "online") "线上模式禁止旁白；每位成员必须发言${groupSpeechMin}~${groupSpeechMax}段，每段必须有${groupMsgMin}~${groupMsgMax}字。" else "线下/导演模式可输出【旁白】，写出时必须有${groupNarSegMin}~${groupNarSegMax}段、每段必须有${groupNarMin}~${groupNarMax}字；每位成员必须发言${groupSpeechMin}~${groupSpeechMax}段，每段必须有${groupMsgMin}~${groupMsgMax}字。"}
     """.trimIndent()
 
@@ -358,7 +374,11 @@ class DefaultGroupPromptAssembler(
             "GROUP_NAME" to request.groupName,
             "CURRENT_DATE" to promptSource.currentDate(),
             "AUTO_REASON" to (if (isAuto) "idle" else "manual"),
-            "AUTO_REASON_TEXT" to (if (isAuto) "群聊空闲自然闲聊。" else "用户主动发言。"),
+            "AUTO_REASON_TEXT" to (
+                if (isAuto) "群聊空闲自然闲聊。"
+                else if (mode == "director") "导演下达了新指令。"
+                else "用户主动发言。"
+                ),
             "GROUP_RULES" to (session.rules.ifBlank { "无" }),
             "GROUP_INJECTION" to groupInjection,
             "GROUP_RELATION_HINTS" to relationHints,
@@ -440,7 +460,24 @@ class DefaultGroupPromptAssembler(
         val groupProtocol = customGroupProtocol?.let {
             "【用户自定义表达补充】\n$it\n\n【应用固定输出协议，必须优先遵守】\n$requiredGroupProtocol"
         } ?: requiredGroupProtocol
-        val narrationProtocol = PromptModuleDefaults.narrationProtocol(mode)
+        // 导演群聊专属：导演本人在场外，任何可见内容都不得描写导演（该约束只对群聊导演模式生效，
+        // 私聊导演模式仍由共用 narrationProtocol 处理）。
+        val narrationProtocol = PromptModuleDefaults.narrationProtocol(mode) +
+            if (mode == "director") {
+                """
+
+                【导演群聊旁白约束】
+                - 用户是导演，本人不在场景内。旁白不得描写导演的动作、姿势、位置、外貌、表情、情绪或状态，也不得出现任何暗示导演在场的描写。
+                - 成员台词不得对导演说话、提问、请示、邀请参与或等待导演反应；成员只彼此交流并按导演指令行事。
+                - 【发言人】标签下只写角色真正说出口的话；动作、表情、姿态、手势、位置移动、镜头与环境一律写进【旁白】，禁止用括号夹在台词里。导演指令中的括号是舞台提示，禁止照搬成台词格式。
+                - 台词行禁止「引号外夹叙述」：不得写成“A。”他没回头，声音压得平直如尺，“B。”这类把动作/神态插在两句引号之间的形式。台词行里要么整行都是角色说出口的话（可加引号，也可不加），要么把动作神态单独写成上一条【旁白】；确需表达「边动边说」时，用【旁白】写动作、下一段【发言人】写台词。
+                - 若导演指令只给出声音、光线、震动、敲门等现象：允许写「门外有脚步声」「有影子晃过」这类现象本身，但严禁给出任何体貌或量化细节（肩线、重心、喉结、呼吸、步态、身高、疤痕、角度、厘米、毫秒等一律禁止）；不要把这个存在写成在场角色，也不要让它发言或做出可辨识的动作。若历史里已经出现过这类体貌描写，本轮不得沿用或继续扩写，只保留「门外有人／外面有动静」这一层信息。成员可以戒备、询问、后退、开门，但不得替未知来客定性、命名或描述外形。
+                - 除专有名词与代号（如 B-7、HIA、HAND、TOPS、Random Play、W-Engine、Fairy、Eous）外，旁白与台词必须全部使用简体中文，禁止夹杂英文单词、英文缩写或中英混写（例如把「门缝扩大至两指宽」写成「门缝 widening 至两指宽」）。
+                - 台词行只能写角色说出口的话。判断标准：这句话能被人原样念出来、加上引号也不别扭。像「右脚未抬，足弓持续施压」「肩线绷直」这类描述动作、姿态、位置、表情、镜头或身体状态的句子，即使不加括号也一律属于【旁白】，不得出现在台词行里；需要边说边动时，必须拆成一段【旁白】加一段【发言人】，不能混在同一段台词里。
+                - 旁白与台词里都不得使用“用户”“玩家”“对方”“群内用户”“导演”这类系统视角称呼。
+                """.trimIndent()
+            } else ""
+
         val systemWithCustomProtocol = listOf(finalSystemPrompt, groupProtocol, narrationProtocol)
             .filter { it.isNotBlank() }.joinToString("\n\n")
 
@@ -466,7 +503,11 @@ class DefaultGroupPromptAssembler(
         }
         val apiMessages = mutableListOf(AiMessage("system", systemWithCustomProtocol))
         allHistory.forEach { msg ->
-            val formatted = GroupReplyParser.formatGroupHistoryForPrompt(msg, activeMembers.map { it.name }.toSet())
+            val formatted = GroupReplyParser.formatGroupHistoryForPrompt(
+                msg,
+                activeMembers.map { it.name }.toSet(),
+                directorMode = mode == "director",
+            )
             if (formatted.isNotBlank()) {
                 apiMessages.add(AiMessage(if (msg.isMe) "user" else "assistant", formatted))
             }
@@ -508,7 +549,12 @@ class DefaultGroupPromptAssembler(
             if (request.autoSpeak) {
                 apiMessages.add(AiMessage("user", "【本轮续聊任务】\n$userMsg"))
             } else {
-                apiMessages.add(AiMessage("user", "【用户本轮消息】\n用户：$userMsg"))
+                apiMessages.add(
+                    AiMessage(
+                        "user",
+                        if (mode == "director") "【导演指令】\n导演：$userMsg" else "【用户本轮消息】\n用户：$userMsg",
+                    ),
+                )
             }
         } else if (pendingModeTransition.isNotBlank()) {
             apiMessages.add(AiMessage("user", "【本轮互动变化】\n$pendingModeTransition\n请从本轮开始按这项变化自然回应。$runtimeContext"))
