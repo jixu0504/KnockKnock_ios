@@ -206,12 +206,28 @@ final class GroupChatViewModel: ObservableObject {
             let fresh = page.items.reversed().filter { !dropping.contains($0.id) }
             let oldestFresh = fresh.first?.id ?? Int64.max
             let olderKept = messages.filter { $0.id > 0 && $0.id < oldestFresh && !dropping.contains($0.id) }
-            let pending = messages.filter { $0.id < 0 }
+            // 乐观气泡只用于「本轮尚未落库」的瞬间：
+            // 1) 非流式（本轮回合已结束）时一律清空——真实行已由 DB 提供，否则旧气泡会堆在列表末尾，
+            //    表现为「新回复下面又出现一遍之前发过的消息」；
+            // 2) 流式中也只保留 DB 里还没有同文本自己消息的那几条，避免同一条消息显示两遍。
+            let freshSelfTexts = Set(
+                fresh.filter { $0.isMe }.suffix(5)
+                    .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            )
+            let pending = messages.filter { message in
+                guard message.id < 0, isStreaming else { return false }
+                let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !freshSelfTexts.contains(text)
+            }
             messages = olderKept + fresh + pending
+            let remainingOptimistic = messages.filter { $0.id < 0 }.count
             cursor = page.nextBeforeId
             hasMore = page.hasMore && !olderKept.isEmpty
             rebuildRows()
-            GroupSelfTestLog.add("group view refresh total=\(page.totalCount) loaded=\(messages.count) newest=\(page.items.first?.id ?? 0)")
+            GroupSelfTestLog.add(
+                "group view refresh total=\(page.totalCount) loaded=\(messages.count) newest=\(page.items.first?.id ?? 0) " +
+                "optimistic=\(remainingOptimistic) streaming=\(isStreaming)"
+            )
         case .failure(let error):
             GroupSelfTestLog.add("group view refresh FAILED error=\(error.message)")
         }
